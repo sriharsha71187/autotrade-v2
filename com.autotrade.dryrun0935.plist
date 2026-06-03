@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.autotrade.dryrun0935</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>/Users/nirvaan/autotrade/scheduled_dryrun.sh</string>
+        <string>com.autotrade.dryrun0935</string>
+        <string>0935ET</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Month</key><integer>6</integer>
+        <key>Day</key><integer>4</integer>
+        <key>Hour</key><integer>6</integer>
+        <key>Minute</key><integer>35</integer>
+    </dict>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>/Users/nirvaan/autotrade_dryrun_launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/nirvaan/autotrade_dryrun_launchd.log</string>
+</dict>
+</plist>
