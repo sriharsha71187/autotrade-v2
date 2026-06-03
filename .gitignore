@@ -1,0 +1,24 @@
+# Python venv (100M+, recreate via install.sh)
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Secrets — NEVER commit. These live in ~/.autotrade.env (outside the repo).
+.env
+*.env
+!autotrade.env.template
+
+# Local Claude Code settings
+.claude/settings.local.json
+
+# Runtime state / artifacts (normally written to $HOME, ignored defensively)
+autotrade_state.json
+autotrade_assets.json
+autotrade_learnings.json
+autotrade_command.txt
+autotrade.log
+autotrade_snapshots/
+
+# macOS
+.DS_Store
