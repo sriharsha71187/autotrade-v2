@@ -44,7 +44,9 @@ Not auto-scheduled yet (on purpose). After the close:
 
 ## Remote control
 - File fallback (works today): `echo "STOP" > ~/autotrade_command.txt`
-  Commands: `STOP`, `RESUME`, `CLOSE ALL`, `STATUS`, `STATS`, `FOCUS TECH`.
+  Commands: `STOP`, `RESUME`, `CLOSE ALL`, `STATUS`, `STATS`, `FOCUS TECH`,
+  `OVERRIDE` (keep trading today past the daily loss halt; `OVERRIDE OFF` to undo;
+  resets next day).
 - Telegram: add `TELEGRAM_TOKEN` + `TELEGRAM_CHAT_ID` to `~/.autotrade.env`. Then
   the same commands work from your phone and the bot DMs you on entries/exits/EOD.
 

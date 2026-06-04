@@ -96,6 +96,7 @@ def default_state() -> dict:
         "active_multileg": [],      # [{legs,qty,entry_net,opened}] spreads/condors we manage
         "active_options": [],       # [{symbol, qty, entry, opened}] long options we manage
         "aborted_today": [],        # symbols deliberately aborted (1 abort/symbol/day)
+        "loss_override": False,     # OVERRIDE command: keep trading past the daily loss halt (today only)
         "last_action": "",          # human-readable summary of last cycle action
         "focus": None,              # e.g. "TECH" set via Telegram FOCUS command
         "telegram_offset": 0,       # last processed Telegram update_id
@@ -1054,7 +1055,8 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
     if start_eq is None:
         start_eq = acct["equity"]
     daily_pl = acct["equity"] - start_eq
-    if daily_pl <= cfg.DAILY_LOSS_HALT and action not in ("hold", "close"):
+    if (daily_pl <= cfg.DAILY_LOSS_HALT and action not in ("hold", "close")
+            and not state.get("loss_override")):
         return False, f"daily loss halt hit ({daily_pl:.0f})"
     # Daily profit target — a ceiling that banks gains, not a quota to chase.
     if action not in ("hold", "close"):
@@ -1214,6 +1216,17 @@ def handle_commands(tc, state, cmds, dry):
         elif c.startswith("RESUME"):
             state["halted"] = False
             tg_send("▶️ Trading resumed.")
+        elif c.startswith("OVERRIDE"):
+            # Day flag: keep trading the rest of TODAY even past the daily loss
+            # halt. Resets automatically tomorrow. 'OVERRIDE OFF' turns it back on.
+            if "OFF" in c:
+                state["loss_override"] = False
+                tg_send("🔒 Loss-halt override OFF — daily loss halt active again.")
+            else:
+                state["loss_override"] = True
+                state["halted"] = False
+                tg_send("⚠️ Loss-halt OVERRIDE ON for today — bot will keep trading "
+                        "past the daily loss halt. (Resets tomorrow; STOP to halt.)")
         elif c.startswith("CLOSE ALL"):
             try:
                 if not dry:
@@ -1282,11 +1295,14 @@ def run_cycle(dry: bool = False):
     manage_options(tc, odc, state, dry)
 
     # 2b. Daily loss halt — latches for the rest of the day and alerts once.
+    # Skipped while the OVERRIDE day-flag is on (user chose to keep trading).
     daily_pl = acct["equity"] - state["start_equity"]
-    if daily_pl <= cfg.DAILY_LOSS_HALT and not state.get("halted"):
+    if daily_pl <= cfg.DAILY_LOSS_HALT and not state.get("halted") and not state.get("loss_override"):
         state["halted"] = True
         log(f"DAILY LOSS HALT latched: day P&L {daily_pl:+.0f} <= {cfg.DAILY_LOSS_HALT}")
         tg_send(f"🛑 Daily loss halt: day P&L ${daily_pl:+,.0f}. New entries stopped for the day.")
+    elif daily_pl <= cfg.DAILY_LOSS_HALT and state.get("loss_override"):
+        log(f"loss override ON: day P&L {daily_pl:+.0f} past halt, but trading continues")
 
     if state.get("halted"):
         log("halted — skipping new decisions")
