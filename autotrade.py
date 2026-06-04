@@ -241,6 +241,19 @@ def open_positions(tc) -> list[dict]:
     return out
 
 
+def bracketed_symbols(tc) -> set:
+    """Stock symbols whose shares are tied up in open bracket orders. Such a stock
+    exits ONLY via its stop/target — a manual close is rejected ('insufficient qty,
+    held_for_orders'), so we neither attempt it nor let the model request it.
+    Detected as open orders on a plain (non-OCC) ticker; option/MLEG legs excluded."""
+    try:
+        oo = tc.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN, limit=100))
+        return {o.symbol for o in oo if o.symbol and not parse_occ(o.symbol)}
+    except Exception as e:
+        log(f"bracketed_symbols fetch failed: {e}")
+        return set()
+
+
 def asset_meta(tc) -> dict:
     """{symbol: {"shortable": bool, "fractionable": bool}} for tradable US equities.
     Cached to a file once per ET day (the full asset list is ~14k rows)."""
@@ -1117,7 +1130,7 @@ def write_snapshot(context: dict, decision: dict, result: dict = None):
     f = cfg.SNAPSHOT_DIR / f"{day}.jsonl"
     dkeys = ("action", "symbol", "direction", "qty", "stop_price", "target_price",
              "option_symbol", "legs", "net_price", "condor_legs", "net_credit",
-             "overnight_hold", "conviction", "reasoning")
+             "close_symbols", "overnight_hold", "conviction", "reasoning")
     rec = {"t": et_now().isoformat(),
            "scan": context.get("signal_scan"),
            "vix": context.get("vix"),
@@ -1221,6 +1234,7 @@ def run_cycle(dry: bool = False):
 
     # 3. Build context
     positions = open_positions(tc)
+    bracketed = bracketed_symbols(tc) if positions else set()
     universe, assets = build_universe(tc)
     # Quality floor: keep names priced over MIN_PRICE and drop extreme movers
     # (halted low-float runners like STI +513%) that aren't tradeable setups.
@@ -1247,6 +1261,7 @@ def run_cycle(dry: bool = False):
         "now_et": now.isoformat(),
         "account": acct,
         "positions": positions,
+        "bracket_managed": sorted(bracketed),
         "signal_scan": scan[:20],
         "option_chains": option_chains,
         "vix": vix,
@@ -1279,10 +1294,20 @@ def run_cycle(dry: bool = False):
     # the snapshot can later be joined to outcomes. Single exit: write once at end.
     action = decision.get("action", "hold")
     result = {"status": "hold", "action": action}
-    if decision.get("close_symbols"):
-        close_symbols(tc, decision["close_symbols"], dry)
+    # Close targets: explicit close_symbols plus a bare action=="close" on `symbol`.
+    close_targets = list(decision.get("close_symbols") or [])
+    if action == "close" and decision.get("symbol") and decision["symbol"] not in close_targets:
+        close_targets.append(decision["symbol"])
+    if close_targets:
+        # Bracketed stocks exit only via their stop/target — skip the futile close.
+        skip = [s for s in close_targets if s in bracketed]
+        do = [s for s in close_targets if s not in bracketed]
+        if skip:
+            log(f"close skipped — exit handled by bracket: {skip}")
+        if do:
+            close_symbols(tc, do, dry)
         result = {"status": "close", "action": action,
-                  "close_symbols": decision["close_symbols"]}
+                  "closed": do, "skipped_bracketed": skip}
 
     if action in ("buy_stock", "buy_option", "multi_leg", "iron_condor"):
         ref_price = None

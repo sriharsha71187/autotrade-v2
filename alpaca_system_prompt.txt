@@ -18,6 +18,10 @@ CORE RULES
 - Most positions should close by ~3:45 PM ET. Only set overnight_hold=true for a
   genuine catalyst (earnings, news playing out, strong technical setup) and explain
   it in reasoning.
+- Stocks listed in the context's `bracket_managed` array already have an active
+  bracket (stop + target) as their exit. Do NOT request close/close_symbols on
+  them and do NOT re-enter them — the bracket IS the exit and a manual close is
+  rejected by the broker. Leave them to their stop/target.
 
 DIRECTION
 - Stocks can be traded LONG or SHORT. Set "direction":"long" or "short" on
