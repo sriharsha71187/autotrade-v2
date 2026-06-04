@@ -304,6 +304,8 @@ def build_universe(tc) -> tuple[list[str], dict]:
     for s in base + screener_symbols(tc):
         if not s or s in seen:
             continue
+        if s in cfg.LEVERAGED_ETF_EXCLUDE:   # quality floor: no leveraged/inverse ETFs
+            continue
         # Indices/ETFs in the base list may not appear in the equity asset map; keep
         # the base names regardless, but require screener names to be tradable.
         if s not in cfg.CORE_UNIVERSE and meta and s not in meta:
@@ -1184,7 +1186,11 @@ def run_cycle(dry: bool = False):
     # 3. Build context
     positions = open_positions(tc)
     universe, assets = build_universe(tc)
-    scan = [r for r in signal_scan(universe) if r.get("last", 0) >= cfg.MIN_PRICE]
+    # Quality floor: keep names priced over MIN_PRICE and drop extreme movers
+    # (halted low-float runners like STI +513%) that aren't tradeable setups.
+    scan = [r for r in signal_scan(universe)
+            if r.get("last", 0) >= cfg.MIN_PRICE
+            and abs(r.get("day_pct", 0)) <= cfg.MOMENTUM_MAX_DAY_PCT]
     vix = get_vix()
     now = et_now()
 

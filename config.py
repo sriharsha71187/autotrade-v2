@@ -84,6 +84,22 @@ SCREENER_TOP_MOVERS  = 20    # top gainers + top losers to pull (each side)
 MIN_PRICE          = 5.0     # drop sub-$5 names (penny/warrant junk)
 UNIVERSE_MAX       = 60      # cap symbols sent to the per-cycle signal scan
 
+# ---- quality floor (keep halted runners + leveraged ETFs out) --------------
+# A +500% halted low-float runner (e.g. STI on 2026-06-04) is not a tradeable
+# momentum setup. Drop anything whose absolute day move exceeds this — real
+# gappers rarely clear it, circuit-breaker pumps always do.
+MOMENTUM_MAX_DAY_PCT = 30.0
+# Leveraged / inverse ETFs decay and whipsaw; exclude them from the scan so the
+# bot doesn't chase an inverse-ETF spike that's just the underlying selling off.
+LEVERAGED_ETF_EXCLUDE = {
+    "SOXL", "SOXS", "TQQQ", "SQQQ", "SPXL", "SPXU", "UPRO", "SPXS", "TNA", "TZA",
+    "UVXY", "VIXY", "SVXY", "SVIX", "UVIX", "LABU", "LABD", "FAS", "FAZ",
+    "YINN", "YANG", "NUGT", "DUST", "JNUG", "JDST", "GUSH", "DRIP", "ERX", "ERY",
+    "BOIL", "KOLD", "UCO", "SCO", "TMF", "TMV", "WEBL", "WEBS", "BULZ",
+    "FNGU", "FNGD", "NVDL", "NVDU", "NVDD", "TSLL", "TSLQ", "TSLS", "CONL", "MSTX",
+    "MSTU", "MSTZ", "AGQ", "ZSL", "BITX", "ETHU",
+}
+
 # ---- trading universe ------------------------------------------------------
 CORE_UNIVERSE = ["SPY", "QQQ", "IWM", "DIA"]
 MOMENTUM_UNIVERSE = [
