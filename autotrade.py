@@ -548,6 +548,19 @@ def option_price(odc, symbol) -> float | None:
     return _quote_mid(option_latest_quote(odc, symbol), allow_one_sided=True)
 
 
+def option_quote(odc, symbol):
+    """(bid, ask, mid) for an option, or (None, None, None). Used to size a
+    marketable-limit entry and to reject wide-spread (illiquid) contracts."""
+    q = option_latest_quote(odc, symbol)
+    if q is None:
+        return (None, None, None)
+    bid = float(getattr(q, "bid_price", 0) or 0)
+    ask = float(getattr(q, "ask_price", 0) or 0)
+    if bid > 0 and ask > 0:
+        return (bid, ask, (bid + ask) / 2)
+    return (bid or None, ask or None, ask or bid or None)
+
+
 def option_chain_for(odc, underlying, spot, want_today_expiry: bool = False,
                      strike_pct: float = 0.08, max_per_side: int = 10) -> list[dict]:
     """Compact near-the-money chain for ONE underlying so the model picks real
@@ -1021,7 +1034,8 @@ def manage_options(tc, odc, state, dry):
 # Guardrails applied to a model decision before execution
 # ===========================================================================
 def passes_guardrails(decision, state, acct, now, ref_price=None,
-                      offered_options=None, assets=None) -> tuple[bool, str]:
+                      offered_options=None, assets=None,
+                      option_spread_pct=None) -> tuple[bool, str]:
     """ref_price: current per-share price of the asset being traded — the stock
     last price for buy_stock, the option premium per share for buy_option. Used
     for the notional and total-deployed-capital caps.
@@ -1114,6 +1128,13 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
             return False, f"option_symbol {osym} not in this cycle's offered chain"
         if ref_price is None or ref_price <= 0:
             return False, "no option price for notional check"
+        # Liquidity floor: a wide bid-ask means a market/marketable order donates
+        # the spread on entry (e.g. RDW 1.00/1.20 = 18% -> instant ~-17%). Skip it.
+        if option_spread_pct is None:
+            return False, "no two-sided option quote (illiquid) — skipping"
+        if option_spread_pct > cfg.OPTION_MAX_SPREAD_PCT:
+            return False, (f"option spread {option_spread_pct:.0%} > "
+                           f"{cfg.OPTION_MAX_SPREAD_PCT:.0%} cap (illiquid)")
         notional = qty * ref_price * 100  # 100 shares per contract
         if notional > cfg.PER_OPTION_NOTIONAL_CAP:
             return False, f"option notional {notional:.0f} > cap {cfg.PER_OPTION_NOTIONAL_CAP}"
@@ -1355,13 +1376,17 @@ def run_cycle(dry: bool = False):
 
     if action in ("buy_stock", "buy_option", "multi_leg", "iron_condor"):
         ref_price = None
+        opt_ask = None
+        opt_spread = None
         if action == "buy_stock":
             ref_price = next((r["last"] for r in scan
                               if r["symbol"] == decision.get("symbol")), None)
         elif action == "buy_option":
-            ref_price = option_price(odc, decision.get("option_symbol"))
+            bid, opt_ask, ref_price = option_quote(odc, decision.get("option_symbol"))
+            if bid and opt_ask and ref_price:
+                opt_spread = (opt_ask - bid) / ref_price
         ok, reason = passes_guardrails(decision, state, acct, now, ref_price,
-                                       offered_options, assets)
+                                       offered_options, assets, opt_spread)
         if not ok:
             log(f"guardrail blocked {action}: {reason}")
             result = {"status": "blocked", "action": action, "reason": reason}
@@ -1379,20 +1404,24 @@ def run_cycle(dry: bool = False):
                     order_id = str(o.id) if o else None
                     state.setdefault("last_entry_time", {})[decision["symbol"]] = now.isoformat()
                 elif action == "buy_option":
-                    # Single-leg option market order, sized by qty (contracts).
+                    # Marketable LIMIT (limit just above ask) instead of a naked
+                    # market order — fills promptly but caps the price so a fast or
+                    # wide-quoted option can't fill far through the ask.
                     osym, oqty = decision["option_symbol"], int(decision["qty"])
+                    lim = round(opt_ask * 1.02, 2)
                     if not dry:
-                        req = MarketOrderRequest(symbol=osym, qty=oqty,
-                                                 side=OrderSide.BUY, time_in_force=TimeInForce.DAY)
+                        req = LimitOrderRequest(symbol=osym, qty=oqty, side=OrderSide.BUY,
+                                                time_in_force=TimeInForce.DAY, limit_price=lim)
                         o = tc.submit_order(order_data=req)
                         order_id = str(o.id)
-                        log(f"OPTION buy {oqty} {osym} id={o.id}")
-                        tg_send(f"📊 Bought {oqty}x {osym}.")
+                        entry = float(o.filled_avg_price) if o.filled_avg_price else opt_ask
+                        log(f"OPTION buy {oqty} {osym} @lim {lim} (ask {opt_ask}) entry≈{entry} id={o.id}")
+                        tg_send(f"📊 Bought {oqty}x {osym} (limit {lim}).")
                         state.setdefault("active_options", []).append(
-                            {"symbol": osym, "qty": oqty, "entry": ref_price,
-                             "opened": now.isoformat()})
+                            {"symbol": osym, "qty": oqty, "entry": entry,
+                             "order_id": str(o.id), "opened": now.isoformat()})
                     else:
-                        log(f"[DRY] would buy option {oqty} {osym} (entry≈{ref_price})")
+                        log(f"[DRY] would buy option {oqty} {osym} @lim {lim} (ask {opt_ask})")
                     if decision.get("symbol"):
                         state.setdefault("last_entry_time", {})[decision["symbol"]] = now.isoformat()
                 elif action in ("multi_leg", "iron_condor"):

@@ -65,6 +65,7 @@ DAILY_PROFIT_TARGET  = 200.0
 DAILY_PROFIT_STRETCH = 400.0
 PER_TRADE_NOTIONAL_CAP = 5_000.0   # cap on a single stock entry (qty * price)
 PER_OPTION_NOTIONAL_CAP = 2_000.0  # cap on a single option entry (qty * premium * 100)
+OPTION_MAX_SPREAD_PCT  = 0.15      # skip options whose bid-ask spread exceeds this (illiquid)
 MAX_DEPLOYED_CAPITAL   = 40_000.0  # cap on total exposure across all open trades
 CONDOR_WING_WIDTH      = 5.0       # $ width of condor wings, for max-loss sizing
 TICKER_COOLDOWN_MIN    = 10
