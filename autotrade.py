@@ -95,6 +95,7 @@ def default_state() -> dict:
         "last_entry_time": {},      # {symbol: iso-timestamp} for cooldown
         "active_multileg": [],      # [{legs,qty,entry_net,opened}] spreads/condors we manage
         "active_options": [],       # [{symbol, qty, entry, opened}] long options we manage
+        "aborted_today": [],        # symbols deliberately aborted (1 abort/symbol/day)
         "last_action": "",          # human-readable summary of last cycle action
         "focus": None,              # e.g. "TECH" set via Telegram FOCUS command
         "telegram_offset": 0,       # last processed Telegram update_id
@@ -252,6 +253,46 @@ def bracketed_symbols(tc) -> set:
     except Exception as e:
         log(f"bracketed_symbols fetch failed: {e}")
         return set()
+
+
+def abort_position(tc, state, decision, now, dry) -> dict:
+    """Deliberate early exit of a bracketed stock (thesis invalidated). GATED to
+    avoid the 5-min flip-flop: high conviction, held >= cooldown, once per symbol
+    per day. On go: cancel the symbol's open (bracket) orders, then market-close.
+    If the close fails AFTER cancelling, the position is unprotected -> alert loud."""
+    sym = decision.get("symbol")
+    conv = (decision.get("conviction") or "").lower()
+    last = state.get("last_entry_time", {}).get(sym) if sym else None
+    held_min = (now - datetime.fromisoformat(last)).total_seconds() / 60 if last else None
+    denied = []
+    if not sym:
+        denied.append("no symbol")
+    if conv != "high":
+        denied.append("conviction not high")
+    if held_min is None or held_min < cfg.TICKER_COOLDOWN_MIN:
+        denied.append(f"held {held_min if held_min is None else round(held_min)}m < {cfg.TICKER_COOLDOWN_MIN}m")
+    if sym in (state.get("aborted_today") or []):
+        denied.append("already aborted today")
+    if denied:
+        log(f"abort {sym} denied: {denied}")
+        return {"status": "abort_denied", "symbol": sym, "reasons": denied}
+    if dry:
+        log(f"[DRY] would ABORT {sym} (cancel bracket + market-close)")
+        return {"status": "dry_run", "action": "abort", "symbol": sym}
+    try:
+        for o in tc.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN, limit=100)):
+            if o.symbol == sym and not parse_occ(o.symbol):
+                tc.cancel_order_by_id(o.id)
+        time.sleep(1.0)                       # let the cancels settle so shares free up
+        tc.close_position(sym)
+        log(f"ABORTED {sym}: bracket canceled + position closed")
+        tg_send(f"⛔ Aborted {sym} (thesis invalidated).")
+        state.setdefault("aborted_today", []).append(sym)
+        return {"status": "aborted", "symbol": sym}
+    except Exception as e:
+        log(f"ABORT {sym} FAILED after cancel — POSITION MAY BE UNPROTECTED: {e}")
+        tg_send(f"⚠️ ABORT {sym} close FAILED — check the position now! {e}")
+        return {"status": "abort_failed", "symbol": sym, "error": str(e)}
 
 
 def asset_meta(tc) -> dict:
@@ -710,7 +751,7 @@ def call_claude(context: dict) -> dict:
         "best action for this 5-minute cycle. Respond with ONLY a JSON object, no "
         "prose, no markdown fences.\n\n"
         f"{json.dumps(context, indent=2, default=str)}\n\n"
-        "Schema: {\"action\": \"hold|buy_stock|buy_option|multi_leg|iron_condor|close\", "
+        "Schema: {\"action\": \"hold|buy_stock|buy_option|multi_leg|iron_condor|close|abort\", "
         "\"symbol\": str|null, \"direction\": \"long|short\", "
         "\"option_symbol\": str|null, \"qty\": int, "
         "\"stop_price\": float|null, \"target_price\": float|null, "
@@ -1308,6 +1349,9 @@ def run_cycle(dry: bool = False):
             close_symbols(tc, do, dry)
         result = {"status": "close", "action": action,
                   "closed": do, "skipped_bracketed": skip}
+
+    if action == "abort":
+        result = abort_position(tc, state, decision, now, dry)
 
     if action in ("buy_stock", "buy_option", "multi_leg", "iron_condor"):
         ref_price = None

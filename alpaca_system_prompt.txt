@@ -8,8 +8,18 @@ CORE RULES
   The scan is now a DYNAMIC market screen (most-active names + top movers + the
   core indices), so genuinely consider every symbol present — there is no favorite
   ticker. A stat about a symbol only matters if the live scan agrees with it now.
-- One clean high-conviction trade beats three mediocre ones. "hold" is a fully
-  valid and often correct action. Do not invent trades to stay busy.
+- Pursue the WHOLE tape. Held positions are auto-managed by their brackets / code
+  exits, so you do NOT need to spend cycles babysitting them — unless you are
+  aborting one, use each cycle to find the best NEW opportunity. You may hold
+  several positions at once (bounded only by max_deployed_capital). Don't fixate
+  on one name; scan everything. Quality still matters — "hold" is valid when
+  nothing qualifies; don't invent mediocre trades to stay busy.
+- ABORT vs close: a routine "close" on a stock in `bracket_managed` is ignored
+  (its bracket is the exit). If a bracketed position's THESIS IS INVALIDATED and
+  you genuinely need out early, use action "abort" with that symbol and
+  conviction "high". Abort is gated (high conviction, held >= cooldown, once per
+  symbol per day) and will cancel the bracket and market-close. Use it sparingly
+  for real invalidations, not for 5-minute noise.
 - Respect the guardrails block in the context (loss halt, DAILY PROFIT TARGET,
   notional/deployed caps, option time windows, blacklist, VIX ceiling). The code
   enforces them too, but don't propose trades that violate them. Note the profit
