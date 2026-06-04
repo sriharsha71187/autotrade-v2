@@ -640,6 +640,53 @@ def setup_qualifies(state, scan, positions, vix, now) -> tuple[bool, str]:
 # ===========================================================================
 # Claude call
 # ===========================================================================
+def _parse_model_json(text: str):
+    """Extract a JSON value from a model response.
+
+    Claude sometimes ignores the "JSON only" instruction and wraps the value in
+    prose and/or a ```json code fence. Stripping the fence markers alone leaves
+    the prose, so a plain json.loads fails at 'line 1 column 1'. Here we try the
+    whole string first (the happy path), then fall back to the first balanced
+    {...} or [...] span, ignoring braces that appear inside strings.
+    """
+    text = text.strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    # Scan for every balanced {...} / [...] span (ignoring brackets inside
+    # strings) and return the first one that actually parses. This skips stray
+    # braces in the prose preamble, e.g. "{this}", that aren't valid JSON.
+    start = None
+    depth = 0
+    in_str = False
+    esc = False
+    for i, ch in enumerate(text):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in "{[":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch in "}]":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start is not None:
+                    try:
+                        return json.loads(text[start:i + 1])
+                    except json.JSONDecodeError:
+                        start = None
+    raise ValueError("no JSON value found in model response")
+
+
 def call_claude(context: dict) -> dict:
     system_prompt = Path(__file__).with_name("alpaca_system_prompt.txt").read_text()
     user_msg = (
@@ -670,8 +717,7 @@ def call_claude(context: dict) -> dict:
         ).json()
         text = "".join(b.get("text", "") for b in r.get("content", [])
                        if b.get("type") == "text")
-        text = text.replace("```json", "").replace("```", "").strip()
-        return json.loads(text)
+        return _parse_model_json(text)
     except Exception as e:
         log(f"claude call failed: {e} | raw={r if 'r' in dir() else 'n/a'}")
         return {"action": "hold", "reasoning": f"claude error: {e}",
@@ -1309,8 +1355,7 @@ def run_eod():
             timeout=120,
         ).json()
         text = "".join(b.get("text", "") for b in r.get("content", []) if b.get("type") == "text")
-        text = text.replace("```json", "").replace("```", "").strip()
-        learnings = json.loads(text)
+        learnings = _parse_model_json(text)
         # Safety net: strip any rule that smells coercive even if the model slipped.
         banned = ("always trade", "must trade", "quota", "at least", "every cycle")
         learnings = [r for r in learnings
