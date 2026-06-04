@@ -721,7 +721,8 @@ def honest_trade_stats(tc) -> dict:
         sym = o.symbol
         qty = float(o.filled_qty or 0)
         price = float(o.filled_avg_price or 0)
-        signed = qty * price * (1 if str(o.side) == "OrderSide.SELL" else -1)
+        mult = 100 if parse_occ(sym) else 1   # options trade in 100-share contracts
+        signed = qty * price * mult * (1 if str(o.side) == "OrderSide.SELL" else -1)
         by_symbol.setdefault(sym, {"net_cash_flow": 0.0, "fills": 0})
         by_symbol[sym]["net_cash_flow"] += signed
         by_symbol[sym]["fills"] += 1
@@ -1693,7 +1694,8 @@ def compute_outcomes(tc=None, day=None) -> dict:
         if qty <= 0 or price <= 0:
             continue
         side = "sell" if "SELL" in str(o.side).upper() else "buy"
-        signed = qty * price * (1 if side == "sell" else -1)   # sell + / buy −
+        mult = 100 if parse_occ(o.symbol) else 1               # options are ×100/contract
+        signed = qty * price * mult * (1 if side == "sell" else -1)   # sell + / buy −
         fills.append({"symbol": o.symbol, "side": side, "qty": qty, "price": price,
                       "type": str(getattr(o, "type", "")).lower(),
                       "class": str(getattr(o, "order_class", "")).lower(),
