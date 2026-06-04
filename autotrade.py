@@ -841,7 +841,35 @@ def manage_multileg(tc, odc, state, dry):
             entry_net = float(pos["entry_net"])     # $; + credit received, − debit paid
             symbols = [l["symbol"] for l in legs]
             if held is not None and not any(s in held for s in symbols):
-                log(f"multileg {symbols} no longer held — dropping from tracking")
+                # Legs aren't positions yet. If the entry limit order is still
+                # working, keep tracking it (and cancel if it's gone stale) so a
+                # later fill is still managed. Only drop when the order is truly
+                # gone (canceled/expired/rejected/filled-then-closed) or absent.
+                oid = pos.get("order_id")
+                status = ""
+                if oid:
+                    try:
+                        status = str(getattr(tc.get_order_by_id(oid), "status", "")).lower()
+                    except Exception:
+                        status = ""
+                working = any(k in status for k in
+                              ("new", "accept", "pending", "partial", "held", "replaced"))
+                if working:
+                    age_min = 1e9
+                    try:
+                        age_min = (et_now() - datetime.fromisoformat(pos["opened"])).total_seconds() / 60
+                    except Exception:
+                        pass
+                    if age_min > cfg.MULTILEG_FILL_TIMEOUT_MIN:
+                        log(f"multileg entry {oid} unfilled {age_min:.0f}m — canceling")
+                        try:
+                            tc.cancel_order_by_id(oid)
+                        except Exception as e:
+                            log(f"multileg cancel failed: {e}")
+                        continue  # drop tracking after cancel
+                    still.append(pos)   # order still working; wait for the fill
+                    continue
+                log(f"multileg {symbols} not held and order not working — dropping")
                 continue
             q = odc.get_option_latest_quote(OptionLatestQuoteRequest(symbol_or_symbols=symbols))
             cost_to_close = 0.0
@@ -1301,7 +1329,7 @@ def run_cycle(dry: bool = False):
                 state.setdefault("active_multileg", []).append(
                     {"legs": [{"symbol": l["symbol"], "side": l["side"]} for l in legs],
                      "qty": mlqty, "entry_net": net_price * 100 * mlqty,
-                     "opened": now.isoformat()})
+                     "order_id": str(o.id), "opened": now.isoformat()})
     except Exception as e:
         log(f"order placement failed for {action}: {e}")
         tg_send(f"⚠️ Order failed ({action}): {e}")

@@ -74,6 +74,7 @@ OPTION_STOP_PCT        = -0.50     # close a long option down 50% from entry
 OPTION_TARGET_PCT      = 1.00      # take profit up 100% from entry
 OPTION_EOD_CLOSE_HOUR  = 15        # force-close long options at/after this ET time
 OPTION_EOD_CLOSE_MIN   = 45        # ...15:45 ET (and any 0DTE before expiry)
+MULTILEG_FILL_TIMEOUT_MIN = 15     # cancel a multi-leg entry that hasn't filled in N min
 
 # ---- dynamic universe (screener) -------------------------------------------
 # Each cycle the universe = core indices + a base watchlist + live screener
