@@ -373,6 +373,50 @@ def build_universe(tc) -> tuple[list[str], dict]:
     return universe, meta
 
 
+def _intraday_indicators(idf, last) -> dict:
+    """Anti-chase indicators from a 1-min OHLCV frame: VWAP extension, % off the
+    day's high/low, intraday RSI(14) on 5-min closes, and move from the open.
+    Each is None on any failure so callers never break / never falsely block."""
+    out = {"vwap_ext": None, "off_hod": None, "off_lod": None,
+           "rsi": None, "from_open": None}
+    try:
+        h = idf["High"].astype(float)
+        l = idf["Low"].astype(float)
+        c = idf["Close"].astype(float).dropna()
+        v = idf["Volume"].astype(float).fillna(0)
+        if len(c) < 5:
+            return out
+        typ = (h + l + c) / 3.0
+        cumv = v.cumsum()
+        vwap = (typ * v).cumsum() / cumv.replace(0, float("nan"))
+        vwap_now = float(vwap.dropna().iloc[-1])
+        if vwap_now > 0:
+            out["vwap_ext"] = round((last - vwap_now) / vwap_now, 4)
+        hod, lod = float(h.max()), float(l.min())
+        if hod > 0:
+            out["off_hod"] = round((hod - last) / hod, 4)
+        if lod > 0:
+            out["off_lod"] = round((last - lod) / lod, 4)
+        op = float(idf["Open"].astype(float).dropna().iloc[0])
+        if op > 0:
+            out["from_open"] = round((last - op) / op * 100, 2)
+        try:
+            c5 = c.resample("5min").last().dropna()
+        except Exception:
+            c5 = c
+        if len(c5) >= 15:
+            delta = c5.diff().dropna()
+            gain = delta.clip(lower=0).rolling(14).mean()
+            loss = (-delta.clip(upper=0)).rolling(14).mean()
+            rs = gain / loss.replace(0, 1e-9)
+            r = float((100 - 100 / (1 + rs)).iloc[-1])
+            if r == r:  # not NaN
+                out["rsi"] = round(r, 1)
+    except Exception:
+        pass
+    return out
+
+
 def signal_scan(symbols: list[str]) -> list[dict]:
     """Rank tickers by today's % move using yfinance (batched). Returns list of
     {symbol, last, day_pct, signal} sorted by absolute move. 'signal' is a coarse
@@ -411,6 +455,7 @@ def signal_scan(symbols: list[str]) -> list[dict]:
             if prev_close <= 0:
                 continue
             last = None
+            idf = None
             if intraday is not None:
                 try:
                     idf = intraday[s] if len(symbols) > 1 else intraday
@@ -418,7 +463,7 @@ def signal_scan(symbols: list[str]) -> list[dict]:
                     if len(iclose):
                         last = float(iclose.iloc[-1])
                 except Exception:
-                    last = None
+                    last, idf = None, None
             if last is None:
                 last = float(dclose.iloc[-1])  # fallback: latest daily
             pct = (last - prev_close) / prev_close * 100.0
@@ -432,8 +477,11 @@ def signal_scan(symbols: list[str]) -> list[dict]:
                 sig = "BEAR"
             else:
                 sig = "NEUTRAL"
-            out.append({"symbol": s, "last": round(last, 2),
-                        "day_pct": round(pct, 2), "signal": sig})
+            row = {"symbol": s, "last": round(last, 2),
+                   "day_pct": round(pct, 2), "signal": sig}
+            if idf is not None:
+                row.update(_intraday_indicators(idf, last))  # vwap_ext, off_hod, off_lod, rsi, from_open
+            out.append(row)
         except Exception:
             continue
     out.sort(key=lambda r: abs(r["day_pct"]), reverse=True)
@@ -940,6 +988,17 @@ def manage_multileg(tc, odc, state, dry):
                     continue
                 log(f"multileg {symbols} not held and order not working — dropping")
                 continue
+            # EOD force-close: a 0DTE/short spread must not ride into expiration
+            # (assignment / pin risk). Close at the same EOD time as single options.
+            _n = et_now()
+            if (_n.hour > cfg.OPTION_EOD_CLOSE_HOUR or
+                    (_n.hour == cfg.OPTION_EOD_CLOSE_HOUR and _n.minute >= cfg.OPTION_EOD_CLOSE_MIN)):
+                log(f"MULTILEG EOD close {symbols}")
+                tg_send("🧩 EOD-closing spread.")
+                close_symbols(tc, symbols, dry)
+                if dry:
+                    still.append(pos)
+                continue
             q = odc.get_option_latest_quote(OptionLatestQuoteRequest(symbol_or_symbols=symbols))
             cost_to_close = 0.0
             incomplete = False
@@ -1007,6 +1066,30 @@ def manage_options(tc, odc, state, dry):
         if not sym:
             continue
         if held is not None and sym not in held:
+            # Not a position yet. If the marketable-limit entry is still working,
+            # keep tracking (cancel if stale); only drop when the order is gone.
+            oid = o.get("order_id")
+            status = ""
+            if oid:
+                try:
+                    status = str(getattr(tc.get_order_by_id(oid), "status", "")).lower()
+                except Exception:
+                    status = ""
+            if any(k in status for k in ("new", "accept", "pending", "partial", "held", "replaced")):
+                age_min = 1e9
+                try:
+                    age_min = (now - datetime.fromisoformat(o["opened"])).total_seconds() / 60
+                except Exception:
+                    pass
+                if age_min > cfg.MULTILEG_FILL_TIMEOUT_MIN:
+                    log(f"option entry {oid} unfilled {age_min:.0f}m — canceling")
+                    try:
+                        tc.cancel_order_by_id(oid)
+                    except Exception as e:
+                        log(f"option cancel failed: {e}")
+                    continue
+                still.append(o)   # still working; wait for the fill
+                continue
             log(f"option {sym} no longer held — dropping from tracking")
             continue  # expired/exercised/closed already
         meta = parse_occ(sym)
@@ -1031,12 +1114,71 @@ def manage_options(tc, odc, state, dry):
     state["active_options"] = still
 
 
+def flatten_stocks_eod(tc, dry):
+    """At/after 15:50 ET, flatten any open STOCK position (cancel its bracket
+    orders, then market-close). DAY bracket legs die at the close, so a stock left
+    open overnight would be unprotected — and this is an intraday bot. (True
+    overnight stock holds would need GTC brackets; not supported yet.)"""
+    now = et_now()
+    if not (now.hour > cfg.OPTION_EOD_CLOSE_HOUR or
+            (now.hour == cfg.OPTION_EOD_CLOSE_HOUR and now.minute >= cfg.STOCK_EOD_CLOSE_MIN)):
+        return
+    try:
+        positions = tc.get_all_positions()
+    except Exception as e:
+        log(f"eod flatten: positions fetch failed: {e}")
+        return
+    for p in positions:
+        if "option" in str(getattr(p, "asset_class", "")).lower():
+            continue  # options/spreads handled by their own EOD managers
+        sym = p.symbol
+        if dry:
+            log(f"[DRY] would EOD-flatten stock {sym}")
+            continue
+        try:
+            for o in tc.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN, limit=100)):
+                if o.symbol == sym and not parse_occ(o.symbol):
+                    tc.cancel_order_by_id(o.id)
+            time.sleep(0.5)
+            tc.close_position(sym)
+            log(f"EOD FLATTEN stock {sym}")
+            tg_send(f"🌆 EOD-flattened {sym}.")
+        except Exception as e:
+            log(f"eod flatten {sym} failed: {e}")
+
+
 # ===========================================================================
 # Guardrails applied to a model decision before execution
 # ===========================================================================
+def anti_chase_reason(bullish, row):
+    """A reason to BLOCK an extended momentum entry (buying the top / selling the
+    bottom), or None. bullish=True for long/call, False for short/put. Indicators
+    that are missing are skipped (can't assess -> don't block)."""
+    if not row:
+        return None
+    ext, rsi_v = row.get("vwap_ext"), row.get("rsi")
+    if bullish:
+        if ext is not None and ext > cfg.ANTI_CHASE_MAX_VWAP_EXT:
+            return f"chasing: {ext:+.1%} above VWAP"
+        off = row.get("off_hod")
+        if off is not None and off < cfg.ANTI_CHASE_MIN_OFF_EXTREME:
+            return f"chasing: {off:.1%} off high-of-day (at the top)"
+        if rsi_v is not None and rsi_v > cfg.RSI_OVERBOUGHT:
+            return f"chasing: intraday RSI {rsi_v} overbought"
+    else:
+        if ext is not None and ext < -cfg.ANTI_CHASE_MAX_VWAP_EXT:
+            return f"chasing: {ext:+.1%} below VWAP"
+        off = row.get("off_lod")
+        if off is not None and off < cfg.ANTI_CHASE_MIN_OFF_EXTREME:
+            return f"chasing: {off:.1%} off low-of-day (at the bottom)"
+        if rsi_v is not None and rsi_v < cfg.RSI_OVERSOLD:
+            return f"chasing: intraday RSI {rsi_v} oversold"
+    return None
+
+
 def passes_guardrails(decision, state, acct, now, ref_price=None,
                       offered_options=None, assets=None,
-                      option_spread_pct=None) -> tuple[bool, str]:
+                      option_spread_pct=None, scan_row=None) -> tuple[bool, str]:
     """ref_price: current per-share price of the asset being traded — the stock
     last price for buy_stock, the option premium per share for buy_option. Used
     for the notional and total-deployed-capital caps.
@@ -1113,6 +1255,10 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
                                f"(got stop={stop}, target={target})")
             if assets and not assets.get(sym, {}).get("shortable", False):
                 return False, f"{sym} is not shortable"
+        # Anti-chase: don't buy the top / short the bottom of an extended move.
+        cr = anti_chase_reason(direction == "long", scan_row)
+        if cr:
+            return False, f"{sym} {cr}"
         notional = qty * ref_price
         if notional > cfg.PER_TRADE_NOTIONAL_CAP:
             return False, f"notional {notional:.0f} > per-trade cap {cfg.PER_TRADE_NOTIONAL_CAP}"
@@ -1137,7 +1283,15 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
         if option_spread_pct > cfg.OPTION_MAX_SPREAD_PCT:
             return False, (f"option spread {option_spread_pct:.0%} > "
                            f"{cfg.OPTION_MAX_SPREAD_PCT:.0%} cap (illiquid)")
-        notional = qty * ref_price * 100  # 100 shares per contract
+        # Anti-chase on the underlying: a call into an extended up-move (or a put
+        # into an extended down-move) is buying the top — block it.
+        bullish = (parse_occ(osym) or {}).get("type") == "call"
+        cr = anti_chase_reason(bullish, scan_row)
+        if cr:
+            return False, f"{sym or osym} {cr}"
+        # Size on the ASK we will actually pay (mid * (1 + spread/2)), not mid.
+        ask_est = ref_price * (1 + option_spread_pct / 2)
+        notional = qty * ask_est * 100  # 100 shares per contract
         if notional > cfg.PER_OPTION_NOTIONAL_CAP:
             return False, f"option notional {notional:.0f} > cap {cfg.PER_OPTION_NOTIONAL_CAP}"
         if deployed + notional > cfg.MAX_DEPLOYED_CAPITAL:
@@ -1169,6 +1323,15 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
         missing = [s for s in leg_syms if s not in offered_options]
         if missing:
             return False, f"legs not in this cycle's offered chain: {missing}"
+        # All legs must share ONE underlying and ONE expiry — Alpaca rejects a
+        # mixed MLEG, and the risk math assumes a single-name single-expiry spread.
+        metas = [parse_occ(s) for s in leg_syms]
+        if any(m is None for m in metas):
+            return False, "a leg is not a valid option symbol"
+        if len({m["underlying"] for m in metas}) != 1:
+            return False, "multi-leg legs span multiple underlyings"
+        if len({m["expiry"] for m in metas}) != 1:
+            return False, "multi-leg legs span multiple expiries"
         risk = multileg_risk(legs, net_price, mlqty)
         if risk is None:
             return False, "undefined-risk (naked short) multi-leg blocked"
@@ -1290,9 +1453,11 @@ def run_cycle(dry: bool = False):
     if state.get("start_equity") is None:
         state["start_equity"] = acct["equity"]  # first cycle of the day
 
-    # 2. Manage any open spreads + long options (code-enforced exits)
+    # 2. Manage any open spreads + long options (code-enforced exits), and flatten
+    #    stocks at EOD so nothing rides overnight with an expiring DAY bracket.
     manage_multileg(tc, odc, state, dry)
     manage_options(tc, odc, state, dry)
+    flatten_stocks_eod(tc, dry)
 
     # 2b. Daily loss halt — latches for the rest of the day and alerts once.
     # Skipped while the OVERRIDE day-flag is on (user chose to keep trading).
@@ -1394,15 +1559,15 @@ def run_cycle(dry: bool = False):
         ref_price = None
         opt_ask = None
         opt_spread = None
+        scan_row = next((r for r in scan if r["symbol"] == decision.get("symbol")), None)
         if action == "buy_stock":
-            ref_price = next((r["last"] for r in scan
-                              if r["symbol"] == decision.get("symbol")), None)
+            ref_price = scan_row["last"] if scan_row else None
         elif action == "buy_option":
             bid, opt_ask, ref_price = option_quote(odc, decision.get("option_symbol"))
             if bid and opt_ask and ref_price:
                 opt_spread = (opt_ask - bid) / ref_price
         ok, reason = passes_guardrails(decision, state, acct, now, ref_price,
-                                       offered_options, assets, opt_spread)
+                                       offered_options, assets, opt_spread, scan_row)
         if not ok:
             log(f"guardrail blocked {action}: {reason}")
             result = {"status": "blocked", "action": action, "reason": reason}

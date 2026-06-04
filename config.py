@@ -74,8 +74,10 @@ VIX_CONDOR_CEILING     = 25.0
 # ---- single-leg option exit management (code-enforced, like condors) --------
 OPTION_STOP_PCT        = -0.50     # close a long option down 50% from entry
 OPTION_TARGET_PCT      = 1.00      # take profit up 100% from entry
-OPTION_EOD_CLOSE_HOUR  = 15        # force-close long options at/after this ET time
+OPTION_EOD_CLOSE_HOUR  = 15        # force-close long options + spreads at/after this ET time
 OPTION_EOD_CLOSE_MIN   = 45        # ...15:45 ET (and any 0DTE before expiry)
+STOCK_EOD_CLOSE_MIN    = 50        # flatten stocks at 15:50 ET (DAY brackets die at the close,
+                                   # so don't leave a stock unprotected overnight)
 MULTILEG_FILL_TIMEOUT_MIN = 15     # cancel a multi-leg entry that hasn't filled in N min
 
 # ---- dynamic universe (screener) -------------------------------------------
@@ -92,6 +94,13 @@ UNIVERSE_MAX       = 60      # cap symbols sent to the per-cycle signal scan
 # momentum setup. Drop anything whose absolute day move exceeds this — real
 # gappers rarely clear it, circuit-breaker pumps always do.
 MOMENTUM_MAX_DAY_PCT = 30.0
+
+# ---- anti-chase: don't buy the top of an already-extended move ---------------
+# A momentum entry should be a pullback toward VWAP, not a purchase at the high.
+ANTI_CHASE_MAX_VWAP_EXT = 0.04   # block long if >4% above VWAP (short if >4% below)
+ANTI_CHASE_MIN_OFF_EXTREME = 0.01  # block if within 1% of the day's high (long) / low (short)
+RSI_OVERBOUGHT = 80.0            # block longs when intraday RSI above this
+RSI_OVERSOLD   = 20.0            # block shorts when intraday RSI below this
 # Leveraged / inverse ETFs decay and whipsaw; exclude them from the scan so the
 # bot doesn't chase an inverse-ETF spike that's just the underlying selling off.
 LEVERAGED_ETF_EXCLUDE = {

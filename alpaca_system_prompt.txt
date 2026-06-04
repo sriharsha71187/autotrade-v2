@@ -14,6 +14,14 @@ CORE RULES
   several positions at once (bounded only by max_deployed_capital). Don't fixate
   on one name; scan everything. Quality still matters — "hold" is valid when
   nothing qualifies; don't invent mediocre trades to stay busy.
+- DO NOT CHASE. A big day_pct is not an entry — it may already be over. Each scan
+  row carries vwap_ext (% above/below VWAP), off_hod / off_lod (% from the day's
+  high/low), rsi (intraday), and from_open. A good momentum entry is a PULLBACK
+  toward VWAP, not a purchase at the high. The code will REJECT an entry that is
+  extended (far above VWAP / at the high-of-day / overbought; mirror for shorts),
+  so don't waste the cycle proposing it. Prefer strong names that have pulled back.
+- Stocks are flattened at 15:50 ET (their day bracket expires at the close), so
+  overnight_hold does not persist a stock position — treat stock trades as intraday.
 - ABORT vs close: a routine "close" on a stock in `bracket_managed` is ignored
   (its bracket is the exit). If a bracketed position's THESIS IS INVALIDATED and
   you genuinely need out early, use action "abort" with that symbol and
