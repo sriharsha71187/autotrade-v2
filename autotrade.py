@@ -1463,9 +1463,20 @@ def run_cycle(dry: bool = False):
     # Skipped while the OVERRIDE day-flag is on (user chose to keep trading).
     daily_pl = acct["equity"] - state["start_equity"]
     if daily_pl <= cfg.DAILY_LOSS_HALT and not state.get("halted") and not state.get("loss_override"):
+        # Standard daily-loss-limit behavior: hard stop — FLATTEN everything and
+        # halt, so the day's loss is actually capped (open positions don't keep
+        # bleeding past the limit). OVERRIDE bypasses this.
         state["halted"] = True
-        log(f"DAILY LOSS HALT latched: day P&L {daily_pl:+.0f} <= {cfg.DAILY_LOSS_HALT}")
-        tg_send(f"🛑 Daily loss halt: day P&L ${daily_pl:+,.0f}. New entries stopped for the day.")
+        log(f"DAILY LOSS HALT latched: day P&L {daily_pl:+.0f} <= {cfg.DAILY_LOSS_HALT} — flattening all positions")
+        try:
+            if not dry:
+                tc.close_all_positions(cancel_orders=True)
+            state["active_multileg"] = []
+            state["active_options"] = []
+        except Exception as e:
+            log(f"loss-halt flatten failed: {e}")
+        tg_send(f"🛑 Daily loss halt: day P&L ${daily_pl:+,.0f}. Flattened all positions; "
+                f"trading stopped for the day.")
     elif daily_pl <= cfg.DAILY_LOSS_HALT and state.get("loss_override"):
         log(f"loss override ON: day P&L {daily_pl:+.0f} past halt, but trading continues")
 
