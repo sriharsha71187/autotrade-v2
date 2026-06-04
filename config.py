@@ -19,7 +19,8 @@ ENV_FILE = HOME / ".autotrade.env"
 
 # ---- file locations (everything in ~/) -------------------------------------
 STATE_FILE      = HOME / "autotrade_state.json"
-SNAPSHOT_DIR    = HOME / "autotrade_snapshots"
+SNAPSHOT_DIR    = HOME / "autotrade_snapshots"      # per-cycle decision + result records
+OUTCOMES_DIR    = HOME / "autotrade_outcomes"       # daily realized-P&L / fills capture
 LEARNINGS_FILE  = HOME / "autotrade_learnings.json"
 COMMAND_FILE    = HOME / "autotrade_command.txt"
 LOG_FILE        = HOME / "autotrade.log"

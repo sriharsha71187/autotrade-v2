@@ -4,7 +4,8 @@ autotrade.py — single-entry autonomous paper-trading bot.
 
 Usage:
     python3 autotrade.py cycle          # one 5-min trading cycle (what launchd runs)
-    python3 autotrade.py eod            # end-of-day learning pass (run after 4:05pm ET)
+    python3 autotrade.py eod            # end-of-day LEARNING pass (LLM rules; run manually)
+    python3 autotrade.py outcomes       # end-of-day OUTCOME capture (read-only, no LLM)
     python3 autotrade.py cycle --dry-run  # build context + decide, but place NO orders
     python3 autotrade.py status         # print current state to terminal
 
@@ -1106,16 +1107,23 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
 # ===========================================================================
 # Snapshot for EOD replay
 # ===========================================================================
-def write_snapshot(context: dict, decision: dict):
+def write_snapshot(context: dict, decision: dict, result: dict = None):
+    """One JSONL record per Claude cycle: market context, the FULL decision, and
+    how it resolved (result: submitted/blocked/order_failed/hold + order_id/reason).
+    This is the raw material for later outcome analysis — decisions are useless to
+    learn from unless we also record what was actually done about them."""
     cfg.SNAPSHOT_DIR.mkdir(exist_ok=True)
     day = et_now().strftime("%Y-%m-%d")
     f = cfg.SNAPSHOT_DIR / f"{day}.jsonl"
+    dkeys = ("action", "symbol", "direction", "qty", "stop_price", "target_price",
+             "option_symbol", "legs", "net_price", "condor_legs", "net_credit",
+             "overnight_hold", "conviction", "reasoning")
     rec = {"t": et_now().isoformat(),
            "scan": context.get("signal_scan"),
            "vix": context.get("vix"),
            "positions": context.get("positions"),
-           "decision": {k: decision.get(k) for k in
-                        ("action", "symbol", "conviction", "reasoning")}}
+           "decision": {k: decision.get(k) for k in dkeys},
+           "result": result or {}}
     with open(f, "a") as fh:
         fh.write(json.dumps(rec, default=str) + "\n")
 
@@ -1266,12 +1274,15 @@ def run_cycle(dry: bool = False):
     decision = call_claude(context)
     log(f"decision: {decision.get('action')} {decision.get('symbol') or ''} "
         f"conv={decision.get('conviction')} :: {decision.get('reasoning','')[:140]}")
-    write_snapshot(context, decision)
 
-    # 5. Execute (guardrails first)
+    # 5. Execute (guardrails first). `result` records how the decision resolved so
+    # the snapshot can later be joined to outcomes. Single exit: write once at end.
     action = decision.get("action", "hold")
+    result = {"status": "hold", "action": action}
     if decision.get("close_symbols"):
         close_symbols(tc, decision["close_symbols"], dry)
+        result = {"status": "close", "action": action,
+                  "close_symbols": decision["close_symbols"]}
 
     if action in ("buy_stock", "buy_option", "multi_leg", "iron_condor"):
         ref_price = None
@@ -1284,65 +1295,127 @@ def run_cycle(dry: bool = False):
                                        offered_options, assets)
         if not ok:
             log(f"guardrail blocked {action}: {reason}")
-            state["last_action"] = f"blocked: {reason}"
-            save_state(state)
-            return
+            result = {"status": "blocked", "action": action, "reason": reason}
+        else:
+            # Order submission wrapped so a rejected order is logged and the cycle
+            # still finishes cleanly instead of crashing the whole run.
+            try:
+                order_id = None
+                if action == "buy_stock":
+                    direction = (decision.get("direction") or "long").lower()
+                    side = "buy" if direction == "long" else "sell"
+                    o = place_stock_bracket(tc, decision["symbol"], int(decision["qty"]),
+                                            side, decision["stop_price"],
+                                            decision["target_price"], dry)
+                    order_id = str(o.id) if o else None
+                    state.setdefault("last_entry_time", {})[decision["symbol"]] = now.isoformat()
+                elif action == "buy_option":
+                    # Single-leg option market order, sized by qty (contracts).
+                    osym, oqty = decision["option_symbol"], int(decision["qty"])
+                    if not dry:
+                        req = MarketOrderRequest(symbol=osym, qty=oqty,
+                                                 side=OrderSide.BUY, time_in_force=TimeInForce.DAY)
+                        o = tc.submit_order(order_data=req)
+                        order_id = str(o.id)
+                        log(f"OPTION buy {oqty} {osym} id={o.id}")
+                        tg_send(f"📊 Bought {oqty}x {osym}.")
+                        state.setdefault("active_options", []).append(
+                            {"symbol": osym, "qty": oqty, "entry": ref_price,
+                             "opened": now.isoformat()})
+                    else:
+                        log(f"[DRY] would buy option {oqty} {osym} (entry≈{ref_price})")
+                    if decision.get("symbol"):
+                        state.setdefault("last_entry_time", {})[decision["symbol"]] = now.isoformat()
+                elif action in ("multi_leg", "iron_condor"):
+                    if action == "iron_condor":
+                        legs = decision["condor_legs"]
+                        net_price = abs(float(decision["net_credit"]))   # credit (+)
+                        mlqty = 1
+                    else:
+                        legs = decision["legs"]
+                        net_price = float(decision["net_price"])         # signed
+                        mlqty = int(decision.get("qty") or 1) or 1
+                    o = place_multi_leg(tc, legs, net_price, mlqty, dry)
+                    if o and not dry:
+                        order_id = str(o.id)
+                        # entry_net in $ (signed): + credit collected, − debit paid.
+                        state.setdefault("active_multileg", []).append(
+                            {"legs": [{"symbol": l["symbol"], "side": l["side"]} for l in legs],
+                             "qty": mlqty, "entry_net": net_price * 100 * mlqty,
+                             "order_id": str(o.id), "opened": now.isoformat()})
+                result = {"status": "dry_run" if dry else "submitted", "action": action,
+                          "order_id": order_id, "ref_price": ref_price}
+            except Exception as e:
+                log(f"order placement failed for {action}: {e}")
+                tg_send(f"⚠️ Order failed ({action}): {e}")
+                result = {"status": "order_failed", "action": action, "error": str(e)}
 
-    # Order submission. Wrapped so a single rejected order is logged and the cycle
-    # still finishes cleanly (state saved) instead of crashing the whole run.
-    try:
-        if action == "buy_stock":
-            direction = (decision.get("direction") or "long").lower()
-            side = "buy" if direction == "long" else "sell"
-            place_stock_bracket(tc, decision["symbol"], int(decision["qty"]), side,
-                                decision["stop_price"], decision["target_price"], dry)
-            state.setdefault("last_entry_time", {})[decision["symbol"]] = now.isoformat()
-        elif action == "buy_option":
-            # Single-leg option market order, sized by qty (contracts).
-            osym, oqty = decision["option_symbol"], int(decision["qty"])
-            if not dry:
-                req = MarketOrderRequest(symbol=osym, qty=oqty,
-                                         side=OrderSide.BUY, time_in_force=TimeInForce.DAY)
-                o = tc.submit_order(order_data=req)
-                log(f"OPTION buy {oqty} {osym} id={o.id}")
-                tg_send(f"📊 Bought {oqty}x {osym}.")
-                # Track it so manage_options can enforce stop/target/EOD exits.
-                state.setdefault("active_options", []).append(
-                    {"symbol": osym, "qty": oqty, "entry": ref_price,
-                     "opened": now.isoformat()})
-            else:
-                log(f"[DRY] would buy option {oqty} {osym} (entry≈{ref_price})")
-            if decision.get("symbol"):
-                state.setdefault("last_entry_time", {})[decision["symbol"]] = now.isoformat()
-        elif action in ("multi_leg", "iron_condor"):
-            if action == "iron_condor":
-                legs = decision["condor_legs"]
-                net_price = abs(float(decision["net_credit"]))   # credit (+)
-                mlqty = 1
-            else:
-                legs = decision["legs"]
-                net_price = float(decision["net_price"])         # signed
-                mlqty = int(decision.get("qty") or 1) or 1
-            o = place_multi_leg(tc, legs, net_price, mlqty, dry)
-            if o and not dry:
-                # entry_net in $ (signed): + credit collected, − debit paid.
-                state.setdefault("active_multileg", []).append(
-                    {"legs": [{"symbol": l["symbol"], "side": l["side"]} for l in legs],
-                     "qty": mlqty, "entry_net": net_price * 100 * mlqty,
-                     "order_id": str(o.id), "opened": now.isoformat()})
-    except Exception as e:
-        log(f"order placement failed for {action}: {e}")
-        tg_send(f"⚠️ Order failed ({action}): {e}")
-        state["last_action"] = f"order failed: {e}"
-        save_state(state)
-        return
-
-    if decision.get("overnight_hold"):
+    if decision.get("overnight_hold") and result.get("status") in ("submitted", "dry_run"):
         log(f"OVERNIGHT HOLD reasoning: {decision.get('reasoning','')}")
         tg_send(f"🌙 Holding overnight: {decision.get('reasoning','')[:200]}")
 
-    state["last_action"] = f"{action} {decision.get('symbol') or ''}".strip()
+    # Single terminal write: full decision + how it resolved, then persist state.
+    write_snapshot(context, decision, result)
+    if result["status"] == "blocked":
+        state["last_action"] = f"blocked: {result['reason']}"
+    elif result["status"] == "order_failed":
+        state["last_action"] = f"order failed: {result['error']}"
+    else:
+        state["last_action"] = f"{action} {decision.get('symbol') or ''}".strip()
     save_state(state)
+
+
+# ===========================================================================
+# Outcome capture (read-only; NO model call, NO rule generation)
+# ===========================================================================
+def compute_outcomes(tc=None, day=None) -> dict:
+    """Record what actually happened today so a real sample accumulates for later
+    analysis: realized cash-flow P&L per symbol, every fill (with type/class so
+    target-vs-stop exits are inferable), and end-of-day equity. Writes
+    OUTCOMES_DIR/<day>.json. Read-only — does not trade, call the model, or write
+    learnings; that stays off until the sample is big enough to mean something."""
+    tc = tc or trading_client()
+    day = day or et_now().strftime("%Y-%m-%d")
+    fills, by_symbol = [], {}
+    try:
+        orders = tc.get_orders(filter=GetOrdersRequest(
+            status=QueryOrderStatus.CLOSED, limit=500))
+    except Exception as e:
+        log(f"outcomes order fetch failed: {e}")
+        orders = []
+    for o in orders:
+        if not o.filled_at or o.filled_at.astimezone(ET).date().isoformat() != day:
+            continue
+        qty = float(o.filled_qty or 0)
+        price = float(o.filled_avg_price or 0)
+        if qty <= 0 or price <= 0:
+            continue
+        side = "sell" if "SELL" in str(o.side).upper() else "buy"
+        signed = qty * price * (1 if side == "sell" else -1)   # sell + / buy −
+        fills.append({"symbol": o.symbol, "side": side, "qty": qty, "price": price,
+                      "type": str(getattr(o, "type", "")).lower(),
+                      "class": str(getattr(o, "order_class", "")).lower(),
+                      "filled_at": str(o.filled_at), "order_id": str(o.id)})
+        d = by_symbol.setdefault(o.symbol, {"realized_cashflow": 0.0, "fills": 0,
+                                            "bought_qty": 0.0, "sold_qty": 0.0})
+        d["realized_cashflow"] += signed
+        d["fills"] += 1
+        d["sold_qty" if side == "sell" else "bought_qty"] += qty
+    equity = None
+    try:
+        equity = account_snapshot(tc)["equity"]
+    except Exception:
+        pass
+    snap_file = cfg.SNAPSHOT_DIR / f"{day}.jsonl"
+    n_snaps = len(snap_file.read_text().splitlines()) if snap_file.exists() else 0
+    rec = {"day": day, "equity_end": equity, "fills": fills, "by_symbol": by_symbol,
+           "snapshots": n_snaps,
+           "note": "realized_cashflow = sell+/buy− proxy; ≈ realized P&L only for "
+                   "symbols fully closed today (open positions distort it)."}
+    cfg.OUTCOMES_DIR.mkdir(exist_ok=True)
+    (cfg.OUTCOMES_DIR / f"{day}.json").write_text(json.dumps(rec, indent=2, default=str))
+    log(f"OUTCOMES {day}: {len(fills)} fills across {len(by_symbol)} symbols; equity={equity}")
+    return rec
 
 
 # ===========================================================================
@@ -1423,6 +1496,8 @@ def main():
             run_cycle(dry=dry)
         elif mode == "eod":
             run_eod()
+        elif mode == "outcomes":
+            compute_outcomes()
         elif mode == "status":
             print(status_text(trading_client(), load_state()))
         else:

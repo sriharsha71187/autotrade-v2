@@ -18,7 +18,11 @@ autotrade_assets.json
 autotrade_learnings.json
 autotrade_command.txt
 autotrade.log
+autotrade_error.log
 autotrade_snapshots/
+autotrade_outcomes/
+autotrade_dryrun_report.md
+autotrade_dryrun_capture.log
 
 # macOS
 .DS_Store
