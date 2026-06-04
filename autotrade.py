@@ -202,12 +202,19 @@ def tg_poll_commands(state: dict) -> list[str]:
 # Market hours
 # ===========================================================================
 def is_market_open(tc) -> bool:
-    """Authoritative check via Alpaca clock (handles holidays/half-days)."""
-    try:
-        return bool(tc.get_clock().is_open)
-    except Exception as e:
-        log(f"clock check failed, assuming closed: {e}")
-        return False
+    """Authoritative check via Alpaca clock (handles holidays/half-days). Retries a
+    few times before assuming closed — a transient network blip (e.g. Wi-Fi still
+    reconnecting right after wake) should not make the bot skip a live cycle."""
+    last_err = None
+    for attempt in range(3):
+        try:
+            return bool(tc.get_clock().is_open)
+        except Exception as e:
+            last_err = e
+            if attempt < 2:
+                time.sleep(2 * (attempt + 1))  # 2s, then 4s backoff
+    log(f"clock check failed after retries, assuming closed: {last_err}")
+    return False
 
 
 def et_now() -> datetime:
@@ -823,24 +830,29 @@ def call_claude(context: dict) -> dict:
         "\"close_symbols\": [..], \"overnight_hold\": bool, "
         "\"conviction\": \"low|medium|high\", \"reasoning\": str}"
     )
-    try:
-        r = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={"x-api-key": cfg.ANTHROPIC_API_KEY,
-                     "anthropic-version": "2023-06-01",
-                     "content-type": "application/json"},
-            json={"model": cfg.CLAUDE_MODEL, "max_tokens": 1200,
-                  "system": system_prompt,
-                  "messages": [{"role": "user", "content": user_msg}]},
-            timeout=60,
-        ).json()
-        text = "".join(b.get("text", "") for b in r.get("content", [])
-                       if b.get("type") == "text")
-        return _parse_model_json(text)
-    except Exception as e:
-        log(f"claude call failed: {e} | raw={r if 'r' in dir() else 'n/a'}")
-        return {"action": "hold", "reasoning": f"claude error: {e}",
-                "close_symbols": [], "conviction": "low"}
+    last_err = None
+    for attempt in range(2):  # one retry — a wake-up timeout shouldn't force a hold
+        try:
+            r = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": cfg.ANTHROPIC_API_KEY,
+                         "anthropic-version": "2023-06-01",
+                         "content-type": "application/json"},
+                json={"model": cfg.CLAUDE_MODEL, "max_tokens": 1200,
+                      "system": system_prompt,
+                      "messages": [{"role": "user", "content": user_msg}]},
+                timeout=60,
+            ).json()
+            text = "".join(b.get("text", "") for b in r.get("content", [])
+                           if b.get("type") == "text")
+            return _parse_model_json(text)
+        except Exception as e:
+            last_err = e
+            if attempt == 0:
+                time.sleep(3)
+    log(f"claude call failed after retries: {last_err}")
+    return {"action": "hold", "reasoning": f"claude error: {last_err}",
+            "close_symbols": [], "conviction": "low"}
 
 
 # ===========================================================================
