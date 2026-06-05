@@ -74,6 +74,13 @@ CONDOR_WING_WIDTH      = 5.0       # $ width of condor wings, for max-loss sizin
 TICKER_COOLDOWN_MIN    = 10
 VIX_CONDOR_CEILING     = 25.0
 
+# ---- active stock management: trail the bracket stop to lock in gains ---------
+# Once a stock trade is up this much, start trailing its stop behind price (only
+# ever tightens — never loosens — so the bracket stays the floor on protection).
+STOP_TRAIL_ACTIVATE_PCT = 0.008   # begin trailing once ~0.8% in profit
+STOP_TRAIL_DISTANCE_PCT = 0.006   # keep the stop ~0.6% behind the current price
+STOP_TRAIL_MIN_STEP_PCT = 0.002   # only move the stop if it tightens ≥0.2% (anti-churn)
+
 # ---- cadence (bot-side; scheduler just ticks every minute) ------------------
 # Faster during the opening hour (densest opportunity + the 10:00-10:30 condor
 # window), normal the rest of the session. A flock prevents overlapping cycles.

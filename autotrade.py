@@ -45,7 +45,7 @@ try:
     from alpaca.trading.requests import (
         MarketOrderRequest, LimitOrderRequest,
         TakeProfitRequest, StopLossRequest, OptionLegRequest,
-        GetOrdersRequest,
+        GetOrdersRequest, ReplaceOrderRequest,
     )
     from alpaca.trading.enums import OrderSide, TimeInForce, OrderClass, QueryOrderStatus
     from alpaca.data.historical import StockHistoricalDataClient, OptionHistoricalDataClient
@@ -1188,6 +1188,64 @@ def flatten_stocks_eod(tc, dry):
 
 
 # ===========================================================================
+# Active stock management — trail bracket stops to lock in gains (every cycle)
+# ===========================================================================
+def manage_stops(tc, dry):
+    """Scan stock positions every cycle and TRAIL each bracket's stop as the trade
+    works (lock breakeven, then ratchet behind price). Modifies the held bracket
+    stop leg IN PLACE (replace), so the OCO stays intact. Only ever tightens — the
+    original stop remains the floor on protection, never loosened."""
+    try:
+        positions = [p for p in tc.get_all_positions()
+                     if "option" not in str(getattr(p, "asset_class", "")).lower()]
+    except Exception as e:
+        log(f"manage_stops: positions fetch failed: {e}")
+        return
+    if not positions:
+        return
+    try:
+        orders = tc.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.ALL, limit=200))
+    except Exception as e:
+        log(f"manage_stops: orders fetch failed: {e}")
+        return
+    stops = {}  # symbol -> live/held stop leg
+    for o in orders:
+        s, t = str(o.status).lower(), str(o.type).lower()
+        if (o.symbol and not parse_occ(o.symbol) and "stop" in t and o.stop_price is not None
+                and any(k in s for k in ("held", "new", "accept"))):
+            stops[o.symbol] = o
+    for p in positions:
+        stop = stops.get(p.symbol)
+        if not stop:
+            continue
+        entry, cur = float(p.avg_entry_price), float(p.current_price or 0)
+        if entry <= 0 or cur <= 0:
+            continue
+        is_short = "short" in str(p.side).lower()
+        fav = (entry - cur) / entry if is_short else (cur - entry) / entry
+        if fav < cfg.STOP_TRAIL_ACTIVATE_PCT:
+            continue
+        cur_stop = float(stop.stop_price)
+        if is_short:                                   # buy-stop above price -> ratchet DOWN
+            new_stop = round(cur * (1 + cfg.STOP_TRAIL_DISTANCE_PCT), 2)
+            tighter = new_stop < cur_stop * (1 - cfg.STOP_TRAIL_MIN_STEP_PCT)
+        else:                                          # sell-stop below price -> ratchet UP
+            new_stop = round(cur * (1 - cfg.STOP_TRAIL_DISTANCE_PCT), 2)
+            tighter = new_stop > cur_stop * (1 + cfg.STOP_TRAIL_MIN_STEP_PCT)
+        if not tighter:
+            continue
+        if dry:
+            log(f"[DRY] would trail {p.symbol} stop {cur_stop} -> {new_stop} (fav {fav:+.1%})")
+            continue
+        try:
+            tc.replace_order_by_id(stop.id, order_data=ReplaceOrderRequest(stop_price=new_stop))
+            log(f"TRAIL {p.symbol} stop {cur_stop} -> {new_stop} (fav {fav:+.1%}, locking gains)")
+            tg_send(f"🎯 Trailed {p.symbol} stop to {new_stop}.")
+        except Exception as e:
+            log(f"trail {p.symbol} stop failed: {e}")
+
+
+# ===========================================================================
 # Guardrails applied to a model decision before execution
 # ===========================================================================
 def anti_chase_reason(bullish, row):
@@ -1556,6 +1614,7 @@ def run_cycle(dry: bool = False):
     #    stocks at EOD so nothing rides overnight with an expiring DAY bracket.
     manage_multileg(tc, odc, state, dry)
     manage_options(tc, odc, state, dry)
+    manage_stops(tc, dry)            # trail stock bracket stops to lock in gains
     flatten_stocks_eod(tc, dry)
 
     # 2b. Daily loss halt — latches for the rest of the day and alerts once.
