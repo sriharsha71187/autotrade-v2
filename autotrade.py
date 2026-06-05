@@ -645,14 +645,24 @@ def option_chain_for(odc, underlying, spot, want_today_expiry: bool = False,
     Returns [] on any failure — callers treat 'no chain' as 'do not trade options'."""
     if odc is None or not spot or spot <= 0:
         return []
-    try:
-        lo = round(spot * (1 - strike_pct), 2)
-        hi = round(spot * (1 + strike_pct), 2)
-        from alpaca.data.requests import OptionChainRequest
-        chain = odc.get_option_chain(OptionChainRequest(
-            underlying_symbol=underlying, strike_price_gte=lo, strike_price_lte=hi))
-    except Exception as e:
-        log(f"option chain fetch failed for {underlying}: {e}")
+    lo = round(spot * (1 - strike_pct), 2)
+    hi = round(spot * (1 + strike_pct), 2)
+    from alpaca.data.requests import OptionChainRequest
+    # Alpaca's option-chain endpoint intermittently returns empty mid-cycle; retry
+    # a couple times before giving up so a transient blip isn't a blank "no options".
+    chain = None
+    for attempt in range(3):
+        try:
+            chain = odc.get_option_chain(OptionChainRequest(
+                underlying_symbol=underlying, strike_price_gte=lo, strike_price_lte=hi))
+            if chain:
+                break
+        except Exception as e:
+            if attempt == 2:
+                log(f"option chain fetch failed for {underlying}: {e}")
+        if attempt < 2:
+            time.sleep(0.6)
+    if not chain:
         return []
     today = et_now().date().isoformat()
     rows = []
@@ -694,17 +704,18 @@ def build_option_chains(odc, scan, positions, vix, now,
             if r["symbol"] in cfg.CORE_UNIVERSE and abs(r["day_pct"]) < 0.5:
                 targets.append((r["symbol"], r["last"], True))
                 break
-    # Momentum options: strong movers during 10:00–14:00. Offer several candidates
-    # (not just the #1 mover) so a non-optionable small-cap at the top of the scan
-    # — e.g. KEEL — doesn't starve the optionable large-caps below it of a chain.
+    # Momentum options: strong movers during 10:00–14:00. PREFER movers that have
+    # pulled back (so the anti-chase would actually ALLOW a directional option on
+    # them — a put on a name at its lows, or a call at its highs, gets blocked), and
+    # offer several candidates so a non-optionable name doesn't starve the rest. Fall
+    # back to the biggest movers so the chain is never blank when a tape is moving.
     if 10 <= h < 14:
-        added = 0
-        for r in scan:
-            if abs(r["day_pct"]) >= 2.0 and r["symbol"] not in cfg.BLACKLIST:
-                targets.append((r["symbol"], r["last"], False))
-                added += 1
-                if added >= 5:
-                    break
+        movers = [r for r in scan
+                  if abs(r["day_pct"]) >= 2.0 and r["symbol"] not in cfg.BLACKLIST]
+        pulled = [r for r in movers
+                  if anti_chase_reason(r["day_pct"] > 0, r) is None]   # entry would be allowed
+        for r in (pulled or movers)[:5]:
+            targets.append((r["symbol"], r["last"], False))
     # Any option we already hold, so the model can choose to size a close.
     for p in positions:
         if "option" in (p.get("asset_class", "") or "").lower():
