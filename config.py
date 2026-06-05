@@ -24,6 +24,7 @@ OUTCOMES_DIR    = HOME / "autotrade_outcomes"       # daily realized-P&L / fills
 LEARNINGS_FILE  = HOME / "autotrade_learnings.json"
 COMMAND_FILE    = HOME / "autotrade_command.txt"
 LOG_FILE        = HOME / "autotrade.log"
+LOCK_FILE       = HOME / "autotrade.lock"           # overlap guard (flock); see main()
 ASSETS_CACHE    = HOME / "autotrade_assets.json"   # daily cache of tradable/shortable flags
 
 
@@ -70,6 +71,12 @@ MAX_DEPLOYED_CAPITAL   = 40_000.0  # cap on total exposure across all open trade
 CONDOR_WING_WIDTH      = 5.0       # $ width of condor wings, for max-loss sizing
 TICKER_COOLDOWN_MIN    = 10
 VIX_CONDOR_CEILING     = 25.0
+
+# ---- cadence (bot-side; scheduler just ticks every minute) ------------------
+# Faster during the opening hour (densest opportunity + the 10:00-10:30 condor
+# window), normal the rest of the session. A flock prevents overlapping cycles.
+CYCLE_FAST_INTERVAL_MIN   = 2      # 9:30-10:30 ET
+CYCLE_NORMAL_INTERVAL_MIN = 5      # rest of the regular session
 
 # ---- single-leg option exit management (code-enforced, like condors) --------
 OPTION_STOP_PCT        = -0.50     # close a long option down 50% from entry

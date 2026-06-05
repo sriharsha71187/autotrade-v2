@@ -26,6 +26,7 @@ import sys
 import json
 import time
 import math
+import fcntl
 import traceback
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -97,6 +98,7 @@ def default_state() -> dict:
         "active_options": [],       # [{symbol, qty, entry, opened}] long options we manage
         "aborted_today": [],        # symbols deliberately aborted (1 abort/symbol/day)
         "loss_override": False,     # OVERRIDE command: keep trading past the daily loss halt (today only)
+        "last_cycle_at": None,      # iso-ts of the last real cycle (for cadence throttle)
         "last_action": "",          # human-readable summary of last cycle action
         "focus": None,              # e.g. "TECH" set via Telegram FOCUS command
         "telegram_offset": 0,       # last processed Telegram update_id
@@ -1441,11 +1443,52 @@ def status_text(tc, state) -> str:
 
 
 # ===========================================================================
+# Cadence (bot-side) + overlap guard
+# ===========================================================================
+def _acquire_cycle_lock():
+    """Non-blocking flock so two cycles never run at once (the scheduler may tick
+    faster than a slow cycle finishes). Returns the open file (keep the reference
+    to hold the lock) or None if another cycle holds it. Auto-released on exit."""
+    try:
+        f = open(cfg.LOCK_FILE, "w")
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return f
+    except (BlockingIOError, OSError):
+        return None
+
+
+def _cycle_interval_min(now) -> float:
+    """Faster cadence in the opening hour (9:30–10:30 ET), normal otherwise."""
+    mins_since_open = (now.hour - 9) * 60 + now.minute - 30
+    if 0 <= mins_since_open < 60:
+        return cfg.CYCLE_FAST_INTERVAL_MIN
+    return cfg.CYCLE_NORMAL_INTERVAL_MIN
+
+
+def _throttle_skip(state, now) -> bool:
+    """True if this tick is too soon since the last real cycle (the scheduler
+    ticks every minute; the bot decides the effective cadence)."""
+    last = state.get("last_cycle_at")
+    if not last:
+        return False
+    try:
+        elapsed = (now - datetime.fromisoformat(last)).total_seconds() / 60
+    except Exception:
+        return False
+    return elapsed < _cycle_interval_min(now) - 0.5   # 0.5m grace for tick jitter
+
+
+# ===========================================================================
 # CYCLE
 # ===========================================================================
 def run_cycle(dry: bool = False):
     if not _ALPACA_OK:
         log(f"alpaca-py not importable: {_ALPACA_ERR}")
+        return
+    now = et_now()
+    # Cheap local gate: skip nights/weekends with no I/O or network (the scheduler
+    # ticks every minute all day). The Alpaca clock stays authoritative below.
+    if not dry and (now.weekday() >= 5 or not (9 <= now.hour < 16)):
         return
     state = load_state()
     tc = trading_client()
@@ -1455,6 +1498,13 @@ def run_cycle(dry: bool = False):
     cmds = tg_poll_commands(state)
     if cmds:
         handle_commands(tc, state, cmds, dry)
+
+    # 1b. Cadence throttle — every-minute ticks, but only do a real cycle every
+    # CYCLE_FAST/NORMAL minutes. Commands above are still processed every tick.
+    if not dry and _throttle_skip(state, now):
+        save_state(state)   # persist any command/telegram-offset changes
+        return
+    state["last_cycle_at"] = now.isoformat()
 
     # Market closed -> just persist state and leave.
     if not is_market_open(tc):
@@ -1797,7 +1847,15 @@ def main():
     dry = "--dry-run" in args
     try:
         if mode == "cycle":
-            run_cycle(dry=dry)
+            lock = _acquire_cycle_lock() if not dry else True
+            if lock is None:
+                log("prior cycle still running — skipping this tick")
+                return
+            try:
+                run_cycle(dry=dry)
+            finally:
+                if lock is not True:
+                    lock.close()  # release the flock
         elif mode == "eod":
             run_eod()
         elif mode == "outcomes":

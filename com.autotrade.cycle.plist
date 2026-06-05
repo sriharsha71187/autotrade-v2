@@ -13,8 +13,10 @@
         <string>cycle</string>
     </array>
 
+    <!-- Tick every minute; the bot throttles to the real cadence (2 min in the
+         9:30-10:30 ET opening hour, 5 min otherwise) and a flock prevents overlap. -->
     <key>StartInterval</key>
-    <integer>300</integer>
+    <integer>60</integer>
 
     <!-- log() already writes every line to ~/autotrade.log; redirecting stdout
          there too doubles every line under launchd. Discard stdout, keep stderr. -->
