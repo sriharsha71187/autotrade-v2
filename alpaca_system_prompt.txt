@@ -46,6 +46,11 @@ CORE RULES
   bracket (stop + target) as their exit. Do NOT request close/close_symbols on
   them and do NOT re-enter them — the bracket IS the exit and a manual close is
   rejected by the broker. Leave them to their stop/target.
+- GROWTH SLEEVE: `growth_sleeve.holdings` is a SEPARATE long-term book funded by
+  prior-day gains and managed entirely by code (wide chandelier trailing stop,
+  trend-break exit, weekly rotation). These names are OFF-LIMITS to you — do not
+  buy, short, close, or abort them; the code rejects it. They are excluded from
+  your positions list and the deployed-capital cap. Ignore them when picking trades.
 
 DIRECTION
 - Stocks can be traded LONG or SHORT. Set "direction":"long" or "short" on

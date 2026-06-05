@@ -137,6 +137,38 @@ MOMENTUM_UNIVERSE = [
     "KLAC", "ANET", "DELL", "ORCL", "ADBE", "NOW", "INTC",
 ]
 
+# ---- growth sleeve (long-horizon compounding book, funded by prior-day gains) ---
+# A SEPARATE capital pool from the intraday engine. Each new trading day it deploys
+# yesterday's profit (plus a small floor on flat days) into a screened basket of
+# long-term growth names, held overnight/for weeks with active management (a wide
+# chandelier trailing stop + trend-break exit + weekly rotation). These holdings are
+# SHIELDED from the intraday machinery (EOD flatten, tight trailing stops, the daily
+# loss-halt flatten) and the intraday model is told not to touch them.
+GROWTH_SLEEVE_ENABLED   = True
+GROWTH_STATE_FILE       = HOME / "autotrade_growth_screen.json"  # daily screen cache
+GROWTH_DAILY_FLOOR      = 100.0     # deploy at least this much even on a flat/red day
+GROWTH_MAX_SLEEVE_CAPITAL = 25_000.0  # cap total long-term exposure
+GROWTH_MAX_PER_NAME     = 6_000.0   # cap a single growth holding
+GROWTH_TOP_N            = 5         # hold up to this many names (equal-weight target)
+GROWTH_DEPLOY_HOUR      = 9         # deploy at/after 9:40 ET (let the open settle)
+GROWTH_DEPLOY_MIN       = 40
+GROWTH_TRAIL_PCT        = 0.12      # chandelier stop: exit 12% below the high-water mark
+GROWTH_TREND_MA         = 50        # trend-break exit: sell if close falls below the 50-DMA
+GROWTH_ROTATE_WEEKLY    = True      # once a week, swap the weakest holding for the top screen leader
+GROWTH_ROTATE_MARGIN    = 0.05      # only rotate if the leader's score beats the laggard's by this
+GROWTH_LEV_PENALTY      = 0.85      # de-rate leveraged-ETF scores so they win only when clearly stronger
+
+# Long-term growth universe: secular large-cap growers + broad index ETFs, plus a
+# curated set of BROAD-INDEX leveraged ETFs (NOT narrow single-stock leverage). The
+# leveraged names are eligible ONLY on a confirmed uptrend (price>200DMA & +6mo).
+GROWTH_UNIVERSE = [
+    "NVDA", "MSFT", "AAPL", "AMZN", "GOOGL", "META", "AVGO", "AMD", "TSM", "ASML",
+    "LLY", "COST", "V", "MA", "NFLX", "CRM", "NOW", "ORCL", "PLTR", "INTU",
+    "AMAT", "LRCX", "ANET", "VRT", "CRWD", "PANW", "ADBE", "UBER", "MELI", "AXON",
+    "SPY", "QQQ", "VOO", "VTI",
+]
+GROWTH_LEVERAGED = ["TQQQ", "QLD", "UPRO", "SSO", "SOXL", "SPXL"]  # broad-index leverage only
+
 BLACKLIST: list[str] = []
 
 ECON_BLACKOUT_DATES: list[str] = [

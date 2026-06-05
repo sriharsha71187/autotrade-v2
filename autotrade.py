@@ -6,6 +6,7 @@ Usage:
     python3 autotrade.py cycle          # one 5-min trading cycle (what launchd runs)
     python3 autotrade.py eod            # end-of-day LEARNING pass (LLM rules; run manually)
     python3 autotrade.py outcomes       # end-of-day OUTCOME capture (read-only, no LLM)
+    python3 autotrade.py growth         # run/inspect the long-term growth sleeve
     python3 autotrade.py cycle --dry-run  # build context + decide, but place NO orders
     python3 autotrade.py status         # print current state to terminal
 
@@ -102,6 +103,8 @@ def default_state() -> dict:
         "last_action": "",          # human-readable summary of last cycle action
         "focus": None,              # e.g. "TECH" set via Telegram FOCUS command
         "telegram_offset": 0,       # last processed Telegram update_id
+        "growth_sleeve": [],        # long-term growth holdings (managed by growth_sleeve.py)
+        "growth": {},               # sleeve bookkeeping (open-equity, pending cash, rotation week)
     }
 
 
@@ -121,6 +124,10 @@ def load_state() -> dict:
         fresh["telegram_offset"] = s.get("telegram_offset", 0)
         fresh["active_multileg"] = s.get("active_multileg", []) or []
         fresh["active_options"] = s.get("active_options", []) or []
+        # The growth sleeve is a MULTI-DAY book — carry it (and its bookkeeping)
+        # across the daily reset so overnight holdings stay tracked and managed.
+        fresh["growth_sleeve"] = s.get("growth_sleeve", []) or []
+        fresh["growth"] = s.get("growth", {}) or {}
         # Migrate any legacy single-condor field into the multileg list.
         legacy = s.get("active_condor")
         if legacy:
@@ -1192,11 +1199,14 @@ def manage_options(tc, odc, state, dry):
     state["active_options"] = still
 
 
-def flatten_stocks_eod(tc, dry):
+def flatten_stocks_eod(tc, dry, skip=None):
     """At/after 15:50 ET, flatten any open STOCK position (cancel its bracket
     orders, then market-close). DAY bracket legs die at the close, so a stock left
     open overnight would be unprotected — and this is an intraday bot. (True
-    overnight stock holds would need GTC brackets; not supported yet.)"""
+    overnight stock holds would need GTC brackets; not supported yet.)
+    `skip`: symbols to leave alone (the growth sleeve holds these intentionally
+    overnight and manages them itself)."""
+    skip = skip or set()
     now = et_now()
     if not (now.hour > cfg.OPTION_EOD_CLOSE_HOUR or
             (now.hour == cfg.OPTION_EOD_CLOSE_HOUR and now.minute >= cfg.STOCK_EOD_CLOSE_MIN)):
@@ -1209,6 +1219,8 @@ def flatten_stocks_eod(tc, dry):
     for p in positions:
         if "option" in str(getattr(p, "asset_class", "")).lower():
             continue  # options/spreads handled by their own EOD managers
+        if p.symbol in skip:
+            continue  # growth-sleeve holding — intentionally held overnight
         sym = p.symbol
         if dry:
             log(f"[DRY] would EOD-flatten stock {sym}")
@@ -1228,14 +1240,18 @@ def flatten_stocks_eod(tc, dry):
 # ===========================================================================
 # Active stock management — trail bracket stops to lock in gains (every cycle)
 # ===========================================================================
-def manage_stops(tc, dry):
+def manage_stops(tc, dry, skip=None):
     """Scan stock positions every cycle and TRAIL each bracket's stop as the trade
     works (lock breakeven, then ratchet behind price). Modifies the held bracket
     stop leg IN PLACE (replace), so the OCO stays intact. Only ever tightens — the
-    original stop remains the floor on protection, never loosened."""
+    original stop remains the floor on protection, never loosened.
+    `skip`: symbols to leave alone (growth-sleeve holds use their own wider
+    chandelier stop, not these tight intraday trails)."""
+    skip = skip or set()
     try:
         positions = [p for p in tc.get_all_positions()
-                     if "option" not in str(getattr(p, "asset_class", "")).lower()]
+                     if "option" not in str(getattr(p, "asset_class", "")).lower()
+                     and p.symbol not in skip]
     except Exception as e:
         log(f"manage_stops: positions fetch failed: {e}")
         return
@@ -1315,7 +1331,7 @@ def anti_chase_reason(bullish, row):
 def passes_guardrails(decision, state, acct, now, ref_price=None,
                       offered_options=None, assets=None,
                       option_spread_pct=None, scan_row=None,
-                      dir_counts=None) -> tuple[bool, str]:
+                      dir_counts=None, sleeve=None) -> tuple[bool, str]:
     """ref_price: current per-share price of the asset being traded — the stock
     last price for buy_stock, the option premium per share for buy_option. Used
     for the notional and total-deployed-capital caps.
@@ -1327,7 +1343,12 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
     offered_options = offered_options or set()
     assets = assets or {}
     dir_counts = dir_counts or {"bull": 0, "bear": 0}
+    sleeve = sleeve or set()
     action = decision.get("action")
+    # The growth sleeve is a separate long-term book — the intraday engine may not
+    # open, short, or close its names (it would fight the sleeve's own management).
+    if action in ("buy_stock", "buy_option", "abort") and decision.get("symbol") in sleeve:
+        return False, f"{decision.get('symbol')} is a growth-sleeve holding (off-limits to intraday)"
     today = now.strftime("%Y-%m-%d")
     if today in cfg.ECON_BLACKOUT_DATES and action not in ("hold", "close"):
         return False, "econ blackout day — no new entries"
@@ -1538,16 +1559,21 @@ def handle_commands(tc, state, cmds, dry):
                 tg_send("⚠️ Loss-halt OVERRIDE ON for today — bot will keep trading "
                         "past the daily loss halt. (Resets tomorrow; STOP to halt.)")
         elif c.startswith("CLOSE ALL"):
+            # Emergency flatten — includes the growth sleeve (clear its tracking too).
             try:
                 if not dry:
                     tc.close_all_positions(cancel_orders=True)
                 state["active_multileg"] = []
                 state["active_options"] = []
-                tg_send("✅ Closed all positions.")
+                state["growth_sleeve"] = []
+                tg_send("✅ Closed all positions (incl. growth sleeve).")
             except Exception as e:
                 tg_send(f"close all failed: {e}")
         elif c.startswith("STATUS"):
             tg_send(status_text(tc, state))
+        elif c.startswith("GROWTH"):
+            import growth_sleeve as gs
+            tg_send(json.dumps(gs.summary(state), indent=2)[:3500])
         elif c.startswith("STATS"):
             tg_send(json.dumps(honest_trade_stats(tc), indent=2)[:3500])
         elif c.startswith("FOCUS"):
@@ -1564,10 +1590,15 @@ def status_text(tc, state) -> str:
         if start_eq is None:
             start_eq = a["equity"]
         daily = a["equity"] - start_eq
+        sleeve = state.get("growth_sleeve") or []
+        g = state.get("growth", {})
         lines = [f"Equity ${a['equity']:,.0f} | Day P&L ${daily:+,.0f}",
                  f"Halted: {state.get('halted')} | Focus: {state.get('focus')}",
                  f"Positions: {len(pos)}",
                  *[f"  {p['symbol']} {p['qty']:g} uPL ${p['unrealized_pl']:+.0f}" for p in pos],
+                 f"Growth sleeve: {len(sleeve)} holds "
+                 f"({', '.join(h['symbol'] for h in sleeve) or '-'}) | "
+                 f"pending ${g.get('pending_cash', 0):.0f}",
                  f"Last action: {state.get('last_action','-')}"]
         return "\n".join(lines)
     except Exception as e:
@@ -1648,31 +1679,47 @@ def run_cycle(dry: bool = False):
     if state.get("start_equity") is None:
         state["start_equity"] = acct["equity"]  # first cycle of the day
 
+    # Growth sleeve: a separate long-horizon book funded by prior-day gains. It
+    # manages/deploys its own holdings; the rest of the cycle must leave them alone.
+    import growth_sleeve as gs
+    gs.run(tc, state, dry)
+    sleeve = gs.held_symbols(state)
+
     # 2. Manage any open spreads + long options (code-enforced exits), and flatten
     #    stocks at EOD so nothing rides overnight with an expiring DAY bracket.
+    #    Growth-sleeve symbols are excluded — they ride overnight by design.
     manage_multileg(tc, odc, state, dry)
     manage_options(tc, odc, state, dry)
-    manage_stops(tc, dry)            # trail stock bracket stops to lock in gains
-    flatten_stocks_eod(tc, dry)
+    manage_stops(tc, dry, skip=sleeve)   # trail intraday bracket stops to lock in gains
+    flatten_stocks_eod(tc, dry, skip=sleeve)
 
     # 2b. Daily loss halt — latches for the rest of the day and alerts once.
     # Skipped while the OVERRIDE day-flag is on (user chose to keep trading).
     daily_pl = acct["equity"] - state["start_equity"]
     if daily_pl <= cfg.DAILY_LOSS_HALT and not state.get("halted") and not state.get("loss_override"):
-        # Standard daily-loss-limit behavior: hard stop — FLATTEN everything and
-        # halt, so the day's loss is actually capped (open positions don't keep
-        # bleeding past the limit). OVERRIDE bypasses this.
+        # Standard daily-loss-limit behavior: hard stop — FLATTEN the INTRADAY book
+        # and halt, so the day's loss is actually capped. The growth sleeve is a
+        # separate long-term book with its own stops and is NOT liquidated here.
         state["halted"] = True
-        log(f"DAILY LOSS HALT latched: day P&L {daily_pl:+.0f} <= {cfg.DAILY_LOSS_HALT} — flattening all positions")
+        log(f"DAILY LOSS HALT latched: day P&L {daily_pl:+.0f} <= {cfg.DAILY_LOSS_HALT} — flattening intraday positions (sleeve kept)")
         try:
             if not dry:
-                tc.close_all_positions(cancel_orders=True)
+                for p in tc.get_all_positions():
+                    if p.symbol in sleeve:
+                        continue
+                    try:
+                        for o in tc.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN, limit=200)):
+                            if o.symbol == p.symbol:
+                                tc.cancel_order_by_id(o.id)
+                    except Exception:
+                        pass
+                    tc.close_position(p.symbol)
             state["active_multileg"] = []
             state["active_options"] = []
         except Exception as e:
             log(f"loss-halt flatten failed: {e}")
-        tg_send(f"🛑 Daily loss halt: day P&L ${daily_pl:+,.0f}. Flattened all positions; "
-                f"trading stopped for the day.")
+        tg_send(f"🛑 Daily loss halt: day P&L ${daily_pl:+,.0f}. Flattened intraday book "
+                f"(growth sleeve kept); trading stopped for the day.")
     elif daily_pl <= cfg.DAILY_LOSS_HALT and state.get("loss_override"):
         log(f"loss override ON: day P&L {daily_pl:+.0f} past halt, but trading continues")
 
@@ -1682,8 +1729,10 @@ def run_cycle(dry: bool = False):
         save_state(state)
         return
 
-    # 3. Build context
-    positions = open_positions(tc)
+    # 3. Build context. Growth-sleeve holdings are excluded from the intraday
+    # position list, directional counts, and deployed-capital cap — they are a
+    # separate long-term book the model must not touch.
+    positions = [p for p in open_positions(tc) if p["symbol"] not in sleeve]
     bracketed = bracketed_symbols(tc) if positions else set()
     universe, assets = build_universe(tc)
     # Quality floor: keep names priced over MIN_PRICE and drop extreme movers
@@ -1709,8 +1758,11 @@ def run_cycle(dry: bool = False):
 
     # Authoritative day P&L straight off the account (equity vs start-of-day),
     # plus open unrealized — the ground truth the model should trust over any
-    # per-symbol fill math. Profit-target gating uses this same number.
+    # per-symbol fill math. Profit-target gating uses this same number. The
+    # deployed-capital cap counts only the INTRADAY book, so exclude the sleeve.
+    sleeve_value = gs._sleeve_market_value(tc, state)
     acct = {**acct,
+            "positions_value": round(abs(acct.get("positions_value", 0.0)) - sleeve_value, 2),
             "day_pl": round(daily_pl, 2),
             "open_unrealized_pl": round(sum(p["unrealized_pl"] for p in positions), 2),
             "profit_target": cfg.DAILY_PROFIT_TARGET,
@@ -1720,6 +1772,7 @@ def run_cycle(dry: bool = False):
         "now_et": now.isoformat(),
         "account": acct,
         "positions": positions,
+        "growth_sleeve": gs.summary(state),
         "bracket_managed": sorted(bracketed),
         "signal_scan": scan[:20],
         "option_chains": option_chains,
@@ -1759,8 +1812,9 @@ def run_cycle(dry: bool = False):
         close_targets.append(decision["symbol"])
     if close_targets:
         # Bracketed stocks exit only via their stop/target — skip the futile close.
-        skip = [s for s in close_targets if s in bracketed]
-        do = [s for s in close_targets if s not in bracketed]
+        # Growth-sleeve names are off-limits to the intraday engine entirely.
+        skip = [s for s in close_targets if s in bracketed or s in sleeve]
+        do = [s for s in close_targets if s not in bracketed and s not in sleeve]
         if skip:
             log(f"close skipped — exit handled by bracket: {skip}")
         if do:
@@ -1784,7 +1838,7 @@ def run_cycle(dry: bool = False):
                 opt_spread = (opt_ask - bid) / ref_price
         ok, reason = passes_guardrails(decision, state, acct, now, ref_price,
                                        offered_options, assets, opt_spread, scan_row,
-                                       directional_counts(positions))
+                                       directional_counts(positions), sleeve)
         if not ok:
             log(f"guardrail blocked {action}: {reason}")
             result = {"status": "blocked", "action": action, "reason": reason}
@@ -2003,6 +2057,13 @@ def main():
             run_eod()
         elif mode == "outcomes":
             compute_outcomes()
+        elif mode == "growth":
+            # Manually run / inspect the growth sleeve (deploy + manage + rotate).
+            import growth_sleeve as gs
+            st = load_state()
+            gs.run(trading_client(), st, dry)
+            save_state(st)
+            print(json.dumps(gs.summary(st), indent=2))
         elif mode == "status":
             print(status_text(trading_client(), load_state()))
         else:
