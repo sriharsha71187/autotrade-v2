@@ -741,8 +741,11 @@ def build_option_chains(odc, scan, positions, vix, now,
 
 
 def honest_trade_stats(tc) -> dict:
-    """Neutral, no 'best ticker' label. Just realized P&L from today's fills,
-    grouped by symbol, presented without ranking commentary."""
+    """Realized P&L from today's fills, grouped by symbol. Counts ONLY matched
+    round-trips (min of buy vs sell qty) so an OPEN position contributes ~0
+    realized — not its full notional. The old net-cash-flow proxy reported an
+    open short's sell-to-open proceeds (e.g. +$35k) as if it were profit, which
+    read as a phantom giant 'win'; matched realized P&L can't do that."""
     try:
         req = GetOrdersRequest(status=QueryOrderStatus.CLOSED, limit=200)
         orders = tc.get_orders(filter=req)
@@ -750,22 +753,46 @@ def honest_trade_stats(tc) -> dict:
         log(f"stats fetch failed: {e}")
         return {}
     today = et_now().date()
-    by_symbol = {}
+    # Accumulate buy/sell qty + notional per symbol from today's fills.
+    agg = {}
     for o in orders:
-        if not o.filled_at:
-            continue
-        if o.filled_at.astimezone(ET).date() != today:
+        if not o.filled_at or o.filled_at.astimezone(ET).date() != today:
             continue
         sym = o.symbol
         qty = float(o.filled_qty or 0)
         price = float(o.filled_avg_price or 0)
+        if qty <= 0 or price <= 0:
+            continue
+        d = agg.setdefault(sym, {"buy_qty": 0.0, "buy_notional": 0.0,
+                                 "sell_qty": 0.0, "sell_notional": 0.0, "fills": 0})
+        if str(o.side) == "OrderSide.SELL":
+            d["sell_qty"] += qty
+            d["sell_notional"] += qty * price
+        else:
+            d["buy_qty"] += qty
+            d["buy_notional"] += qty * price
+        d["fills"] += 1
+    by_symbol = {}
+    total_realized = 0.0
+    for sym, d in agg.items():
         mult = 100 if parse_occ(sym) else 1   # options trade in 100-share contracts
-        signed = qty * price * mult * (1 if str(o.side) == "OrderSide.SELL" else -1)
-        by_symbol.setdefault(sym, {"net_cash_flow": 0.0, "fills": 0})
-        by_symbol[sym]["net_cash_flow"] += signed
-        by_symbol[sym]["fills"] += 1
-    return {"note": "Today's fills only; cash-flow proxy, not full FIFO P&L. "
+        matched = min(d["buy_qty"], d["sell_qty"])
+        realized = 0.0
+        if matched > 0:
+            avg_buy = d["buy_notional"] / d["buy_qty"]
+            avg_sell = d["sell_notional"] / d["sell_qty"]
+            realized = matched * (avg_sell - avg_buy) * mult  # works long or short
+        open_qty = (d["buy_qty"] - d["sell_qty"])  # >0 net long, <0 net short, 0 flat
+        by_symbol[sym] = {
+            "realized_pl": round(realized, 2),
+            "open_qty": round(open_qty, 4),
+            "fills": d["fills"],
+        }
+        total_realized += realized
+    return {"note": "realized_pl = today's MATCHED round-trips only (open_qty!=0 "
+                    "means the position is still open and NOT yet in realized_pl). "
                     "Historical edge applies ONLY when today's signal scan agrees.",
+            "day_realized_pl": round(total_realized, 2),
             "by_symbol": by_symbol}
 
 
@@ -1679,6 +1706,15 @@ def run_cycle(dry: bool = False):
     # so the model selects REAL contracts. offered_options is the whitelist the
     # guardrail enforces; if a chain is empty the model simply can't trade it.
     option_chains, offered_options = build_option_chains(odc, scan, positions, vix, now)
+
+    # Authoritative day P&L straight off the account (equity vs start-of-day),
+    # plus open unrealized — the ground truth the model should trust over any
+    # per-symbol fill math. Profit-target gating uses this same number.
+    acct = {**acct,
+            "day_pl": round(daily_pl, 2),
+            "open_unrealized_pl": round(sum(p["unrealized_pl"] for p in positions), 2),
+            "profit_target": cfg.DAILY_PROFIT_TARGET,
+            "profit_stretch": cfg.DAILY_PROFIT_STRETCH}
 
     context = {
         "now_et": now.isoformat(),

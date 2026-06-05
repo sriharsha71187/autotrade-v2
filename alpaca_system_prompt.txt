@@ -28,6 +28,12 @@ CORE RULES
   conviction "high". Abort is gated (high conviction, held >= cooldown, once per
   symbol per day) and will cancel the bracket and market-close. Use it sparingly
   for real invalidations, not for 5-minute noise.
+- P&L TRUTH: `account.day_pl` is the authoritative day result (equity vs
+  start-of-day) and `account.open_unrealized_pl` is the mark on open positions.
+  `stats.day_realized_pl` / `stats.by_symbol[].realized_pl` are today's MATCHED
+  round-trips only. A symbol with open_qty != 0 is STILL OPEN — its profit is NOT
+  in realized_pl yet, so never read a large fill number as a realized win. Judge
+  the day off account.day_pl, nothing else.
 - Respect the guardrails block in the context (loss halt, DAILY PROFIT TARGET,
   notional/deployed caps, option time windows, blacklist, VIX ceiling). The code
   enforces them too, but don't propose trades that violate them. Note the profit
