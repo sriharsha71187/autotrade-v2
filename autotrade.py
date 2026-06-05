@@ -265,6 +265,23 @@ def bracketed_symbols(tc) -> set:
         return set()
 
 
+def directional_counts(positions) -> dict:
+    """Open positions by market direction, for the correlation cap (don't put the
+    whole book on one directional bet). Long stock / long call = bullish; short
+    stock / long put = bearish. (A neutral condor's legs net out, so it only ever
+    errs toward caution.)"""
+    bull = bear = 0
+    for p in positions:
+        meta = parse_occ(p.get("symbol", ""))
+        if meta:
+            bull, bear = (bull + 1, bear) if meta["type"] == "call" else (bull, bear + 1)
+        elif "SHORT" in str(p.get("side", "")).upper():
+            bear += 1
+        else:
+            bull += 1
+    return {"bull": bull, "bear": bear}
+
+
 def abort_position(tc, state, decision, now, dry) -> dict:
     """Deliberate early exit of a bracketed stock (thesis invalidated). GATED to
     avoid the 5-min flip-flop: high conviction, held >= cooldown, once per symbol
@@ -677,12 +694,17 @@ def build_option_chains(odc, scan, positions, vix, now,
             if r["symbol"] in cfg.CORE_UNIVERSE and abs(r["day_pct"]) < 0.5:
                 targets.append((r["symbol"], r["last"], True))
                 break
-    # Momentum options: a strong mover during 10:00–14:00.
+    # Momentum options: strong movers during 10:00–14:00. Offer several candidates
+    # (not just the #1 mover) so a non-optionable small-cap at the top of the scan
+    # — e.g. KEEL — doesn't starve the optionable large-caps below it of a chain.
     if 10 <= h < 14:
+        added = 0
         for r in scan:
             if abs(r["day_pct"]) >= 2.0 and r["symbol"] not in cfg.BLACKLIST:
                 targets.append((r["symbol"], r["last"], False))
-                break
+                added += 1
+                if added >= 5:
+                    break
     # Any option we already hold, so the model can choose to size a close.
     for p in positions:
         if "option" in (p.get("asset_class", "") or "").lower():
@@ -692,11 +714,14 @@ def build_option_chains(odc, scan, positions, vix, now,
                                 spot_of.get(meta["underlying"]) or p.get("current"), False))
 
     chains, offered = {}, set()
-    seen = set()
+    seen, attempts = set(), 0
     for und, spot, today_exp in targets:
-        if not und or und in seen or len(seen) >= max_underlyings:
+        # Stop at max_underlyings SUCCESSFUL chains (not attempts), but cap total
+        # fetches so a run of non-optionable names can't blow up latency.
+        if not und or und in seen or len(chains) >= max_underlyings or attempts >= 6:
             continue
         seen.add(und)
+        attempts += 1
         rows = option_chain_for(odc, und, spot, want_today_expiry=today_exp)
         if rows:
             chains[und] = rows
@@ -1193,7 +1218,8 @@ def anti_chase_reason(bullish, row):
 
 def passes_guardrails(decision, state, acct, now, ref_price=None,
                       offered_options=None, assets=None,
-                      option_spread_pct=None, scan_row=None) -> tuple[bool, str]:
+                      option_spread_pct=None, scan_row=None,
+                      dir_counts=None) -> tuple[bool, str]:
     """ref_price: current per-share price of the asset being traded — the stock
     last price for buy_stock, the option premium per share for buy_option. Used
     for the notional and total-deployed-capital caps.
@@ -1204,6 +1230,7 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
     non-shortable names."""
     offered_options = offered_options or set()
     assets = assets or {}
+    dir_counts = dir_counts or {"bull": 0, "bear": 0}
     action = decision.get("action")
     today = now.strftime("%Y-%m-%d")
     if today in cfg.ECON_BLACKOUT_DATES and action not in ("hold", "close"):
@@ -1274,6 +1301,11 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
         cr = anti_chase_reason(direction == "long", scan_row)
         if cr:
             return False, f"{sym} {cr}"
+        # Correlation cap: don't put the whole book on one directional bet.
+        side_key = "bull" if direction == "long" else "bear"
+        if dir_counts.get(side_key, 0) >= cfg.MAX_SAME_DIRECTION_POSITIONS:
+            return False, (f"correlation cap: already {dir_counts[side_key]} "
+                           f"{side_key} positions (max {cfg.MAX_SAME_DIRECTION_POSITIONS})")
         notional = qty * ref_price
         if notional > cfg.PER_TRADE_NOTIONAL_CAP:
             return False, f"notional {notional:.0f} > per-trade cap {cfg.PER_TRADE_NOTIONAL_CAP}"
@@ -1304,6 +1336,10 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
         cr = anti_chase_reason(bullish, scan_row)
         if cr:
             return False, f"{sym or osym} {cr}"
+        side_key = "bull" if bullish else "bear"
+        if dir_counts.get(side_key, 0) >= cfg.MAX_SAME_DIRECTION_POSITIONS:
+            return False, (f"correlation cap: already {dir_counts[side_key]} "
+                           f"{side_key} positions (max {cfg.MAX_SAME_DIRECTION_POSITIONS})")
         # Size on the ASK we will actually pay (mid * (1 + spread/2)), not mid.
         ask_est = ref_price * (1 + option_spread_pct / 2)
         notional = qty * ask_est * 100  # 100 shares per contract
@@ -1641,7 +1677,8 @@ def run_cycle(dry: bool = False):
             if bid and opt_ask and ref_price:
                 opt_spread = (opt_ask - bid) / ref_price
         ok, reason = passes_guardrails(decision, state, acct, now, ref_price,
-                                       offered_options, assets, opt_spread, scan_row)
+                                       offered_options, assets, opt_spread, scan_row,
+                                       directional_counts(positions))
         if not ok:
             log(f"guardrail blocked {action}: {reason}")
             result = {"status": "blocked", "action": action, "reason": reason}
