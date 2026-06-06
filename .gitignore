@@ -16,6 +16,7 @@ __pycache__/
 autotrade_state.json
 autotrade_assets.json
 autotrade_learnings.json
+autotrade_overrides.json
 autotrade_command.txt
 autotrade.log
 autotrade_error.log

@@ -1702,6 +1702,49 @@ def write_snapshot(context: dict, decision: dict, result: dict = None):
 # ===========================================================================
 # Command handling
 # ===========================================================================
+def _tail(path, n) -> str:
+    """Last n lines of a log file, trimmed to fit one Telegram message."""
+    try:
+        lines = Path(path).read_text(errors="replace").splitlines()[-n:]
+    except FileNotFoundError:
+        return "(no log file yet)"
+    except Exception as e:
+        return f"(log read failed: {e})"
+    body = "\n".join(lines)[-3800:]
+    return body or "(empty)"
+
+
+def apply_runtime_setting(key: str, raw: str) -> str:
+    """Validate + persist a runtime setting override (Telegram SET). Writes to
+    cfg.OVERRIDES_FILE which every fresh cycle re-applies, and updates this process
+    so a subsequent GET reflects it immediately. Returns a status string."""
+    typ = cfg.RUNTIME_SETTABLE.get(key)
+    if typ is None:
+        return f"{key} is not settable. Send SETTINGS to see the list."
+    try:
+        if typ is bool:
+            val = str(raw).strip().lower() in ("1", "true", "on", "yes", "y")
+        elif typ is int:
+            val = int(float(raw))
+        else:
+            val = float(raw)
+    except Exception:
+        return f"bad value '{raw}' for {key} (expected {typ.__name__})"
+    ov = {}
+    if cfg.OVERRIDES_FILE.exists():
+        try:
+            ov = json.loads(cfg.OVERRIDES_FILE.read_text())
+        except Exception:
+            ov = {}
+    ov[key] = val
+    try:
+        cfg.OVERRIDES_FILE.write_text(json.dumps(ov, indent=2))
+    except Exception as e:
+        return f"failed to persist {key}: {e}"
+    setattr(cfg, key, val)   # reflect in this process immediately
+    return f"✅ {key} = {val} (saved; effective next cycle)"
+
+
 def handle_commands(tc, state, cmds, dry):
     for c in cmds:
         if c.startswith("STOP"):
@@ -1747,6 +1790,43 @@ def handle_commands(tc, state, cmds, dry):
             parts = c.split()
             state["focus"] = parts[1] if len(parts) > 1 else None
             tg_send(f"🎯 Focus set to {state['focus']}.")
+        elif c.startswith("LOG"):
+            parts = c.split()
+            n = min(int(parts[1]), 100) if len(parts) > 1 and parts[1].isdigit() else 30
+            tg_send(_tail(cfg.LOG_FILE, n))
+        elif c.startswith("ERRORS"):
+            parts = c.split()
+            n = min(int(parts[1]), 100) if len(parts) > 1 and parts[1].isdigit() else 30
+            tg_send(_tail(cfg.LOG_FILE.parent / "autotrade_error.log", n))
+        elif c.startswith("SETTINGS"):
+            cur = {k: getattr(cfg, k, None) for k in cfg.RUNTIME_SETTABLE}
+            tg_send("Settable (SET <KEY> <VALUE>):\n"
+                    + json.dumps(cur, indent=2, default=str)[:3500])
+        elif c.startswith("SET "):
+            parts = c.split()
+            if len(parts) < 3:
+                tg_send("usage: SET <KEY> <VALUE>  (e.g. SET DAILY_LOSS_HALT -500)")
+            else:
+                tg_send(apply_runtime_setting(parts[1], parts[2]))
+        elif c.startswith("GET"):
+            parts = c.split()
+            if len(parts) < 2:
+                tg_send("usage: GET <KEY>  (e.g. GET DAILY_LOSS_HALT)")
+            else:
+                tg_send(f"{parts[1]} = {getattr(cfg, parts[1], '(unknown setting)')}")
+        elif c.startswith("HELP") or c == "?":
+            tg_send(
+                "📋 Commands\n"
+                "• STATUS — equity, positions, P&L by strategy\n"
+                "• STATS — today's matched realized P&L\n"
+                "• GROWTH / OVERNIGHT — book holdings\n"
+                "• LOG [n] / ERRORS [n] — last n log lines (default 30)\n"
+                "• SETTINGS — list changeable knobs\n"
+                "• GET <KEY> / SET <KEY> <VALUE> — view / change a setting\n"
+                "• STOP / RESUME — halt / resume trading today\n"
+                "• OVERRIDE [OFF] — trade past the daily loss halt\n"
+                "• CLOSE ALL — flatten everything (incl. books)\n"
+                "• FOCUS <theme> — bias the model")
 
 
 def status_text(tc, state) -> str:
@@ -1823,18 +1903,23 @@ def run_cycle(dry: bool = False):
         log(f"alpaca-py not importable: {_ALPACA_ERR}")
         return
     now = et_now()
-    # Cheap local gate: skip nights/weekends with no I/O or network (the scheduler
-    # ticks every minute all day). The Alpaca clock stays authoritative below.
-    if not dry and (now.weekday() >= 5 or not (9 <= now.hour < 16)):
-        return
     state = load_state()
     tc = trading_client()
-    odc = option_data_client() if _ALPACA_OK else None
 
-    # 1. Commands first (so STOP/CLOSE ALL take effect before anything trades)
+    # 1. Commands FIRST — processed every tick, 24/7 (including nights and weekends),
+    #    so STATUS/LOG/SET/STOP/CLOSE ALL all respond whenever you send them from
+    #    Telegram. Only the TRADING below is gated to weekday market hours.
     cmds = tg_poll_commands(state)
     if cmds:
         handle_commands(tc, state, cmds, dry)
+
+    # Trading gate: skip nights/weekends with no further work (commands already
+    # handled above). The Alpaca clock stays authoritative for the open/closed check.
+    if not dry and (now.weekday() >= 5 or not (9 <= now.hour < 16)):
+        save_state(state)   # persist telegram offset + any command effects
+        return
+
+    odc = option_data_client() if _ALPACA_OK else None
 
     # 1b. Cadence throttle — every-minute ticks, but only do a real cycle every
     # CYCLE_FAST/NORMAL minutes. Commands above are still processed every tick.

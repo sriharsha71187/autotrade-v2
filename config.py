@@ -193,3 +193,52 @@ BLACKLIST: list[str] = []
 ECON_BLACKOUT_DATES: list[str] = [
     # "2026-06-17",  # example: FOMC decision day
 ]
+
+# ---- runtime settings changeable from Telegram (SET <KEY> <VALUE>) ----------
+# A whitelist of safe numeric/bool knobs the user can change remotely without a
+# shell or code edit. SET writes the new value to OVERRIDES_FILE; every cycle is a
+# fresh process that re-applies the overrides at import (_apply_overrides below),
+# so a change takes effect on the next cycle. Only these keys can be set — never
+# secrets, file paths, or universes.
+OVERRIDES_FILE = HOME / "autotrade_overrides.json"
+RUNTIME_SETTABLE = {
+    "DAILY_LOSS_HALT": float,
+    "DAILY_PROFIT_TARGET": float,
+    "DAILY_PROFIT_STRETCH": float,
+    "MAX_DEPLOYED_CAPITAL": float,
+    "PER_TRADE_NOTIONAL_CAP": float,
+    "PER_OPTION_NOTIONAL_CAP": float,
+    "MAX_SAME_DIRECTION_POSITIONS": int,
+    "VIX_CONDOR_CEILING": float,
+    "MOMENTUM_MAX_DAY_PCT": float,
+    "OVERNIGHT_DRIFT_ENABLED": bool,
+    "OVERNIGHT_NOTIONAL": float,
+    "GROWTH_SLEEVE_ENABLED": bool,
+    "GROWTH_DAILY_FLOOR": float,
+    "GROWTH_MAX_SLEEVE_CAPITAL": float,
+}
+
+
+def _apply_overrides():
+    """Apply user overrides from OVERRIDES_FILE over the defaults above. Only keys in
+    RUNTIME_SETTABLE are honored, coerced to their declared type. Bad file/values are
+    ignored so a typo can never break startup."""
+    if not OVERRIDES_FILE.exists():
+        return
+    try:
+        import json
+        ov = json.loads(OVERRIDES_FILE.read_text())
+    except Exception:
+        return
+    g = globals()
+    for k, v in (ov or {}).items():
+        typ = RUNTIME_SETTABLE.get(k)
+        if typ is None:
+            continue
+        try:
+            g[k] = typ(v) if typ is not bool else bool(v)
+        except Exception:
+            continue
+
+
+_apply_overrides()
