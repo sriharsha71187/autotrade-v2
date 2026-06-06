@@ -105,6 +105,7 @@ def default_state() -> dict:
         "telegram_offset": 0,       # last processed Telegram update_id
         "growth_sleeve": [],        # long-term growth holdings (managed by growth_sleeve.py)
         "growth": {},               # sleeve bookkeeping (open-equity, pending cash, rotation week)
+        "overnight_reconciled": "", # YYYY-MM-DD we last swept stray overnight stocks (once/day)
     }
 
 
@@ -1199,6 +1200,52 @@ def manage_options(tc, odc, state, dry):
     state["active_options"] = still
 
 
+def reconcile_overnight_stocks(tc, state, dry, skip=None):
+    """Safety net for a MISSED EOD flatten. This is an intraday bot — stock DAY
+    brackets die at the close, so no non-sleeve stock should ever survive into a
+    new trading day. But flatten_stocks_eod only runs if the bot is actually awake
+    at 15:50 ET; if the Mac sleeps through the close (as on 2026-06-04, which left
+    an RDW long to ride overnight and gap down) a position carries over UNPROTECTED
+    once its DAY bracket has expired. On the first cycle of each new day, flatten
+    any non-sleeve stock left open from a prior session, then latch a per-day flag
+    so this runs at most once daily. `skip`: growth-sleeve symbols (held overnight
+    by design)."""
+    today = et_now().strftime("%Y-%m-%d")
+    if state.get("overnight_reconciled") == today:
+        return
+    skip = skip or set()
+    try:
+        positions = tc.get_all_positions()
+    except Exception as e:
+        log(f"overnight reconcile: positions fetch failed: {e}")
+        return  # leave the flag unset -> retry next cycle
+    # On the first cycle of the day nothing intraday has been opened yet, so any
+    # open non-sleeve, non-option position is by definition a prior-day carryover.
+    stray = [p for p in positions
+             if "option" not in str(getattr(p, "asset_class", "")).lower()
+             and p.symbol not in skip]
+    failed = False
+    for p in stray:
+        sym = p.symbol
+        if dry:
+            log(f"[DRY] would reconcile (flatten) stray overnight stock {sym}")
+            continue
+        try:
+            for o in tc.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN, limit=200)):
+                if o.symbol == sym and not parse_occ(o.symbol):
+                    tc.cancel_order_by_id(o.id)
+            time.sleep(0.5)
+            tc.close_position(sym)
+            log(f"OVERNIGHT RECONCILE: flattened stray stock {sym} (carried from a prior day)")
+            tg_send(f"🧹 Reconciled stray overnight stock {sym} (missed EOD flatten) — closed.")
+        except Exception as e:
+            log(f"overnight reconcile {sym} failed: {e}")
+            failed = True  # don't latch -> retry the stragglers next cycle
+    # Latch only on a clean pass (dry runs never mutate state).
+    if not dry and not failed:
+        state["overnight_reconciled"] = today
+
+
 def flatten_stocks_eod(tc, dry, skip=None):
     """At/after 15:50 ET, flatten any open STOCK position (cancel its bracket
     orders, then market-close). DAY bracket legs die at the close, so a stock left
@@ -1684,6 +1731,11 @@ def run_cycle(dry: bool = False):
     import growth_sleeve as gs
     gs.run(tc, state, dry)
     sleeve = gs.held_symbols(state)
+
+    # 1c. Overnight reconciliation (once/day): if the EOD flatten was missed (Mac
+    #     asleep through the close), a non-sleeve stock can survive to today with an
+    #     expired DAY bracket — unprotected. Sweep any such carryover before trading.
+    reconcile_overnight_stocks(tc, state, dry, skip=sleeve)
 
     # 2. Manage any open spreads + long options (code-enforced exits), and flatten
     #    stocks at EOD so nothing rides overnight with an expiring DAY bracket.
