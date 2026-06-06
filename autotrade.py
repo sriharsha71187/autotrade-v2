@@ -181,6 +181,19 @@ def tg_send(text: str):
         log(f"telegram send failed: {e}")
 
 
+def _normalize_cmd(text: str) -> str:
+    """Canonicalize a raw command. Telegram clients send slash-commands
+    (`/status`) and may append the bot handle (`/status@my_bot`); strip both so
+    `/status`, `/STATUS`, and a plain `STATUS` all map to the same command."""
+    t = (text or "").strip()
+    if t.startswith("/"):
+        t = t[1:]
+    head, sep, rest = t.partition(" ")
+    if "@" in head:                      # drop a trailing @botname on the verb
+        head = head.split("@", 1)[0]
+    return (head + sep + rest).strip().upper()
+
+
 def tg_poll_commands(state: dict) -> list[str]:
     """Return any new command words (STOP, RESUME, CLOSE ALL, STATUS, STATS,
     FOCUS X). Also reads the file fallback ~/autotrade_command.txt."""
@@ -189,7 +202,7 @@ def tg_poll_commands(state: dict) -> list[str]:
     if cfg.COMMAND_FILE.exists():
         txt = cfg.COMMAND_FILE.read_text().strip()
         if txt:
-            cmds.append(txt.upper())
+            cmds.append(_normalize_cmd(txt))
             cfg.COMMAND_FILE.write_text("")  # consume it
     if tg_enabled():
         try:
@@ -202,7 +215,7 @@ def tg_poll_commands(state: dict) -> list[str]:
                 state["telegram_offset"] = upd["update_id"]
                 msg = (upd.get("message") or {}).get("text", "")
                 if msg:
-                    cmds.append(msg.strip().upper())
+                    cmds.append(_normalize_cmd(msg))
         except Exception as e:
             log(f"telegram poll failed: {e}")
     return cmds
