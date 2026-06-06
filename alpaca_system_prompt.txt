@@ -51,6 +51,12 @@ CORE RULES
   trend-break exit, weekly rotation). These names are OFF-LIMITS to you — do not
   buy, short, close, or abort them; the code rejects it. They are excluded from
   your positions list and the deployed-capital cap. Ignore them when picking trades.
+- OVERNIGHT BOOK: `overnight_drift.holding` is another SEPARATE, code-managed book
+  that captures the close->open index drift (it buys a broad-index ETF near the
+  close and sells it at the next open). Like the growth sleeve it is OFF-LIMITS —
+  do not trade, close, or abort that symbol; it is excluded from your positions and
+  the deployed-capital cap. `stats.by_strategy` shows realized P&L attributed to
+  each strategy (including these books) — read it as scorekeeping, not a signal.
 
 DIRECTION
 - Stocks can be traded LONG or SHORT. Set "direction":"long" or "short" on

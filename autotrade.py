@@ -7,6 +7,7 @@ Usage:
     python3 autotrade.py eod            # end-of-day LEARNING pass (LLM rules; run manually)
     python3 autotrade.py outcomes       # end-of-day OUTCOME capture (read-only, no LLM)
     python3 autotrade.py growth         # run/inspect the long-term growth sleeve
+    python3 autotrade.py overnight      # run/inspect the overnight-drift book
     python3 autotrade.py cycle --dry-run  # build context + decide, but place NO orders
     python3 autotrade.py status         # print current state to terminal
 
@@ -106,6 +107,8 @@ def default_state() -> dict:
         "growth_sleeve": [],        # long-term growth holdings (managed by growth_sleeve.py)
         "growth": {},               # sleeve bookkeeping (open-equity, pending cash, rotation week)
         "overnight_reconciled": "", # YYYY-MM-DD we last swept stray overnight stocks (once/day)
+        "overnight": {},            # overnight-drift book (holding + buy/sell day markers)
+        "realized_ledger": {},      # {YYYY-MM-DD: {strategy_label: realized_pl}} for code-closed books
     }
 
 
@@ -129,6 +132,11 @@ def load_state() -> dict:
         # across the daily reset so overnight holdings stay tracked and managed.
         fresh["growth_sleeve"] = s.get("growth_sleeve", []) or []
         fresh["growth"] = s.get("growth", {}) or {}
+        # The overnight-drift book holds a position across the daily reset (buy at the
+        # prior close, sell at this open), so carry it and its bookkeeping. The
+        # realized ledger is keyed by day — keep it so attribution has history.
+        fresh["overnight"] = s.get("overnight", {}) or {}
+        fresh["realized_ledger"] = s.get("realized_ledger", {}) or {}
         # Migrate any legacy single-condor field into the multileg list.
         legacy = s.get("active_condor")
         if legacy:
@@ -761,7 +769,97 @@ def build_option_chains(odc, scan, positions, vix, now,
     return chains, offered
 
 
-def honest_trade_stats(tc) -> dict:
+def record_strategy_realized(state: dict, label: str, amount: float):
+    """Add realized P&L to today's strategy ledger. Used by the code-closed books
+    (growth sleeve, overnight drift) whose round-trips span multiple days and so
+    can't be reconstructed from a single day's matched fills."""
+    if not amount:
+        return
+    day = et_now().strftime("%Y-%m-%d")
+    ledger = state.setdefault("realized_ledger", {}).setdefault(day, {})
+    ledger[label] = round(ledger.get(label, 0.0) + float(amount), 2)
+
+
+def _decision_strategy(d: dict) -> str:
+    """Canonical strategy label for a model decision (the bucket its P&L belongs to)."""
+    a = d.get("action")
+    if a == "buy_stock":
+        return "stock_short" if d.get("direction") == "short" else "stock_long"
+    if a == "buy_option":
+        return "long_option"
+    if a == "iron_condor":
+        return "iron_condor"
+    if a == "multi_leg":
+        net = d.get("net_price")
+        if net is None:
+            return "multi_leg"
+        return "credit_spread" if float(net) >= 0 else "debit_spread"
+    return a or "unknown"
+
+
+def _decision_broker_symbols(d: dict) -> set:
+    """The broker symbols (underlying or OCC option legs) an entry decision touches —
+    the keys its fills will appear under, so realized P&L can be joined to a strategy."""
+    a = d.get("action")
+    syms = set()
+    if a == "buy_stock" and d.get("symbol"):
+        syms.add(d["symbol"])
+    elif a == "buy_option" and d.get("option_symbol"):
+        syms.add(d["option_symbol"])
+    elif a == "multi_leg":
+        for leg in (d.get("legs") or []):
+            if leg.get("symbol"):
+                syms.add(leg["symbol"])
+    elif a == "iron_condor":
+        for leg in (d.get("condor_legs") or []):
+            if leg.get("symbol"):
+                syms.add(leg["symbol"])
+    return syms
+
+
+def _strategy_map_for_day(day: str) -> dict:
+    """broker_symbol -> strategy label, built from the day's SUBMITTED entry decisions
+    in the snapshot log. Last submit wins (per-day attribution is best-effort if a
+    symbol was traded by two different strategies the same day)."""
+    f = cfg.SNAPSHOT_DIR / f"{day}.jsonl"
+    m = {}
+    if not f.exists():
+        return m
+    for line in f.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except Exception:
+            continue
+        if (rec.get("result") or {}).get("status") != "submitted":
+            continue
+        d = rec.get("decision") or {}
+        strat = _decision_strategy(d)
+        for sym in _decision_broker_symbols(d):
+            m[sym] = strat
+    return m
+
+
+def attribute_by_strategy(by_symbol: dict, day: str, state: dict | None) -> dict:
+    """Group per-symbol matched realized P&L into strategy buckets, then fold in the
+    code-closed books' realized from the ledger. Symbols with no mapped strategy and
+    not owned by a book fall under 'unattributed'."""
+    smap = _strategy_map_for_day(day)
+    out = {}
+    for sym, d in (by_symbol or {}).items():
+        pl = d.get("realized_pl", 0.0)
+        if not pl:
+            continue
+        label = smap.get(sym, "unattributed")
+        out[label] = round(out.get(label, 0.0) + pl, 2)
+    # Books record their own (often cross-day) realized into the ledger.
+    for label, amt in ((state or {}).get("realized_ledger", {}).get(day, {}) or {}).items():
+        out[label] = round(out.get(label, 0.0) + amt, 2)
+    return out
+
+
+def honest_trade_stats(tc, state=None) -> dict:
     """Realized P&L from today's fills, grouped by symbol. Counts ONLY matched
     round-trips (min of buy vs sell qty) so an OPEN position contributes ~0
     realized — not its full notional. The old net-cash-flow proxy reported an
@@ -810,10 +908,14 @@ def honest_trade_stats(tc) -> dict:
             "fills": d["fills"],
         }
         total_realized += realized
+    day = et_now().strftime("%Y-%m-%d")
+    by_strategy = attribute_by_strategy(by_symbol, day, state)
     return {"note": "realized_pl = today's MATCHED round-trips only (open_qty!=0 "
                     "means the position is still open and NOT yet in realized_pl). "
-                    "Historical edge applies ONLY when today's signal scan agrees.",
+                    "by_strategy attributes realized P&L to the strategy that opened "
+                    "each name. Historical edge applies ONLY when the live scan agrees.",
             "day_realized_pl": round(total_realized, 2),
+            "by_strategy": by_strategy,
             "by_symbol": by_symbol}
 
 
@@ -1391,7 +1493,7 @@ def anti_chase_reason(bullish, row):
 def passes_guardrails(decision, state, acct, now, ref_price=None,
                       offered_options=None, assets=None,
                       option_spread_pct=None, scan_row=None,
-                      dir_counts=None, sleeve=None) -> tuple[bool, str]:
+                      dir_counts=None, book_symbols=None) -> tuple[bool, str]:
     """ref_price: current per-share price of the asset being traded — the stock
     last price for buy_stock, the option premium per share for buy_option. Used
     for the notional and total-deployed-capital caps.
@@ -1403,12 +1505,13 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
     offered_options = offered_options or set()
     assets = assets or {}
     dir_counts = dir_counts or {"bull": 0, "bear": 0}
-    sleeve = sleeve or set()
+    book_symbols = book_symbols or set()
     action = decision.get("action")
-    # The growth sleeve is a separate long-term book — the intraday engine may not
-    # open, short, or close its names (it would fight the sleeve's own management).
-    if action in ("buy_stock", "buy_option", "abort") and decision.get("symbol") in sleeve:
-        return False, f"{decision.get('symbol')} is a growth-sleeve holding (off-limits to intraday)"
+    # The growth sleeve and overnight-drift book are separate, code-managed books —
+    # the intraday engine may not open, short, or close their names (it would fight
+    # the book's own management and tangle broker position netting).
+    if action in ("buy_stock", "buy_option", "abort") and decision.get("symbol") in book_symbols:
+        return False, f"{decision.get('symbol')} is a managed-book holding (off-limits to intraday)"
     today = now.strftime("%Y-%m-%d")
     if today in cfg.ECON_BLACKOUT_DATES and action not in ("hold", "close"):
         return False, "econ blackout day — no new entries"
@@ -1619,14 +1722,15 @@ def handle_commands(tc, state, cmds, dry):
                 tg_send("⚠️ Loss-halt OVERRIDE ON for today — bot will keep trading "
                         "past the daily loss halt. (Resets tomorrow; STOP to halt.)")
         elif c.startswith("CLOSE ALL"):
-            # Emergency flatten — includes the growth sleeve (clear its tracking too).
+            # Emergency flatten — includes the separate books (clear their tracking too).
             try:
                 if not dry:
                     tc.close_all_positions(cancel_orders=True)
                 state["active_multileg"] = []
                 state["active_options"] = []
                 state["growth_sleeve"] = []
-                tg_send("✅ Closed all positions (incl. growth sleeve).")
+                state["overnight"] = {}
+                tg_send("✅ Closed all positions (incl. growth sleeve + overnight book).")
             except Exception as e:
                 tg_send(f"close all failed: {e}")
         elif c.startswith("STATUS"):
@@ -1634,8 +1738,11 @@ def handle_commands(tc, state, cmds, dry):
         elif c.startswith("GROWTH"):
             import growth_sleeve as gs
             tg_send(json.dumps(gs.summary(state), indent=2)[:3500])
+        elif c.startswith("OVERNIGHT"):
+            import overnight_drift as od
+            tg_send(json.dumps(od.summary(state), indent=2)[:3500])
         elif c.startswith("STATS"):
-            tg_send(json.dumps(honest_trade_stats(tc), indent=2)[:3500])
+            tg_send(json.dumps(honest_trade_stats(tc, state), indent=2)[:3500])
         elif c.startswith("FOCUS"):
             parts = c.split()
             state["focus"] = parts[1] if len(parts) > 1 else None
@@ -1652,13 +1759,20 @@ def status_text(tc, state) -> str:
         daily = a["equity"] - start_eq
         sleeve = state.get("growth_sleeve") or []
         g = state.get("growth", {})
+        on = (state.get("overnight") or {}).get("holding")
+        by_strat = honest_trade_stats(tc, state).get("by_strategy", {})
+        strat_line = (" | ".join(f"{k} ${v:+.0f}" for k, v in
+                                 sorted(by_strat.items(), key=lambda kv: -abs(kv[1])))
+                      or "-")
         lines = [f"Equity ${a['equity']:,.0f} | Day P&L ${daily:+,.0f}",
                  f"Halted: {state.get('halted')} | Focus: {state.get('focus')}",
                  f"Positions: {len(pos)}",
                  *[f"  {p['symbol']} {p['qty']:g} uPL ${p['unrealized_pl']:+.0f}" for p in pos],
+                 f"By strategy (realized): {strat_line}",
                  f"Growth sleeve: {len(sleeve)} holds "
                  f"({', '.join(h['symbol'] for h in sleeve) or '-'}) | "
                  f"pending ${g.get('pending_cash', 0):.0f}",
+                 f"Overnight: {on['symbol']+' '+format(on.get('qty',0),'g') if on else 'flat'}",
                  f"Last action: {state.get('last_action','-')}"]
         return "\n".join(lines)
     except Exception as e:
@@ -1739,24 +1853,29 @@ def run_cycle(dry: bool = False):
     if state.get("start_equity") is None:
         state["start_equity"] = acct["equity"]  # first cycle of the day
 
-    # Growth sleeve: a separate long-horizon book funded by prior-day gains. It
-    # manages/deploys its own holdings; the rest of the cycle must leave them alone.
+    # Separate long-horizon / overnight books, each funded and managed on its own and
+    # SHIELDED from the intraday machinery. The growth sleeve compounds prior-day gains
+    # into screened long-term names; the overnight-drift book captures the close->open
+    # index drift. `held_books` is the union the rest of the cycle must leave alone.
     import growth_sleeve as gs
+    import overnight_drift as od
     gs.run(tc, state, dry)
+    od.run(tc, state, dry)               # sell at open / buy near close (regime-gated)
     sleeve = gs.held_symbols(state)
+    held_books = sleeve | od.held_symbols(state)
 
     # 1c. Overnight reconciliation (once/day): if the EOD flatten was missed (Mac
-    #     asleep through the close), a non-sleeve stock can survive to today with an
+    #     asleep through the close), a non-book stock can survive to today with an
     #     expired DAY bracket — unprotected. Sweep any such carryover before trading.
-    reconcile_overnight_stocks(tc, state, dry, skip=sleeve)
+    reconcile_overnight_stocks(tc, state, dry, skip=held_books)
 
     # 2. Manage any open spreads + long options (code-enforced exits), and flatten
     #    stocks at EOD so nothing rides overnight with an expiring DAY bracket.
-    #    Growth-sleeve symbols are excluded — they ride overnight by design.
+    #    Book symbols are excluded — they ride overnight by design.
     manage_multileg(tc, odc, state, dry)
     manage_options(tc, odc, state, dry)
-    manage_stops(tc, dry, skip=sleeve)   # trail intraday bracket stops to lock in gains
-    flatten_stocks_eod(tc, dry, skip=sleeve)
+    manage_stops(tc, dry, skip=held_books)   # trail intraday bracket stops to lock in gains
+    flatten_stocks_eod(tc, dry, skip=held_books)
 
     # 2b. Daily loss halt — latches for the rest of the day and alerts once.
     # Skipped while the OVERRIDE day-flag is on (user chose to keep trading).
@@ -1770,7 +1889,7 @@ def run_cycle(dry: bool = False):
         try:
             if not dry:
                 for p in tc.get_all_positions():
-                    if p.symbol in sleeve:
+                    if p.symbol in held_books:
                         continue
                     try:
                         for o in tc.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN, limit=200)):
@@ -1797,7 +1916,7 @@ def run_cycle(dry: bool = False):
     # 3. Build context. Growth-sleeve holdings are excluded from the intraday
     # position list, directional counts, and deployed-capital cap — they are a
     # separate long-term book the model must not touch.
-    positions = [p for p in open_positions(tc) if p["symbol"] not in sleeve]
+    positions = [p for p in open_positions(tc) if p["symbol"] not in held_books]
     bracketed = bracketed_symbols(tc) if positions else set()
     universe, assets = build_universe(tc)
     # Quality floor: keep names priced over MIN_PRICE and drop extreme movers
@@ -1825,9 +1944,9 @@ def run_cycle(dry: bool = False):
     # plus open unrealized — the ground truth the model should trust over any
     # per-symbol fill math. Profit-target gating uses this same number. The
     # deployed-capital cap counts only the INTRADAY book, so exclude the sleeve.
-    sleeve_value = gs._sleeve_market_value(tc, state)
+    books_value = gs._sleeve_market_value(tc, state) + od.held_value(tc, state)
     acct = {**acct,
-            "positions_value": round(abs(acct.get("positions_value", 0.0)) - sleeve_value, 2),
+            "positions_value": round(abs(acct.get("positions_value", 0.0)) - books_value, 2),
             "day_pl": round(daily_pl, 2),
             "open_unrealized_pl": round(sum(p["unrealized_pl"] for p in positions), 2),
             "profit_target": cfg.DAILY_PROFIT_TARGET,
@@ -1838,13 +1957,14 @@ def run_cycle(dry: bool = False):
         "account": acct,
         "positions": positions,
         "growth_sleeve": gs.summary(state),
+        "overnight_drift": od.summary(state),
         "bracket_managed": sorted(bracketed),
         "signal_scan": scan[:20],
         "option_chains": option_chains,
         "vix": vix,
         "fear_greed": fear_greed(),
         "news": breaking_news([r["symbol"] for r in scan[:10]]),
-        "stats": honest_trade_stats(tc),
+        "stats": honest_trade_stats(tc, state),
         "learnings": load_learnings(),
         "focus": state.get("focus"),
         "guardrails": {
@@ -1877,9 +1997,9 @@ def run_cycle(dry: bool = False):
         close_targets.append(decision["symbol"])
     if close_targets:
         # Bracketed stocks exit only via their stop/target — skip the futile close.
-        # Growth-sleeve names are off-limits to the intraday engine entirely.
-        skip = [s for s in close_targets if s in bracketed or s in sleeve]
-        do = [s for s in close_targets if s not in bracketed and s not in sleeve]
+        # Book names (growth sleeve / overnight drift) are off-limits to the engine.
+        skip = [s for s in close_targets if s in bracketed or s in held_books]
+        do = [s for s in close_targets if s not in bracketed and s not in held_books]
         if skip:
             log(f"close skipped — exit handled by bracket: {skip}")
         if do:
@@ -1903,7 +2023,7 @@ def run_cycle(dry: bool = False):
                 opt_spread = (opt_ask - bid) / ref_price
         ok, reason = passes_guardrails(decision, state, acct, now, ref_price,
                                        offered_options, assets, opt_spread, scan_row,
-                                       directional_counts(positions), sleeve)
+                                       directional_counts(positions), held_books)
         if not ok:
             log(f"guardrail blocked {action}: {reason}")
             result = {"status": "blocked", "action": action, "reason": reason}
@@ -2024,10 +2144,21 @@ def compute_outcomes(tc=None, day=None) -> dict:
         pass
     snap_file = cfg.SNAPSHOT_DIR / f"{day}.jsonl"
     n_snaps = len(snap_file.read_text().splitlines()) if snap_file.exists() else 0
-    rec = {"day": day, "equity_end": equity, "fills": fills, "by_symbol": by_symbol,
+    # Honest matched realized P&L + per-strategy attribution (which strategy made/lost
+    # the day), so "how was the day" can be answered by strategy, not just by symbol.
+    try:
+        hstats = honest_trade_stats(tc, load_state())
+    except Exception as e:
+        log(f"outcomes attribution failed: {e}")
+        hstats = {}
+    rec = {"day": day, "equity_end": equity,
+           "day_realized_pl": hstats.get("day_realized_pl"),
+           "realized_by_strategy": hstats.get("by_strategy", {}),
+           "fills": fills, "by_symbol": by_symbol,
            "snapshots": n_snaps,
-           "note": "realized_cashflow = sell+/buy− proxy; ≈ realized P&L only for "
-                   "symbols fully closed today (open positions distort it)."}
+           "note": "day_realized_pl/realized_by_strategy = MATCHED round-trips + book "
+                   "ledger (the honest numbers). realized_cashflow below = sell+/buy− "
+                   "proxy; ≈ realized P&L only for symbols fully closed today."}
     cfg.OUTCOMES_DIR.mkdir(exist_ok=True)
     (cfg.OUTCOMES_DIR / f"{day}.json").write_text(json.dumps(rec, indent=2, default=str))
     log(f"OUTCOMES {day}: {len(fills)} fills across {len(by_symbol)} symbols; equity={equity}")
@@ -2129,6 +2260,13 @@ def main():
             gs.run(trading_client(), st, dry)
             save_state(st)
             print(json.dumps(gs.summary(st), indent=2))
+        elif mode == "overnight":
+            # Manually run / inspect the overnight-drift book (sell at open / buy near close).
+            import overnight_drift as od
+            st = load_state()
+            od.run(trading_client(), st, dry)
+            save_state(st)
+            print(json.dumps(od.summary(st), indent=2))
         elif mode == "status":
             print(status_text(trading_client(), load_state()))
         else:

@@ -169,6 +169,25 @@ GROWTH_UNIVERSE = [
 ]
 GROWTH_LEVERAGED = ["TQQQ", "QLD", "UPRO", "SSO", "SOXL", "SPXL"]  # broad-index leverage only
 
+# ---- overnight-drift sleeve (close-to-open index capture) -------------------
+# A small, SEPARATE book that exploits the well-documented overnight (close->open)
+# equity drift: buy a broad-index ETF near the close, sell it at the next open.
+# Directional and uncorrelated to the intraday momentum book and to the short-
+# premium options. Defined size, regime-gated (only when the index is in an
+# uptrend and VIX is calm), and SHIELDED from the intraday machinery exactly like
+# the growth sleeve (excluded from EOD flatten, trailing stops, loss-halt flatten,
+# the overnight reconcile, and off-limits to the decision model).
+OVERNIGHT_DRIFT_ENABLED = True
+OVERNIGHT_SYMBOL        = "SPY"     # deepest liquidity + strongest documented drift
+OVERNIGHT_NOTIONAL      = 5_000.0   # $ deployed each night (separate from intraday caps)
+OVERNIGHT_BUY_HOUR      = 15        # buy near the close...
+OVERNIGHT_BUY_MIN       = 55        # ...at/after 15:55 ET
+OVERNIGHT_SELL_HOUR     = 9         # sell after the open...
+OVERNIGHT_SELL_MIN      = 35        # ...at/after 9:35 ET (let the open settle)
+OVERNIGHT_TREND_MA      = 200       # only buy when the index is above its 200-DMA (risk-on)
+OVERNIGHT_VIX_CEILING   = 28.0      # skip the hold if VIX is elevated (gap risk)
+OVERNIGHT_SKIP_WEEKEND  = True      # don't buy Fridays (weekend hold is weaker/riskier)
+
 BLACKLIST: list[str] = []
 
 ECON_BLACKOUT_DATES: list[str] = [
