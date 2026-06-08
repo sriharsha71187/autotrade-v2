@@ -108,6 +108,9 @@ def default_state() -> dict:
         "growth": {},               # sleeve bookkeeping (open-equity, pending cash, rotation week)
         "overnight_reconciled": "", # YYYY-MM-DD we last swept stray overnight stocks (once/day)
         "overnight": {},            # overnight-drift book (holding + buy/sell day markers)
+        "tail_hedge": {},           # tail-hedge book (long OTM-put holding, multi-day)
+        "earnings": {},             # earnings IV-crush book (overnight condor holding)
+        "gap_fade": {},             # gap-fade book (intraday; once-per-day latch)
         "realized_ledger": {},      # {YYYY-MM-DD: {strategy_label: realized_pl}} for code-closed books
     }
 
@@ -136,6 +139,11 @@ def load_state() -> dict:
         # prior close, sell at this open), so carry it and its bookkeeping. The
         # realized ledger is keyed by day — keep it so attribution has history.
         fresh["overnight"] = s.get("overnight", {}) or {}
+        # Tail-hedge (long OTM puts) and earnings (overnight condor) hold option
+        # positions across the daily reset — carry them so they stay tracked/managed.
+        # gap_fade is intraday: let it reset fresh each day (new once-per-day latch).
+        fresh["tail_hedge"] = s.get("tail_hedge", {}) or {}
+        fresh["earnings"] = s.get("earnings", {}) or {}
         fresh["realized_ledger"] = s.get("realized_ledger", {}) or {}
         # Migrate any legacy single-condor field into the multileg list.
         legacy = s.get("active_condor")
@@ -1493,7 +1501,8 @@ def anti_chase_reason(bullish, row):
 def passes_guardrails(decision, state, acct, now, ref_price=None,
                       offered_options=None, assets=None,
                       option_spread_pct=None, scan_row=None,
-                      dir_counts=None, book_symbols=None) -> tuple[bool, str]:
+                      dir_counts=None, book_symbols=None,
+                      regime=None) -> tuple[bool, str]:
     """ref_price: current per-share price of the asset being traded — the stock
     last price for buy_stock, the option premium per share for buy_option. Used
     for the notional and total-deployed-capital caps.
@@ -1512,6 +1521,16 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
     # the book's own management and tangle broker position netting).
     if action in ("buy_stock", "buy_option", "abort") and decision.get("symbol") in book_symbols:
         return False, f"{decision.get('symbol')} is a managed-book holding (off-limits to intraday)"
+    # Deterministic regime gate (when the engine is on): the regime decides which
+    # strategies may open this cycle. This is also where the momentum demotion is
+    # enforced — naked directional stock trades map to a label the regime never
+    # permits, so only defined-risk structures get through.
+    if cfg.REGIME_ENGINE_ENABLED and regime is not None and action in (
+            "buy_stock", "buy_option", "multi_leg", "iron_condor"):
+        import regime as regime_mod
+        ok_r, why_r = regime_mod.entry_allowed(regime, _decision_strategy(decision))
+        if not ok_r:
+            return False, f"regime gate: {why_r}"
     today = now.strftime("%Y-%m-%d")
     if today in cfg.ECON_BLACKOUT_DATES and action not in ("hold", "close"):
         return False, "econ blackout day — no new entries"
@@ -1840,6 +1859,9 @@ def status_text(tc, state) -> str:
         sleeve = state.get("growth_sleeve") or []
         g = state.get("growth", {})
         on = (state.get("overnight") or {}).get("holding")
+        thh = (state.get("tail_hedge") or {}).get("holding")
+        ech = (state.get("earnings") or {}).get("holding")
+        reg = state.get("last_regime") or {}
         by_strat = honest_trade_stats(tc, state).get("by_strategy", {})
         strat_line = (" | ".join(f"{k} ${v:+.0f}" for k, v in
                                  sorted(by_strat.items(), key=lambda kv: -abs(kv[1])))
@@ -1853,6 +1875,12 @@ def status_text(tc, state) -> str:
                  f"({', '.join(h['symbol'] for h in sleeve) or '-'}) | "
                  f"pending ${g.get('pending_cash', 0):.0f}",
                  f"Overnight: {on['symbol']+' '+format(on.get('qty',0),'g') if on else 'flat'}",
+                 f"Tail hedge: {thh['symbol']+' x'+str(thh.get('qty')) if thh else 'flat'}",
+                 f"Earnings: {ech['underlying']+' condor (risk $'+format(ech.get('risk',0),'.0f')+')' if ech else 'flat'}",
+                 (f"Regime: {reg.get('trend','-')}/{reg.get('vol','-')} — "
+                  + ("FLAT (no new entries)" if reg.get('flat')
+                     else "allowed: " + (", ".join(reg.get('allowed_strategies') or []) or "-"))
+                  if reg else "Regime: engine off / not yet computed"),
                  f"Last action: {state.get('last_action','-')}"]
         return "\n".join(lines)
     except Exception as e:
@@ -1915,7 +1943,10 @@ def run_cycle(dry: bool = False):
 
     # Trading gate: skip nights/weekends with no further work (commands already
     # handled above). The Alpaca clock stays authoritative for the open/closed check.
-    if not dry and (now.weekday() >= 5 or not (9 <= now.hour < 16)):
+    # Window is the regular cash session 9:30 ET (open) through 16:00 ET — gated by
+    # minutes so nothing can attempt to act in the 9:00-9:30 pre-open half hour.
+    _mins = now.hour * 60 + now.minute
+    if not dry and (now.weekday() >= 5 or not (9 * 60 + 30 <= _mins < 16 * 60)):
         save_state(state)   # persist telegram offset + any command effects
         return
 
@@ -1944,10 +1975,19 @@ def run_cycle(dry: bool = False):
     # index drift. `held_books` is the union the rest of the cycle must leave alone.
     import growth_sleeve as gs
     import overnight_drift as od
+    import tail_hedge as th
+    import earnings_crush as ec
+    import gap_fade as gf
     gs.run(tc, state, dry)
     od.run(tc, state, dry)               # sell at open / buy near close (regime-gated)
+    th.run(tc, state, dry)              # always-on crash hedge (flag-gated, OFF by default)
+    ec.run(tc, state, dry)             # earnings IV-crush condor (flag-gated, OFF by default)
+    gf.run(tc, state, dry)             # opening-gap fade 9:30-10:00 (flag-gated; intraday, not shielded)
     sleeve = gs.held_symbols(state)
-    held_books = sleeve | od.held_symbols(state)
+    # Shielded books the intraday engine must leave alone. (gap_fade is intraday and
+    # managed by the normal bracket machinery, so it is intentionally NOT here.)
+    held_books = (sleeve | od.held_symbols(state)
+                  | th.held_symbols(state) | ec.held_symbols(state))
 
     # 1c. Overnight reconciliation (once/day): if the EOD flatten was missed (Mac
     #     asleep through the close), a non-book stock can survive to today with an
@@ -2012,6 +2052,28 @@ def run_cycle(dry: bool = False):
     vix = get_vix()
     now = et_now()
 
+    # Deterministic regime gate (OFF by default). When enabled, a pure-code
+    # classifier decides which strategies are permitted this cycle — or forces the
+    # book FLAT. If it's flat AND there is nothing open to manage, skip the model
+    # call entirely (the "stay quiet on no-trade days" discipline). When something
+    # is open, we still call the model to MANAGE it, but new entries are blocked
+    # downstream by passes_guardrails(regime=...).
+    regime = None
+    if cfg.REGIME_ENGINE_ENABLED:
+        import regime as regime_mod
+        event_day = now.strftime("%Y-%m-%d") in cfg.ECON_BLACKOUT_DATES
+        regime = regime_mod.classify(scan, vix, now, event_day=event_day)
+        log(f"regime: {regime['trend']}/{regime['vol']} flat={regime['flat']} "
+            f"allowed={regime['allowed']} :: {regime['reason']}")
+        state["last_regime"] = regime_mod.summary(regime)   # for STATUS visibility
+        nothing_open = (not positions and not state.get("active_multileg")
+                        and not state.get("active_options"))
+        if regime["flat"] and nothing_open:
+            state["last_action"] = f"flat regime ({regime['trend']}/{regime['vol']})"
+            log("regime flat + nothing to manage — holding cash, no model call")
+            save_state(state)
+            return
+
     qualifies, why = setup_qualifies(state, scan, positions, vix, now)
     if not qualifies:
         log(f"pre-filter: {why}")
@@ -2029,7 +2091,8 @@ def run_cycle(dry: bool = False):
     # plus open unrealized — the ground truth the model should trust over any
     # per-symbol fill math. Profit-target gating uses this same number. The
     # deployed-capital cap counts only the INTRADAY book, so exclude the sleeve.
-    books_value = gs._sleeve_market_value(tc, state) + od.held_value(tc, state)
+    books_value = (gs._sleeve_market_value(tc, state) + od.held_value(tc, state)
+                   + th.held_value(tc, state) + ec.held_value(tc, state))
     acct = {**acct,
             "positions_value": round(abs(acct.get("positions_value", 0.0)) - books_value, 2),
             "day_pl": round(daily_pl, 2),
@@ -2043,6 +2106,9 @@ def run_cycle(dry: bool = False):
         "positions": positions,
         "growth_sleeve": gs.summary(state),
         "overnight_drift": od.summary(state),
+        "tail_hedge": th.summary(state),
+        "earnings": ec.summary(state),
+        "gap_fade": gf.summary(state),
         "bracket_managed": sorted(bracketed),
         "signal_scan": scan[:20],
         "option_chains": option_chains,
@@ -2066,6 +2132,15 @@ def run_cycle(dry: bool = False):
         },
         "pre_filter_reason": why,
     }
+    # Regime engine (when on): tell the model exactly what it may open this cycle,
+    # so it produces a compliant decision instead of one the code will reject.
+    if regime is not None:
+        context["regime"] = regime_mod.summary(regime)
+        context["guardrails"]["regime_gate"] = (
+            "A deterministic regime classifier governs this cycle. Open ONLY the "
+            "strategies in regime.allowed_strategies; if regime.flat is true, open "
+            "nothing new (manage/exit existing only). For a momentum debit spread, "
+            "trade in regime.direction. Entries outside this are rejected in code.")
 
     # 4. Decide
     decision = call_claude(context)
@@ -2108,7 +2183,8 @@ def run_cycle(dry: bool = False):
                 opt_spread = (opt_ask - bid) / ref_price
         ok, reason = passes_guardrails(decision, state, acct, now, ref_price,
                                        offered_options, assets, opt_spread, scan_row,
-                                       directional_counts(positions), held_books)
+                                       directional_counts(positions), held_books,
+                                       regime=regime)
         if not ok:
             log(f"guardrail blocked {action}: {reason}")
             result = {"status": "blocked", "action": action, "reason": reason}

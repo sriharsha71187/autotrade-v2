@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./venv/bin/python3 autotrade.py:*)",
+      "Bash(./venv/bin/python3 -c:*)",
+      "Bash(./venv/bin/python3 -m:*)",
+      "Bash(venv/bin/python3:*)",
+      "Bash(grep:*)",
+      "Bash(sed:*)",
+      "Bash(awk:*)",
+      "Bash(cat:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(ps:*)",
+      "Bash(lsof:*)",
+      "Bash(pmset -g:*)",
+      "Bash(launchctl list:*)",
+      "Bash(git status:*)",
+      "Bash(git log:*)",
+      "Bash(git diff:*)",
+      "WebSearch",
+      "WebFetch"
+    ],
+    "deny": [
+      "Bash(rm -rf:*)",
+      "Bash(sudo:*)"
+    ]
+  }
+}

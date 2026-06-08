@@ -188,6 +188,63 @@ OVERNIGHT_TREND_MA      = 200       # only buy when the index is above its 200-D
 OVERNIGHT_VIX_CEILING   = 28.0      # skip the hold if VIX is elevated (gap risk)
 OVERNIGHT_SKIP_WEEKEND  = True      # don't buy Fridays (weekend hold is weaker/riskier)
 
+# ===========================================================================
+# DETERMINISTIC REGIME ENGINE + new strategy books  (ALL default OFF)
+# ===========================================================================
+# Evidence-driven redesign (research 2026-06-07). A pure-code regime classifier
+# decides WHICH strategy is allowed each cycle — or forces FLAT — instead of the
+# model picking freely from a menu; the model only fills strikes within the
+# pre-authorized structure. Everything here is gated OFF by default so the proven
+# engine is byte-for-byte unchanged until each piece is explicitly enabled+tested.
+REGIME_ENGINE_ENABLED = False
+
+# VIX regime bands (level). LOW: premium too thin to sell. ELEVATED: richest
+# short-premium (trade smaller). HIGH: short-vol is lethal -> STAY FLAT intraday.
+REGIME_VIX_LOW      = 14.0
+REGIME_VIX_ELEVATED = 20.0
+REGIME_VIX_HIGH     = 28.0
+# Index (SPY) trend classification from its day move vs prior close.
+REGIME_TREND_PCT  = 1.0   # |move| >= this -> trending; else range-bound
+REGIME_STRONG_PCT = 2.0   # |move| >= this -> STRONG trend (momentum debit spreads)
+
+# ---- tail-hedge convexity book ---------------------------------------------
+# Small always-on long-vol overlay: cheap OTM SPY puts that pay on a crash, sized
+# as a fixed small premium drag, scaled up in the HIGH-VIX regime. Separate book,
+# off-limits to intraday, like the growth/overnight sleeves.
+TAIL_HEDGE_ENABLED  = False
+TAIL_HEDGE_SYMBOL   = "SPY"
+TAIL_HEDGE_BUDGET   = 300.0   # $ premium per roll (the insurance "drag")
+TAIL_HEDGE_OTM_PCT  = 0.07    # buy puts ~7% out of the money
+TAIL_HEDGE_DTE_MIN  = 30
+TAIL_HEDGE_DTE_MAX  = 60
+TAIL_HEDGE_ROLL_DTE = 21      # roll/replace when under this many days to expiry
+TAIL_HEDGE_TAKE_PROFIT_MULT = 3.0   # monetize a hedge that triples on a vol spike
+
+# ---- earnings IV-crush book -------------------------------------------------
+# Defined-risk short premium (iron condor) into a single name's earnings, opened
+# the afternoon before, closed the day after on the IV crush. Best when VIX 16-22.
+EARNINGS_CRUSH_ENABLED = False
+EARNINGS_VIX_MIN  = 16.0
+EARNINGS_VIX_MAX  = 22.0
+EARNINGS_MAX_RISK = 1_000.0   # max defined loss per earnings trade
+EARNINGS_WING_WIDTH = 5.0
+EARNINGS_UNIVERSE = [         # liquid optionable names with clean earnings moves
+    "AAPL", "MSFT", "AMZN", "GOOGL", "META", "NVDA", "TSLA", "AMD", "NFLX", "CRM",
+]
+
+# ---- gap-fade strategy (9:30-10:00 ET) --------------------------------------
+# Fade an opening gap back toward the prior close on a liquid name. Stocks revert
+# gaps ~60-70% (evidence). Fills the otherwise-dead first half hour; defined stop
+# beyond the gap extreme. Runs as its own code book (not via the model).
+GAP_FADE_ENABLED  = False
+GAP_FADE_MIN_PCT  = 1.0    # only fade gaps at least this large
+GAP_FADE_MAX_PCT  = 4.0    # skip monster gaps (news-driven -> gap-and-go, not fade)
+GAP_FADE_NOTIONAL = 3_000.0
+GAP_FADE_STOP_PCT = 0.010  # stop ~1% beyond entry (past the gap extreme)
+GAP_FADE_WINDOW_END_MIN = 0   # no new gap-fade once it's 10:00 ET (h==10, m>=this)
+GAP_FADE_UNIVERSE = ["SPY", "QQQ", "IWM", "AAPL", "MSFT", "NVDA", "AMZN", "META", "TSLA", "AMD"]
+
+
 BLACKLIST: list[str] = []
 
 ECON_BLACKOUT_DATES: list[str] = [
@@ -216,6 +273,14 @@ RUNTIME_SETTABLE = {
     "GROWTH_SLEEVE_ENABLED": bool,
     "GROWTH_DAILY_FLOOR": float,
     "GROWTH_MAX_SLEEVE_CAPITAL": float,
+    # regime engine + new books (flip on remotely once tested)
+    "REGIME_ENGINE_ENABLED": bool,
+    "TAIL_HEDGE_ENABLED": bool,
+    "TAIL_HEDGE_BUDGET": float,
+    "EARNINGS_CRUSH_ENABLED": bool,
+    "EARNINGS_MAX_RISK": float,
+    "GAP_FADE_ENABLED": bool,
+    "GAP_FADE_NOTIONAL": float,
 }
 
 
