@@ -944,10 +944,14 @@ def setup_qualifies(state, scan, positions, vix, now) -> tuple[bool, str]:
     if positions or state.get("active_multileg") or state.get("active_options"):
         return True, "open positions/condor to manage"
     h, m = now.hour, now.minute
-    in_options_window = (h > 10 or (h == 10 and m >= 0)) and h < 14  # 10:00–14:00 ET
+    mins = h * 60 + m
+    # Momentum debit spreads run 10:00 until the (later) momentum cutoff, so an
+    # afternoon breakout still triggers a model call even with no open position.
+    in_momentum_window = 10 * 60 <= mins < (cfg.MOMENTUM_OPTION_CUTOFF_HOUR * 60
+                                            + cfg.MOMENTUM_OPTION_CUTOFF_MIN)
     in_condor_window = (h == 10 and 0 <= m <= 30)
-    # Momentum: a strong mover during the options window.
-    if in_options_window:
+    # Momentum: a strong mover during the momentum window.
+    if in_momentum_window:
         for r in scan:
             if abs(r["day_pct"]) >= 2.0 and r["symbol"] not in cfg.BLACKLIST:
                 return True, f"momentum setup: {r['symbol']} {r['day_pct']:+.1f}%"
@@ -1198,10 +1202,14 @@ def manage_multileg(tc, odc, state, dry):
                 log(f"multileg {symbols} not held and order not working — dropping")
                 continue
             # EOD force-close: a 0DTE/short spread must not ride into expiration
-            # (assignment / pin risk). Close at the same EOD time as single options.
+            # (assignment / pin risk). Close at the same EOD time as single options —
+            # UNLESS this is a catalyst-backed overnight momentum hold (pos['overnight'],
+            # granted by the conviction gate at entry), which rides into tomorrow and is
+            # still stop/target-managed each cycle and re-judged next day.
             _n = et_now()
-            if (_n.hour > cfg.OPTION_EOD_CLOSE_HOUR or
-                    (_n.hour == cfg.OPTION_EOD_CLOSE_HOUR and _n.minute >= cfg.OPTION_EOD_CLOSE_MIN)):
+            _is_eod = (_n.hour > cfg.OPTION_EOD_CLOSE_HOUR or
+                       (_n.hour == cfg.OPTION_EOD_CLOSE_HOUR and _n.minute >= cfg.OPTION_EOD_CLOSE_MIN))
+            if _is_eod and not pos.get("overnight"):
                 log(f"MULTILEG EOD close {symbols}")
                 tg_send("🧩 EOD-closing spread.")
                 close_symbols(tc, symbols, dry)
@@ -1498,6 +1506,36 @@ def anti_chase_reason(bullish, row):
     return None
 
 
+def _decision_underlying(decision) -> "str | None":
+    """Underlying of an options decision — the explicit 'symbol', else parsed off a leg."""
+    if decision.get("symbol"):
+        return decision["symbol"]
+    for l in (decision.get("legs") or decision.get("condor_legs") or []):
+        m = parse_occ(l.get("symbol"))
+        if m:
+            return m["underlying"]
+    return None
+
+
+def _spread_directional_bias(legs) -> "str | None":
+    """Directional lean of a simple 2-leg vertical from its legs: 'bullish' /
+    'bearish', else None (condor / neutral / uninterpretable). Used to block a spread
+    that FADES a strong single-name trend (selling a bearish spread into a breakout)."""
+    parsed = [(l, parse_occ(l.get("symbol"))) for l in (legs or [])]
+    parsed = [(l, m) for l, m in parsed if m]
+    if len(parsed) != 2 or parsed[0][1]["type"] != parsed[1][1]["type"]:
+        return None
+    short = next((m for l, m in parsed if l.get("side") == "sell"), None)
+    long_ = next((m for l, m in parsed if l.get("side") == "buy"), None)
+    if not short or not long_:
+        return None
+    if short["type"] == "call":
+        # short call below long call -> bear call (bearish); above -> bull call (bullish)
+        return "bearish" if short["strike"] < long_["strike"] else "bullish"
+    # puts: short above long -> bull put (bullish); below -> bear put (bearish)
+    return "bullish" if short["strike"] > long_["strike"] else "bearish"
+
+
 def passes_guardrails(decision, state, acct, now, ref_price=None,
                       offered_options=None, assets=None,
                       option_spread_pct=None, scan_row=None,
@@ -1531,6 +1569,22 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
         ok_r, why_r = regime_mod.entry_allowed(regime, _decision_strategy(decision))
         if not ok_r:
             return False, f"regime gate: {why_r}"
+    # Spread/condor entry cooldown: don't stack a new multi-leg while a recent one
+    # (often a still-working, unfilled limit) is on the books — otherwise the model
+    # re-submits the same condor every cycle (esp. on illiquid underlyings that don't
+    # fill), piling up duplicate orders and wash-trade rejects.
+    if action in ("iron_condor", "multi_leg"):
+        recent = []
+        for m in (state.get("active_multileg") or []):
+            op = m.get("opened")
+            if op:
+                try:
+                    recent.append((now - datetime.fromisoformat(op)).total_seconds() / 60)
+                except Exception:
+                    pass
+        if recent and min(recent) < cfg.MULTILEG_COOLDOWN_MIN:
+            return False, (f"multi-leg cooldown ({min(recent):.0f}<"
+                           f"{cfg.MULTILEG_COOLDOWN_MIN}m since last spread)")
     today = now.strftime("%Y-%m-%d")
     if today in cfg.ECON_BLACKOUT_DATES and action not in ("hold", "close"):
         return False, "econ blackout day — no new entries"
@@ -1552,6 +1606,32 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
     sym = decision.get("symbol")
     if sym and sym in cfg.BLACKLIST:
         return False, f"{sym} is blacklisted"
+    # Anti-fade: never sell a spread AGAINST a strong single-name move. Selling a
+    # bear-call into a STRONG_BULL breakout (or a bull-put into a STRONG_BEAR
+    # breakdown) is fighting momentum on a name with a live catalyst — the exact
+    # mistake that bled the book (INTC +10% / AVGO). Mean-reversion is for chop, not
+    # for catching a freight train.
+    if action == "multi_leg" and scan_row:
+        bias = _spread_directional_bias(decision.get("legs") or [])
+        sig = scan_row.get("signal") or ""
+        dp = scan_row.get("day_pct") or 0.0
+        if bias == "bearish" and sig == "STRONG_BULL":
+            return False, (f"{sym} STRONG_BULL ({dp:+.1f}%) — refusing a bearish spread "
+                           f"into a breakout (no fading momentum)")
+        if bias == "bullish" and sig == "STRONG_BEAR":
+            return False, (f"{sym} STRONG_BEAR ({dp:+.1f}%) — refusing a bullish spread "
+                           f"into a breakdown (no fading momentum)")
+    # Index-only premium selling. The VRP edge a credit spread/condor harvests is
+    # reliably negative only at the INDEX level (priced correlation risk); single-name
+    # variance premia are ~zero and just bear idiosyncratic jump risk (what bled the
+    # book on INTC/SHOP). So short-premium structures are restricted to index ETFs;
+    # single names trade DIRECTIONALLY (debit spreads) / via the earnings book only.
+    if cfg.CREDIT_SPREAD_INDEX_ONLY and action in ("iron_condor", "multi_leg") \
+            and _decision_strategy(decision) in ("iron_condor", "credit_spread"):
+        und = _decision_underlying(decision)
+        if und and und not in cfg.PREMIUM_INDEX_UNDERLYINGS:
+            return False, (f"{und}: credit spreads/condors are index-only (VRP edge is "
+                           f"index-level) — single names trade directional/earnings only")
     # Cooldown
     if sym and action in ("buy_stock", "buy_option"):
         last = state.get("last_entry_time", {}).get(sym)
@@ -1568,6 +1648,18 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
     if action == "iron_condor":
         if not (now.hour == 10 and now.minute <= 30):
             return False, "condor only in the 10:00–10:30 ET window"
+    # Momentum DEBIT spreads (multi-leg, net debit) get a LATER cutoff than the 14:00
+    # 0DTE rule — they're directional, not pinned to a same-day expiry — so the bot
+    # can catch an afternoon single-name breakout. Still bounded (force-closed 15:45).
+    if action == "multi_leg" and _decision_strategy(decision) == "debit_spread":
+        mins = now.hour * 60 + now.minute
+        if mins < 10 * 60:
+            return False, "no options before 10:00 ET"
+        cutoff = cfg.MOMENTUM_OPTION_CUTOFF_HOUR * 60 + cfg.MOMENTUM_OPTION_CUTOFF_MIN
+        if mins >= cutoff:
+            return False, (f"momentum debit-spread cutoff "
+                           f"{cfg.MOMENTUM_OPTION_CUTOFF_HOUR}:{cfg.MOMENTUM_OPTION_CUTOFF_MIN:02d} "
+                           f"ET passed (spreads force-close 15:45)")
 
     # Sizing + total-exposure caps. positions_value is the current deployed amount;
     # MAX_DEPLOYED_CAPITAL caps deployed + this new trade.
@@ -2122,15 +2214,38 @@ def run_cycle(dry: bool = False):
             "daily_loss_halt": cfg.DAILY_LOSS_HALT,
             "per_trade_notional_cap": cfg.PER_TRADE_NOTIONAL_CAP,
             "per_option_notional_cap": cfg.PER_OPTION_NOTIONAL_CAP,
+            "option_risk_target": cfg.OPTION_RISK_TARGET,
+            "sizing": (f"SIZE every defined-risk options trade so its max-loss is "
+                       f"~${cfg.OPTION_RISK_TARGET:.0f} (never over the "
+                       f"${cfg.PER_OPTION_NOTIONAL_CAP:.0f} cap). Use ~$5 wings and "
+                       f"ADD CONTRACTS to reach the target — do NOT trade minimum 1-lot, "
+                       f"$1-wide, $50-risk condors; that wastes the range-day edge."),
             "max_deployed_capital": cfg.MAX_DEPLOYED_CAPITAL,
             "vix_condor_ceiling": cfg.VIX_CONDOR_CEILING,
             "blacklist": cfg.BLACKLIST,
             "no_options_before": "10:00 ET",
-            "no_0dte_after": "14:00 ET",
+            "no_0dte_after": "14:00 ET (0DTE / index condors / buy_option ONLY)",
+            "momentum_debit_spread_until": (f"{cfg.MOMENTUM_OPTION_CUTOFF_HOUR}:"
+                                            f"{cfg.MOMENTUM_OPTION_CUTOFF_MIN:02d} ET — "
+                                            f"single-name momentum debit spreads may be "
+                                            f"opened in the afternoon (not bound by the "
+                                            f"14:00 0DTE cutoff)"),
             "condor_window": "10:00–10:30 ET",
             "option_symbols_must_come_from": "option_chains",
         },
         "pre_filter_reason": why,
+    }
+    # Explicit clock so the model never does time math itself (it once misread 14:53
+    # as past the 15:00 cutoff and skipped a valid momentum trade). Use these numbers.
+    _mins_now = now.hour * 60 + now.minute
+    _mom_cut = cfg.MOMENTUM_OPTION_CUTOFF_HOUR * 60 + cfg.MOMENTUM_OPTION_CUTOFF_MIN
+    context["guardrails"]["clock"] = {
+        "now_et": now.strftime("%H:%M ET"),
+        "momentum_debit_cutoff": f"{cfg.MOMENTUM_OPTION_CUTOFF_HOUR}:{cfg.MOMENTUM_OPTION_CUTOFF_MIN:02d} ET",
+        "minutes_until_momentum_cutoff": max(0, _mom_cut - _mins_now),
+        "momentum_entries_open_now": 600 <= _mins_now < _mom_cut,
+        "minutes_until_eod_spread_close": max(
+            0, (cfg.OPTION_EOD_CLOSE_HOUR * 60 + cfg.OPTION_EOD_CLOSE_MIN) - _mins_now),
     }
     # Regime engine (when on): tell the model exactly what it may open this cycle,
     # so it produces a compliant decision instead of one the code will reject.
@@ -2235,20 +2350,29 @@ def run_cycle(dry: bool = False):
                     if o and not dry:
                         order_id = str(o.id)
                         # entry_net in $ (signed): + credit collected, − debit paid.
-                        state.setdefault("active_multileg", []).append(
-                            {"legs": [{"symbol": l["symbol"], "side": l["side"]} for l in legs],
-                             "qty": mlqty, "entry_net": net_price * 100 * mlqty,
-                             "order_id": str(o.id), "opened": now.isoformat()})
+                        ml_entry = {
+                            "legs": [{"symbol": l["symbol"], "side": l["side"]} for l in legs],
+                            "qty": mlqty, "entry_net": net_price * 100 * mlqty,
+                            "order_id": str(o.id), "opened": now.isoformat()}
+                        # Overnight hold: only if the model flagged a catalyst AND the
+                        # deterministic conviction gate (RVOL/close-strength/breadth/RSI/
+                        # no-earnings) passes; otherwise it stays intraday (15:45 close).
+                        if decision.get("overnight_hold"):
+                            import overnight_conviction as ocv
+                            ok_on, why_on = ocv.evaluate(decision, scan_row, scan, now)
+                            if ok_on:
+                                ml_entry["overnight"] = True
+                                log(f"OVERNIGHT HOLD granted {decision.get('symbol')}: {why_on}")
+                                tg_send(f"🌙 Overnight hold {decision.get('symbol')}: {why_on}")
+                            else:
+                                log(f"overnight hold DENIED {decision.get('symbol')}: {why_on}")
+                        state.setdefault("active_multileg", []).append(ml_entry)
                 result = {"status": "dry_run" if dry else "submitted", "action": action,
                           "order_id": order_id, "ref_price": ref_price}
             except Exception as e:
                 log(f"order placement failed for {action}: {e}")
                 tg_send(f"⚠️ Order failed ({action}): {e}")
                 result = {"status": "order_failed", "action": action, "error": str(e)}
-
-    if decision.get("overnight_hold") and result.get("status") in ("submitted", "dry_run"):
-        log(f"OVERNIGHT HOLD reasoning: {decision.get('reasoning','')}")
-        tg_send(f"🌙 Holding overnight: {decision.get('reasoning','')[:200]}")
 
     # Single terminal write: full decision + how it resolved, then persist state.
     write_snapshot(context, decision, result)

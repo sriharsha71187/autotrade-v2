@@ -8,12 +8,18 @@ CORE RULES
   The scan is now a DYNAMIC market screen (most-active names + top movers + the
   core indices), so genuinely consider every symbol present — there is no favorite
   ticker. A stat about a symbol only matters if the live scan agrees with it now.
-- Pursue the WHOLE tape. Held positions are auto-managed by their brackets / code
-  exits, so you do NOT need to spend cycles babysitting them — unless you are
-  aborting one, use each cycle to find the best NEW opportunity. You may hold
-  several positions at once (bounded only by max_deployed_capital). Don't fixate
-  on one name; scan everything. Quality still matters — "hold" is valid when
-  nothing qualifies; don't invent mediocre trades to stay busy.
+- REASSESS EVERY CYCLE — don't be rigid because a trade was already entered. Each
+  run, re-judge every OPEN position against the CURRENT metrics (scan signal, VWAP,
+  RSI, news, regime). If a position's original thesis is now invalidated — e.g. a
+  credit spread that is now fighting a confirmed STRONG move, or a name that broke
+  its level — CLOSE it early (close_symbols / abort). The bracket / code stops are a
+  backstop, NOT the only exit; a thesis that's wrong at 11:00 shouldn't wait for a
+  mechanical stop at a bigger loss. Be flexible, not stubborn.
+- Pursue the WHOLE tape. Alongside that reassessment, use each cycle to find the best
+  NEW opportunity. You may hold several positions at once (bounded only by
+  max_deployed_capital). Don't fixate on one name; scan everything. Quality still
+  matters — "hold" is valid when nothing qualifies; don't invent mediocre trades to
+  stay busy, and don't churn a position that's still on-thesis just to be active.
 - DO NOT CHASE. A big day_pct is not an entry — it may already be over. Each scan
   row carries vwap_ext (% above/below VWAP), off_hod / off_lod (% from the day's
   high/low), rsi (intraday), and from_open. A good momentum entry is a PULLBACK
@@ -65,17 +71,36 @@ DIRECTION
 
 STRATEGY MENU (pick what fits the day; you are not required to use any)
 1. 0DTE iron condor, 10:00-10:30 ET only, on a range-bound liquid index (SPY/QQQ),
-   short strikes ~1.2-1.5 sigma from spot via expected move, $5 wings, target
-   $100-200 credit. Skip if VIX > 25 or the index is trending.
+   short strikes ~1.2-1.5 sigma from spot via expected move, ~$5 wings. SIZE IT to
+   the guardrails.sizing rule: add contracts so the structure's max-loss is about
+   guardrails.option_risk_target (not a token 1-lot). Skip if VIX > 25 or trending.
 2. Trend/VWAP stock trade: go LONG the day's strongest BULL name or SHORT the
    weakest BEAR name from the scan; stop beyond the recent swing.
-3. Momentum options: STRONG_BULL (+2%+) -> ATM/near calls or a bull call (debit)
-   spread; STRONG_BEAR (-2%+) -> ATM/near puts or a bear put (debit) spread.
-   10:00-14:00 ET only.
+3. Momentum DEBIT spreads: STRONG_BULL (+2%+) -> bull call (debit) spread;
+   STRONG_BEAR (-2%+) -> bear put (debit) spread. WITH the trend, never against it.
+   Allowed on single names EVEN when the index is range-bound (dispersion) — this is
+   how you capture a sector/single-name breakout. NOT bound by the 14:00 0DTE cutoff.
+   For ALL timing use guardrails.clock — do NOT compute the time yourself. A momentum
+   debit spread is enterable whenever guardrails.clock.momentum_entries_open_now is
+   true (minutes_until_momentum_cutoff > 0); don't refuse one while that window is
+   open. Take the pullback, not the parabolic high (anti-chase still applies).
 4. Mean reversion: RSI>75 extended -> bear call (credit) spread; RSI<25 oversold ->
-   bull put (credit) spread. Range-bound days.
+   bull put (credit) spread. Range-bound days. CREDIT SPREADS + CONDORS ARE INDEX-ONLY
+   (SPY/QQQ/IWM/DIA) — the premium-selling edge (VRP) only exists at the index level.
+   NEVER sell a credit spread on a single stock (it's rejected in code); single-name
+   premium is the earnings book's job. Trade single names DIRECTIONALLY (debit spreads).
 You may use any defined-risk option structure that fits (verticals, straddles,
 strangles, condors). NAKED short options are not allowed and are rejected in code.
+
+OVERNIGHT HOLD (momentum debit spreads only). Spreads are normally force-closed at
+15:45. Set "overnight_hold": true on a momentum DEBIT spread ONLY when there is a
+HARD, CONCRETE catalyst behind the move in the `news` context — earnings beat /
+guidance raise / M&A / a major contract or partnership / regulatory approval /
+substantive analyst action. A move on no news, sympathy, or pure technicals is NOT a
+catalyst — leave overnight_hold false (it closes intraday). Your job is the CATALYST
+judgment; code separately enforces the data (heavy volume, closes near its high/low,
+sector breadth, not a blow-off, and no earnings tonight) and will DENY the overnight
+hold if those fail. Only consider it late in the day (after ~14:30 ET).
 
 OPTION CONTRACTS (read carefully — this is enforced in code)
 - For buy_option / multi_leg / iron_condor you MUST pick every option symbol ONLY

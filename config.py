@@ -65,13 +65,49 @@ DAILY_LOSS_HALT  = -300.0
 DAILY_PROFIT_TARGET  = 200.0
 DAILY_PROFIT_STRETCH = 400.0
 PER_TRADE_NOTIONAL_CAP = 5_000.0   # cap on a single stock entry (qty * price)
-PER_OPTION_NOTIONAL_CAP = 2_000.0  # cap on a single option entry (qty * premium * 100)
+PER_OPTION_NOTIONAL_CAP = 1_000.0  # HARD ceiling on one option structure's max-loss
+                                   # (kept under the daily loss halt so a single
+                                   #  condor can never trip the whole-day stop alone)
+OPTION_RISK_TARGET     = 600.0     # TARGET max-loss to SIZE each defined-risk options
+                                   # trade toward (wider wings / more contracts) — stops
+                                   # the model trading teaspoon-sized $50-risk condors
 OPTION_MAX_SPREAD_PCT  = 0.15      # skip options whose bid-ask spread exceeds this (illiquid)
 MAX_DEPLOYED_CAPITAL   = 40_000.0  # cap on total exposure across all open trades
 MAX_SAME_DIRECTION_POSITIONS = 6   # correlation cap: don't put the whole book on one
                                    # directional bet (e.g. 7 tech shorts on a selloff)
 CONDOR_WING_WIDTH      = 5.0       # $ width of condor wings, for max-loss sizing
+# The 14:00 ET options cutoff is for 0DTE / same-day index structures (condors,
+# buy_option) which pin into the close. MOMENTUM DEBIT spreads are multi-day and
+# don't have that risk, so they get a later entry cutoff — lets the bot catch an
+# afternoon single-name breakout instead of going dark at 14:00.
+MOMENTUM_OPTION_CUTOFF_HOUR = 15
+MOMENTUM_OPTION_CUTOFF_MIN  = 0    # momentum debit spreads enterable 10:00–15:00 ET
+                                   # (spreads are force-closed 15:45, so this leaves
+                                   #  ~45min of working time — 15:30 would be useless)
+
+# ---- overnight momentum hold (catalyst-backed conviction; see overnight_conviction.py)
+# A momentum DEBIT spread is normally force-closed at 15:45. It may instead RIDE
+# overnight ONLY if the model flags a hard catalyst (overnight_hold) AND the
+# deterministic data gate passes. Judged late in the day so close-strength is real.
+OVERNIGHT_MOMENTUM_ENABLED = True
+OVERNIGHT_DECISION_HOUR = 14
+OVERNIGHT_DECISION_MIN  = 30      # only judge overnight holds from 14:30 ET on
+OVERNIGHT_RVOL_MIN      = 1.5     # today's volume vs 20-day avg (real participation)
+OVERNIGHT_OFF_HOD_MAX   = 1.5     # % from HOD/LOD to count as "closing strong"
+OVERNIGHT_BREADTH_MIN   = 3       # same-direction strong movers (a theme, not a one-off)
+OVERNIGHT_RSI_MAX       = 85.0    # above this (bull) = blow-off; mirror for bear
+OVERNIGHT_MIN_DATA_CONFIRMS = 3   # need >=3 of the 4 data checks (RVOL/close/breadth/RSI)
+# Index-only premium selling. Evidence (Carr-Wu, Driessen-Maenhout-Vilkov): the
+# variance/vol risk premium a credit spread harvests is reliably negative ONLY at the
+# index level — single-name variance premia are ~zero/positive and just bear
+# idiosyncratic jump risk. So short-premium structures (credit spreads / condors) are
+# restricted to these index ETFs. Single names trade DIRECTIONALLY (debit spreads);
+# single-name premium is reserved for the earnings IV-crush book.
+CREDIT_SPREAD_INDEX_ONLY  = True
+PREMIUM_INDEX_UNDERLYINGS = ["SPY", "QQQ", "IWM", "DIA"]
 TICKER_COOLDOWN_MIN    = 10
+MULTILEG_COOLDOWN_MIN  = 12        # min gap between spread/condor ENTRIES, so a
+                                   # working (unfilled) condor isn't re-submitted every cycle
 VIX_CONDOR_CEILING     = 25.0
 
 # ---- active stock management: trail the bracket stop to lock in gains ---------
@@ -265,7 +301,10 @@ RUNTIME_SETTABLE = {
     "MAX_DEPLOYED_CAPITAL": float,
     "PER_TRADE_NOTIONAL_CAP": float,
     "PER_OPTION_NOTIONAL_CAP": float,
+    "OPTION_RISK_TARGET": float,
     "MAX_SAME_DIRECTION_POSITIONS": int,
+    "CREDIT_SPREAD_INDEX_ONLY": bool,
+    "OVERNIGHT_MOMENTUM_ENABLED": bool,
     "VIX_CONDOR_CEILING": float,
     "MOMENTUM_MAX_DAY_PCT": float,
     "OVERNIGHT_DRIFT_ENABLED": bool,

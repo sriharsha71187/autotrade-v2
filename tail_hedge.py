@@ -175,10 +175,12 @@ def _establish(tc, odc, state, dry):
     # Only establish during market hours (need live option quotes).
     spot = _spot(tc)
     pick = _select_put(odc, spot, today)
-    th["last_buy_date"] = today_s          # attempt at most once/day regardless
+    # NOTE: do NOT latch last_buy_date here. We only mark "tried today" on a real
+    # establish (or a deliberate dry run) — otherwise a transient skip (no chain, or
+    # an affordability miss that a later SET TAIL_HEDGE_BUDGET would fix) would block
+    # the hedge for the rest of the day.
     if not pick:
-        at.log("tail_hedge: no suitable OTM put found — standing down today")
-        at.save_state(state)
+        at.log("tail_hedge: no suitable OTM put found — retry next cycle")
         return
     ask = pick["ask"]
     contract_cost = ask * 100
@@ -215,6 +217,7 @@ def _establish(tc, odc, state, dry):
                                 time_in_force=TimeInForce.DAY, limit_price=lim)
         o = tc.submit_order(order_data=req)
         entry = float(o.filled_avg_price) if getattr(o, "filled_avg_price", None) else ask
+        th["last_buy_date"] = today_s          # latch only on a real establish
         th["holding"] = {"symbol": pick["symbol"], "qty": qty, "entry": entry,
                          "entry_date": today_s, "strike": pick["strike"],
                          "expiry": pick["expiry"]}

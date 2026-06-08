@@ -116,6 +116,24 @@ def classify(scan, vix, now=None, event_day: bool = False) -> dict:
             reason = (f"{idx} range-bound, VIX {vol} — short premium "
                       f"(0DTE condor in its window / mean-reversion credit spread)")
 
+    # Dispersion overlay: even when the INDEX is range-bound or just chopping, single
+    # names can be in a strong DIRECTIONAL move (e.g. a semi breakout — MRVL +14%,
+    # INTC +12% — while SPY is flat). A single-name momentum DEBIT spread (defined-risk,
+    # WITH the trend, anti-chase-guarded) is a real opportunity the index-only read
+    # misses. Enable it whenever a strong mover is present, except in the HIGH-vol /
+    # event-day lockout (where standing down still wins).
+    if not event_day and vol not in ("HIGH", "UNKNOWN"):
+        strong = [r for r in (scan or [])
+                  if r.get("symbol") not in ("SPY", "QQQ", "IWM", "DIA")
+                  and abs(r.get("day_pct") or 0) >= cfg.REGIME_STRONG_PCT]
+        if strong:
+            if "debit_spread" not in allowed:
+                allowed = allowed + ["debit_spread"]
+            flat = False
+            top = max(strong, key=lambda r: abs(r.get("day_pct") or 0))
+            reason += (f" | dispersion: {top['symbol']} {top['day_pct']:+.1f}% — "
+                       f"single-name momentum debit spreads enabled")
+
     return {
         "trend": trend, "vol": vol, "index": idx, "index_move": move, "vix": vix,
         "allowed": allowed, "flat": flat, "direction": direction, "reason": reason,
