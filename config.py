@@ -51,6 +51,11 @@ ALPACA_API_KEY    = _env.get("ALPACA_API_KEY", "")
 ALPACA_SECRET_KEY = _env.get("ALPACA_SECRET_KEY", "")
 ANTHROPIC_API_KEY = _env.get("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL      = _env.get("CLAUDE_MODEL", "claude-fable-5")
+# fable-5 is an extended-THINKING model: it spends output tokens reasoning BEFORE it
+# writes the JSON answer. With a big trading context that thinking can run ~800-1500
+# tokens, so the budget must comfortably fit thinking + the ~600-token JSON or the
+# answer is truncated (stop_reason=max_tokens, empty text -> "no JSON value found").
+CLAUDE_MAX_TOKENS = int(_env.get("CLAUDE_MAX_TOKENS", "8000"))
 TELEGRAM_TOKEN    = _env.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID  = _env.get("TELEGRAM_CHAT_ID", "")
 

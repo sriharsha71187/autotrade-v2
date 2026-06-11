@@ -1056,10 +1056,10 @@ def call_claude(context: dict) -> dict:
                 headers={"x-api-key": cfg.ANTHROPIC_API_KEY,
                          "anthropic-version": "2023-06-01",
                          "content-type": "application/json"},
-                json={"model": cfg.CLAUDE_MODEL, "max_tokens": 1200,
+                json={"model": cfg.CLAUDE_MODEL, "max_tokens": cfg.CLAUDE_MAX_TOKENS,
                       "system": system_prompt,
                       "messages": [{"role": "user", "content": user_msg}]},
-                timeout=60,
+                timeout=90,
             ).json()
             # Surface a real API error instead of letting an empty `content` fall
             # through to the parser as a bogus "no JSON value found" (that masked a
@@ -1068,6 +1068,12 @@ def call_claude(context: dict) -> dict:
                 err = r.get("error", {}) or {}
                 raise RuntimeError(f"API {err.get('type','error')}: "
                                    f"{err.get('message', r)}")
+            # fable-5 reasons before answering. If the budget runs out mid-thought the
+            # JSON answer is truncated/empty — name it explicitly so it doesn't look
+            # like a parse bug, and so the outage alert fires.
+            if r.get("stop_reason") == "max_tokens":
+                raise RuntimeError("model truncated at max_tokens (thinking budget too "
+                                   "small for the JSON answer — raise CLAUDE_MAX_TOKENS)")
             text = "".join(b.get("text", "") for b in r.get("content", [])
                            if b.get("type") == "text")
             return _parse_model_json(text)
@@ -1081,7 +1087,7 @@ def call_claude(context: dict) -> dict:
     # engine is blind until it's fixed. Alert loudly — but throttle so a multi-hour
     # outage doesn't spam Telegram every cycle.
     es = str(last_err)
-    if any(k in es for k in ("API ", "credit", "authentication", "rate", "model:")):
+    if any(k in es for k in ("API ", "credit", "authentication", "rate", "model:", "max_tokens", "truncat")):
         global _LAST_API_ALERT_AT
         _now = et_now()
         if (_LAST_API_ALERT_AT is None
