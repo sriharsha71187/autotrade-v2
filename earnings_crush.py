@@ -55,8 +55,11 @@ def held_value(tc, state) -> float:
 
 
 def _earnings_today(sym, today):
-    """True if `sym` reports earnings today (after the close) per yfinance. Best-
-    effort: returns False on any missing/ambiguous data."""
+    """True if `sym` reports AFTER THE CLOSE (AMC) today per yfinance — i.e. there is
+    still an UPCOMING binary tonight. A morning (BMO) report already happened: its IV
+    already crushed at the open, so it is neither a premium-selling setup nor a reason
+    to block an afternoon momentum hold. Best-effort: False on missing data, but
+    conservative (True) when the report is today with an unknown time."""
     if not _YF_OK:
         return False
     try:
@@ -65,7 +68,12 @@ def _earnings_today(sym, today):
             return False
         for ts in df.index:
             try:
-                if ts.date() == today:
+                if ts.date() != today:
+                    continue
+                hour = getattr(ts, "hour", 0)
+                # AMC ~16:00+ ET counts; BMO (~4:00–12:00) already passed -> skip.
+                # hour == 0 usually means "time not supplied" -> treat as unknown AMC.
+                if hour >= 16 or hour == 0:
                     return True
             except Exception:
                 continue
@@ -111,10 +119,16 @@ def _front_chain(odc, sym, spot, today):
         mid = (bid + ask) / 2 if (bid > 0 and ask > 0) else (ask or bid or 0.0)
         rows.append({"symbol": osym, "type": meta["type"], "strike": meta["strike"],
                      "expiry": meta["expiry"], "bid": bid, "ask": ask, "mid": mid})
+    from datetime import timedelta
     future = sorted({r["expiry"] for r in rows if r["expiry"] > today.isoformat()})
     if not future:
         return None, []
-    exp = future[0]
+    # Prefer an expiry with a DTE buffer so a single missed post-earnings close doesn't
+    # let the condor expire ITM and assign. Fall back to the nearest if nothing further
+    # out is listed (still defined-risk; just less buffer).
+    min_exp = (today + timedelta(days=cfg.EARNINGS_MIN_DTE)).isoformat()
+    buffered = [e for e in future if e >= min_exp]
+    exp = buffered[0] if buffered else future[0]
     return exp, [r for r in rows if r["expiry"] == exp and r["mid"] > 0]
 
 

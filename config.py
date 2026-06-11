@@ -267,6 +267,9 @@ EARNINGS_VIX_MIN  = 16.0
 EARNINGS_VIX_MAX  = 22.0
 EARNINGS_MAX_RISK = 1_000.0   # max defined loss per earnings trade
 EARNINGS_WING_WIDTH = 5.0
+EARNINGS_MIN_DTE  = 2         # prefer an expiry >= this many days out, so a single
+                              # missed post-earnings close can't let the condor expire
+                              # ITM and assign (falls back to nearest if none listed)
 EARNINGS_UNIVERSE = [         # liquid optionable names with clean earnings moves
     "AAPL", "MSFT", "AMZN", "GOOGL", "META", "NVDA", "TSLA", "AMD", "NFLX", "CRM",
 ]

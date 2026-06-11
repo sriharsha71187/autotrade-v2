@@ -95,6 +95,7 @@ def default_state() -> dict:
         "trading_day": "",          # YYYY-MM-DD the state belongs to
         "halted": False,            # STOP command or loss-halt sets this True
         "start_equity": None,       # equity at first cycle of the day (None = not set yet)
+        "start_hold_books_value": None,  # day-open mark of the hold-through books, to net their drift out of the intraday loss halt
         "last_entry_time": {},      # {symbol: iso-timestamp} for cooldown
         "active_multileg": [],      # [{legs,qty,entry_net,opened}] spreads/condors we manage
         "active_options": [],       # [{symbol, qty, entry, opened}] long options we manage
@@ -1169,10 +1170,15 @@ def multileg_risk(legs, net_price, qty) -> float | None:
 
 
 def close_symbols(tc, symbols, dry):
+    """Market-close each symbol/leg. Returns the SET of symbols confirmed FLAT (closed
+    now, or already gone from the account). Callers MUST only drop tracking for symbols
+    in the returned set — a leg that failed to close is still live and has to be
+    retried, never silently abandoned. Abandoning it orphans the spread: still open at
+    the broker with no code stop/target and invisible to the model."""
     if dry:
         for sym in symbols:
             log(f"[DRY] would CLOSE {sym}")
-        return
+        return set(symbols)
     # Pass 1: cancel any resting order touching these symbols BEFORE closing. A
     # leftover opposite-side order (e.g. another spread's still-working leg sharing
     # this strike) makes close_position reject with "wash trade detected. use complex
@@ -1190,14 +1196,22 @@ def close_symbols(tc, symbols, dry):
     except Exception as ce:
         log(f"pre-close cancel failed: {ce}")
     time.sleep(1.0)                       # let the cancels settle so the close isn't blocked
-    # Pass 2: market-close each leg.
+    # Pass 2: market-close each leg. Track which legs are confirmed flat.
+    flat = set()
     for sym in symbols:
         try:
             tc.close_position(sym)
             log(f"CLOSED {sym}")
             tg_send(f"✅ Closed {sym}.")
+            flat.add(sym)
         except Exception as e:
-            log(f"close {sym} failed: {e}")
+            es = str(e)
+            # "position not found" (40410000) = the leg is already gone -> flat.
+            if "position not found" in es or "40410000" in es:
+                flat.add(sym)
+            else:
+                log(f"close {sym} failed: {e}")
+    return flat
 
 
 # ===========================================================================
@@ -1214,16 +1228,34 @@ def manage_multileg(tc, odc, state, dry):
         return
     from alpaca.data.requests import OptionLatestQuoteRequest
     try:
-        held = {p.symbol for p in tc.get_all_positions()}
+        held_pos = {p.symbol: p for p in tc.get_all_positions()}
+        held = set(held_pos)
     except Exception:
-        held = None
+        held_pos, held = {}, None
     still = []
     for pos in items:
         try:
             legs = pos["legs"]
             qty = int(pos.get("qty", 1))
-            entry_net = float(pos["entry_net"])     # $; + credit received, − debit paid
             symbols = [l["symbol"] for l in legs]
+            # Reconcile the cost basis to the ACTUAL fill once the legs are held. The
+            # stored entry_net was the model's INTENDED net_price; a limit can fill at a
+            # different net, which would make every stop/target and the displayed P&L
+            # wrong from inception. Recompute from each leg's avg_entry_price (+ for a
+            # short we collect, − for a long we pay), one time.
+            if (held and not pos.get("basis_reconciled")
+                    and all(s in held_pos for s in symbols)):
+                try:
+                    net = 0.0
+                    for l in legs:
+                        ap = abs(float(held_pos[l["symbol"]].avg_entry_price))
+                        net += ap if l["side"] == "sell" else -ap
+                    pos["entry_net"] = round(net * 100 * qty, 2)
+                    pos["basis_reconciled"] = True
+                    log(f"MULTILEG basis reconciled {symbols}: entry_net=${pos['entry_net']:.0f} (actual fill)")
+                except Exception as be:
+                    log(f"multileg basis reconcile failed {symbols}: {be}")
+            entry_net = float(pos["entry_net"])     # $; + credit received, − debit paid
             if held is not None and not any(s in held for s in symbols):
                 # Legs aren't positions yet. If the entry limit order is still
                 # working, keep tracking it (and cancel if it's gone stale) so a
@@ -1266,8 +1298,12 @@ def manage_multileg(tc, odc, state, dry):
             if _is_eod and not pos.get("overnight"):
                 log(f"MULTILEG EOD close {symbols}")
                 tg_send("🧩 EOD-closing spread.")
-                close_symbols(tc, symbols, dry)
-                if dry:
+                flat = close_symbols(tc, symbols, dry)
+                # Only drop tracking when EVERY leg is confirmed flat. A partial/failed
+                # close must stay tracked and retry — otherwise the spread is orphaned
+                # (live at the broker, no stop/target, invisible to the model).
+                if not all(s in flat for s in symbols):
+                    log(f"MULTILEG EOD close INCOMPLETE {[s for s in symbols if s not in flat]} — keeping tracked")
                     still.append(pos)
                 continue
             q = odc.get_option_latest_quote(OptionLatestQuoteRequest(symbol_or_symbols=symbols))
@@ -1305,8 +1341,10 @@ def manage_multileg(tc, odc, state, dry):
             if reason:
                 log(f"MULTILEG EXIT {symbols}: {reason}")
                 tg_send(f"🧩 Closing spread: {reason}.")
-                close_symbols(tc, symbols, dry)
-                if dry:
+                flat = close_symbols(tc, symbols, dry)
+                # Keep tracking unless every leg confirmed flat (no silent orphan).
+                if not all(s in flat for s in symbols):
+                    log(f"MULTILEG EXIT INCOMPLETE {[s for s in symbols if s not in flat]} — keeping tracked")
                     still.append(pos)
             else:
                 still.append(pos)
@@ -1423,9 +1461,10 @@ def manage_options(tc, odc, state, dry):
         if reason:
             log(f"OPTION EXIT {sym}: {reason}")
             tg_send(f"📊 Exiting {sym} ({reason}).")
-            close_symbols(tc, [sym], dry)
-            if dry:
-                still.append(o)  # dry-run didn't really close it
+            flat = close_symbols(tc, [sym], dry)
+            if sym not in flat:              # close failed -> keep tracking, retry (no orphan)
+                log(f"OPTION EXIT INCOMPLETE {sym} — keeping tracked")
+                still.append(o)
         else:
             still.append(o)
     state["active_options"] = still
@@ -1472,6 +1511,53 @@ def reconcile_overnight_stocks(tc, state, dry, skip=None):
         except Exception as e:
             log(f"overnight reconcile {sym} failed: {e}")
             failed = True  # don't latch -> retry the stragglers next cycle
+
+    # Also force-close any TRACKED spread / long option carried from a PRIOR day that
+    # is NOT a deliberate overnight hold. It should have been EOD-closed yesterday, but
+    # if the close was missed (Mac asleep) it rides today — a 0DTE/short-DTE expiring
+    # ITM means assignment. reconcile only sweeps STOCKS above; options need this.
+    def _prior_day(ts):
+        try:
+            return datetime.fromisoformat(ts).date().isoformat() < today
+        except Exception:
+            return False
+    ml_keep = []
+    for pos in (state.get("active_multileg") or []):
+        syms = [l["symbol"] for l in (pos.get("legs") or [])]
+        if pos.get("overnight") or not _prior_day(pos.get("opened", "")) or not syms:
+            ml_keep.append(pos)
+            continue
+        if dry:
+            log(f"[DRY] would reconcile stray prior-day spread {syms}")
+            ml_keep.append(pos)
+            continue
+        flat = close_symbols(tc, syms, dry)
+        if all(s in flat for s in syms):
+            log(f"OVERNIGHT RECONCILE: closed stray prior-day spread {syms} (missed EOD close)")
+            tg_send(f"🧹 Reconciled stray overnight spread {syms} (missed EOD close).")
+        else:
+            ml_keep.append(pos)
+            failed = True
+    state["active_multileg"] = ml_keep
+    opt_keep = []
+    for o in (state.get("active_options") or []):
+        sym = o.get("symbol")
+        if o.get("overnight") or not _prior_day(o.get("opened", "")) or not sym:
+            opt_keep.append(o)
+            continue
+        if dry:
+            log(f"[DRY] would reconcile stray prior-day option {sym}")
+            opt_keep.append(o)
+            continue
+        flat = close_symbols(tc, [sym], dry)
+        if sym in flat:
+            log(f"OVERNIGHT RECONCILE: closed stray prior-day option {sym} (missed EOD close)")
+            tg_send(f"🧹 Reconciled stray overnight option {sym} (missed EOD close).")
+        else:
+            opt_keep.append(o)
+            failed = True
+    state["active_options"] = opt_keep
+
     # Latch only on a clean pass (dry runs never mutate state).
     if not dry and not failed:
         state["overnight_reconciled"] = today
@@ -1715,7 +1801,9 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
     start_eq = state.get("start_equity")
     if start_eq is None:
         start_eq = acct["equity"]
-    daily_pl = acct["equity"] - start_eq
+    # Prefer the INTRADAY P&L the cycle computed (shielded-book drift already netted
+    # out); fall back to the raw equity delta only if it isn't present.
+    daily_pl = acct["day_pl"] if "day_pl" in acct else (acct["equity"] - start_eq)
     if (daily_pl <= cfg.DAILY_LOSS_HALT and action not in ("hold", "close")
             and not state.get("loss_override")):
         return False, f"daily loss halt hit ({daily_pl:.0f})"
@@ -2205,6 +2293,19 @@ def run_cycle(dry: bool = False):
     held_books = (sleeve | od.held_symbols(state)
                   | th.held_symbols(state) | ec.held_symbols(state))
 
+    # Daily-loss-halt + profit gates must reflect INTRADAY P&L, not the mark drift of
+    # the shielded HOLD-THROUGH books (the ~$25k growth sleeve, the tail-hedge puts,
+    # the earnings condor). Those can swing the account hundreds of $ overnight or
+    # intraday and would otherwise false-trip the floor on a flat intraday day — or
+    # mask a real intraday blowout behind a green sleeve. Net out their value change
+    # since day open. (The overnight-drift book liquidates daily and is tiny, so it's
+    # intentionally left in; its mark doesn't persist to distort the day.)
+    hold_books_value = (gs._sleeve_market_value(tc, state)
+                        + th.held_value(tc, state) + ec.held_value(tc, state))
+    if state.get("start_hold_books_value") is None:
+        state["start_hold_books_value"] = hold_books_value
+    book_drift = hold_books_value - state["start_hold_books_value"]
+
     # 1c. Overnight reconciliation (once/day): if the EOD flatten was missed (Mac
     #     asleep through the close), a non-book stock can survive to today with an
     #     expired DAY bracket — unprotected. Sweep any such carryover before trading.
@@ -2220,7 +2321,7 @@ def run_cycle(dry: bool = False):
 
     # 2b. Daily loss halt — latches for the rest of the day and alerts once.
     # Skipped while the OVERRIDE day-flag is on (user chose to keep trading).
-    daily_pl = acct["equity"] - state["start_equity"]
+    daily_pl = acct["equity"] - state["start_equity"] - book_drift   # INTRADAY P&L (book drift netted out)
     if daily_pl <= cfg.DAILY_LOSS_HALT and not state.get("halted") and not state.get("loss_override"):
         # Standard daily-loss-limit behavior: hard stop — FLATTEN the INTRADAY book
         # and halt, so the day's loss is actually capped. The growth sleeve is a
@@ -2307,11 +2408,15 @@ def run_cycle(dry: bool = False):
     # plus open unrealized — the ground truth the model should trust over any
     # per-symbol fill math. Profit-target gating uses this same number. The
     # deployed-capital cap counts only the INTRADAY book, so exclude the sleeve.
-    books_value = (gs._sleeve_market_value(tc, state) + od.held_value(tc, state)
-                   + th.held_value(tc, state) + ec.held_value(tc, state))
+    # Deployed = GROSS intraday exposure: sum |market value| of every non-book leg.
+    # `positions` already excludes held_books, so this is the true intraday figure.
+    # (The old abs(long_mv+short_mv)−books netted short option legs against longs and
+    # double-abs'd, badly under-counting gross exposure whenever a credit spread/condor
+    # was open — letting the deployed cap be silently overrun.)
+    deployed_gross = round(sum(abs(p.get("market_value", 0.0) or 0.0) for p in positions), 2)
     acct = {**acct,
-            "positions_value": round(abs(acct.get("positions_value", 0.0)) - books_value, 2),
-            "day_pl": round(daily_pl, 2),
+            "positions_value": deployed_gross,
+            "day_pl": round(daily_pl, 2),                # INTRADAY P&L (book drift netted)
             "open_unrealized_pl": round(sum(p["unrealized_pl"] for p in positions), 2),
             "profit_target": cfg.DAILY_PROFIT_TARGET,
             "profit_stretch": cfg.DAILY_PROFIT_STRETCH}

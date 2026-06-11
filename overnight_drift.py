@@ -67,7 +67,12 @@ def held_value(tc, state) -> float:
 # ===========================================================================
 def _regime_ok(vix) -> tuple[bool, str]:
     """Risk-on gate: index above its trend MA and VIX calm. Returns (ok, reason)."""
-    if vix is not None and vix >= cfg.OVERNIGHT_VIX_CEILING:
+    # Fail CLOSED on missing VIX: no overnight $5k buy without a confirmed-calm vol
+    # read. Treating VIX=None as "calm" silently disabled the gate exactly on the
+    # data-flaky nights where gap risk is highest.
+    if vix is None:
+        return False, "VIX unavailable — standing down (no overnight buy without a vol read)"
+    if vix >= cfg.OVERNIGHT_VIX_CEILING:
         return False, f"VIX {vix:.1f} >= {cfg.OVERNIGHT_VIX_CEILING}"
     if not _YF_OK:
         # Without price history we can't confirm the uptrend — be conservative.
