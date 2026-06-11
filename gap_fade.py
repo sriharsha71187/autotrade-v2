@@ -128,6 +128,23 @@ def run(tc, state, dry: bool):
         qty = int(cfg.GAP_FADE_NOTIONAL // last)
         if qty < 1:
             return
+        # A bracket is an ENTRY order — Alpaca rejects it ("bracket orders must be
+        # entry orders", code 42210000) if a position OR a working order already
+        # exists on the name, because the TP/SL legs would then reduce/close rather
+        # than open (this is exactly why the 6/9 AMD gap-fade failed). Only fade a
+        # name we're genuinely flat on; otherwise latch and move on.
+        try:
+            held = {p.symbol for p in tc.get_all_positions()}
+            working = {o.symbol for o in tc.get_orders(
+                filter=at.GetOrdersRequest(status=at.QueryOrderStatus.OPEN, limit=200))}
+        except Exception as e:
+            at.log(f"gap_fade: could not verify flat for {sym} ({e}) — skip")
+            return
+        if sym in held or sym in working:
+            at.log(f"gap_fade: {sym} already has a position/order — skip (bracket needs a flat entry)")
+            gf["last_trade_date"] = today
+            at.save_state(state)
+            return
         # Bracket: target = prior close (the fade fill); stop a fixed % beyond entry.
         if direction == "short":
             target = round(prev, 2)

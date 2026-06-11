@@ -27,3 +27,6 @@ autotrade_dryrun_capture.log
 
 # macOS
 .DS_Store
+
+# Claude Code runtime lock
+.claude/scheduled_tasks.lock

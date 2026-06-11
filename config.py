@@ -50,7 +50,7 @@ _env = _load_env()
 ALPACA_API_KEY    = _env.get("ALPACA_API_KEY", "")
 ALPACA_SECRET_KEY = _env.get("ALPACA_SECRET_KEY", "")
 ANTHROPIC_API_KEY = _env.get("ANTHROPIC_API_KEY", "")
-CLAUDE_MODEL      = _env.get("CLAUDE_MODEL", "claude-sonnet-4-6")
+CLAUDE_MODEL      = _env.get("CLAUDE_MODEL", "claude-fable-5")
 TELEGRAM_TOKEN    = _env.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID  = _env.get("TELEGRAM_CHAT_ID", "")
 
@@ -108,6 +108,9 @@ PREMIUM_INDEX_UNDERLYINGS = ["SPY", "QQQ", "IWM", "DIA"]
 TICKER_COOLDOWN_MIN    = 10
 MULTILEG_COOLDOWN_MIN  = 12        # min gap between spread/condor ENTRIES, so a
                                    # working (unfilled) condor isn't re-submitted every cycle
+MAX_SPREADS_PER_NAME_PER_DAY = 3   # cap re-entries on ONE underlying/day — stops the
+                                   # churn (6/9: 7 MRVL spreads, mostly unfilled) that
+                                   # just bleeds spread/slippage on the same thesis
 VIX_CONDOR_CEILING     = 25.0
 
 # ---- active stock management: trail the bracket stop to lock in gains ---------
@@ -303,6 +306,7 @@ RUNTIME_SETTABLE = {
     "PER_OPTION_NOTIONAL_CAP": float,
     "OPTION_RISK_TARGET": float,
     "MAX_SAME_DIRECTION_POSITIONS": int,
+    "MAX_SPREADS_PER_NAME_PER_DAY": int,
     "CREDIT_SPREAD_INDEX_ONLY": bool,
     "OVERNIGHT_MOMENTUM_ENABLED": bool,
     "VIX_CONDOR_CEILING": float,

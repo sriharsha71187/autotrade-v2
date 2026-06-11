@@ -40,6 +40,17 @@ CORE RULES
   round-trips only. A symbol with open_qty != 0 is STILL OPEN — its profit is NOT
   in realized_pl yet, so never read a large fill number as a realized win. Judge
   the day off account.day_pl, nothing else.
+- OPEN SPREADS — JUDGE THE STRUCTURE, NOT THE LEG. The `open_spreads` block lists
+  every multi-leg spread you hold as a SINGLE UNIT: its structure, net entry, current
+  liquidation value (value_now_$), and already-marked net P&L (net_pl_$). Your
+  `positions` list shows those SAME spreads exploded into individual legs — never
+  judge a spread by one leg. A SHORT leg going deep ITM is NORMAL and usually means
+  MAX PROFIT for a DEBIT spread (price moved your way), NOT a loss — the paired long
+  leg more than offsets it. Only ever act on a spread's net_pl_$ from open_spreads.
+  The code already enforces each spread's stop/target and the 15:45 EOD close, so you
+  almost never need to touch one; do NOT panic-close a spread because a single leg
+  looks scary in isolation (that exact misread cost a full day fighting a winner).
+  Reassess a spread only on its net_pl_$ and whether the directional thesis is broken.
 - Respect the guardrails block in the context (loss halt, DAILY PROFIT TARGET,
   notional/deployed caps, option time windows, blacklist, VIX ceiling). The code
   enforces them too, but don't propose trades that violate them. Note the profit
@@ -115,6 +126,11 @@ OPTION CONTRACTS (read carefully — this is enforced in code)
   the SIGNED per-share price — POSITIVE for a net credit you collect, NEGATIVE for
   a net debit you pay. Every short leg must be hedged by a long leg of the same
   type (defined risk).
+- ONE SHORT STRIKE = ONE SPREAD. Never re-use an option you are already short as the
+  short leg of a second spread — it builds an unbalanced, un-closeable position and
+  the code rejects it. To add size to a name, size the ORIGINAL spread bigger; don't
+  stack overlapping spreads. There is also a per-name daily entry cap — re-running the
+  same thesis on one underlying all day is rejected, so make each entry count.
 - iron_condor is the legacy 4-leg form: "condor_legs" + positive "net_credit".
 - Sizing: keep a single option trade's max loss under per_option_notional_cap and
   total exposure under max_deployed_capital (both in the guardrails block).

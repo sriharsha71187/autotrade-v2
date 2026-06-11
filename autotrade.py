@@ -99,6 +99,7 @@ def default_state() -> dict:
         "active_multileg": [],      # [{legs,qty,entry_net,opened}] spreads/condors we manage
         "active_options": [],       # [{symbol, qty, entry, opened}] long options we manage
         "aborted_today": [],        # symbols deliberately aborted (1 abort/symbol/day)
+        "entries_today": {},        # {underlying: spread/condor submit count} — per-name daily cap
         "loss_override": False,     # OVERRIDE command: keep trading past the daily loss halt (today only)
         "last_cycle_at": None,      # iso-ts of the last real cycle (for cadence throttle)
         "last_action": "",          # human-readable summary of last cycle action
@@ -333,8 +334,14 @@ def abort_position(tc, state, decision, now, dry) -> dict:
         denied.append("no symbol")
     if conv != "high":
         denied.append("conviction not high")
-    if held_min is None or held_min < cfg.TICKER_COOLDOWN_MIN:
-        denied.append(f"held {held_min if held_min is None else round(held_min)}m < {cfg.TICKER_COOLDOWN_MIN}m")
+    # Anti-flip-flop cooldown applies only when we KNOW the position is fresh. If no
+    # entry-time was recorded (held_min is None — e.g. an option leg the engine never
+    # registered in last_entry_time), an unknown-age position must NOT be permanently
+    # un-abortable: a high-conviction, broken-thesis exit has to be able to fire. The
+    # once-per-symbol-per-day cap below still prevents spamming. (This bug vetoed the
+    # SMCI exit ~30× on 6/10 with "held None < 10m".)
+    if held_min is not None and held_min < cfg.TICKER_COOLDOWN_MIN:
+        denied.append(f"held {round(held_min)}m < {cfg.TICKER_COOLDOWN_MIN}m")
     if sym in (state.get("aborted_today") or []):
         denied.append("already aborted today")
     if denied:
@@ -344,8 +351,14 @@ def abort_position(tc, state, decision, now, dry) -> dict:
         log(f"[DRY] would ABORT {sym} (cancel bracket + market-close)")
         return {"status": "dry_run", "action": "abort", "symbol": sym}
     try:
-        for o in tc.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN, limit=100)):
-            if o.symbol == sym and not parse_occ(o.symbol):
+        # Cancel any resting order touching this symbol before closing. For a stock
+        # that's its bracket (stop+target); for an option leg it's the working order
+        # that would otherwise block the close as a wash trade. Either way the close
+        # can't fire while an opposite-side order rests on the symbol.
+        for o in tc.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN, limit=200)):
+            osyms = {o.symbol} | {getattr(l, "symbol", None)
+                                  for l in (getattr(o, "legs", None) or [])}
+            if sym in osyms:
                 tc.cancel_order_by_id(o.id)
         time.sleep(1.0)                       # let the cancels settle so shares free up
         tc.close_position(sym)
@@ -1014,6 +1027,9 @@ def _parse_model_json(text: str):
     raise ValueError("no JSON value found in model response")
 
 
+_LAST_API_ALERT_AT = None   # throttle for the "engine down" Telegram alert
+
+
 def call_claude(context: dict) -> dict:
     system_prompt = Path(__file__).with_name("alpaca_system_prompt.txt").read_text()
     user_msg = (
@@ -1044,6 +1060,13 @@ def call_claude(context: dict) -> dict:
                       "messages": [{"role": "user", "content": user_msg}]},
                 timeout=60,
             ).json()
+            # Surface a real API error instead of letting an empty `content` fall
+            # through to the parser as a bogus "no JSON value found" (that masked a
+            # whole credit-balance outage on 6/11 as if it were a parse bug).
+            if r.get("type") == "error" or "error" in r:
+                err = r.get("error", {}) or {}
+                raise RuntimeError(f"API {err.get('type','error')}: "
+                                   f"{err.get('message', r)}")
             text = "".join(b.get("text", "") for b in r.get("content", [])
                            if b.get("type") == "text")
             return _parse_model_json(text)
@@ -1051,7 +1074,19 @@ def call_claude(context: dict) -> dict:
             last_err = e
             if attempt == 0:
                 time.sleep(3)
-    log(f"claude call failed after retries: {last_err}")
+    msg = f"claude call failed after retries: {last_err}"
+    log(msg)
+    # An API-level failure (billing, auth, rate-limit, bad model) is an OUTAGE: the
+    # engine is blind until it's fixed. Alert loudly — but throttle so a multi-hour
+    # outage doesn't spam Telegram every cycle.
+    es = str(last_err)
+    if any(k in es for k in ("API ", "credit", "authentication", "rate", "model:")):
+        global _LAST_API_ALERT_AT
+        _now = et_now()
+        if (_LAST_API_ALERT_AT is None
+                or (_now - _LAST_API_ALERT_AT).total_seconds() > 1800):
+            tg_send(f"🚨 DECISION ENGINE DOWN — model calls failing: {es[:300]}")
+            _LAST_API_ALERT_AT = _now
     return {"action": "hold", "reasoning": f"claude error: {last_err}",
             "close_symbols": [], "conviction": "low"}
 
@@ -1134,10 +1169,29 @@ def multileg_risk(legs, net_price, qty) -> float | None:
 
 
 def close_symbols(tc, symbols, dry):
-    for sym in symbols:
-        if dry:
+    if dry:
+        for sym in symbols:
             log(f"[DRY] would CLOSE {sym}")
-            continue
+        return
+    # Pass 1: cancel any resting order touching these symbols BEFORE closing. A
+    # leftover opposite-side order (e.g. another spread's still-working leg sharing
+    # this strike) makes close_position reject with "wash trade detected. use complex
+    # orders" — and it never clears on its own, so the close loops every cycle
+    # forever (the SMCI tangle on 6/10: 30 rejects, position never exited). Cancel
+    # first, let it settle, then market-close.
+    targets = set(symbols)
+    try:
+        for o in tc.get_orders(filter=GetOrdersRequest(
+                status=QueryOrderStatus.OPEN, limit=200)):
+            osyms = {o.symbol} | {getattr(l, "symbol", None)
+                                  for l in (getattr(o, "legs", None) or [])}
+            if targets & osyms:
+                tc.cancel_order_by_id(o.id)
+    except Exception as ce:
+        log(f"pre-close cancel failed: {ce}")
+    time.sleep(1.0)                       # let the cancels settle so the close isn't blocked
+    # Pass 2: market-close each leg.
+    for sym in symbols:
         try:
             tc.close_position(sym)
             log(f"CLOSED {sym}")
@@ -1230,6 +1284,12 @@ def manage_multileg(tc, odc, state, dry):
                 continue
             cost_to_close *= 100 * qty
             pl = entry_net - cost_to_close
+            # Stash the live net mark + P&L on the spread so the context can show the
+            # model the STRUCTURE's economics (not the isolated legs). Without this the
+            # model reads a short leg going ITM as a catastrophe and panic-closes a
+            # spread that's actually at max profit (the 6/10 SMCI fiasco).
+            pos["pl"] = round(pl)
+            pos["value_now"] = round(-cost_to_close)   # $ to liquidate the spread now
             reason = None
             if entry_net >= 0:               # credit structure
                 if pl <= -1.0 * entry_net:
@@ -1254,6 +1314,46 @@ def manage_multileg(tc, odc, state, dry):
             log(f"multileg management error: {e}")
             still.append(pos)
     state["active_multileg"] = still
+
+
+def open_spreads_for_context(state) -> list:
+    """Present the code-managed multi-leg spreads to the model as STRUCTURES — net
+    entry, live liquidation value, net P&L, and the management plan — NOT as the
+    isolated broker legs that show up in `positions`. A short leg going ITM is normal
+    (often MAX PROFIT) for a debit spread; the model must judge the spread's net P&L,
+    never one leg. Marks are stamped by manage_multileg each cycle (pl, value_now)."""
+    out = []
+    for pos in (state.get("active_multileg") or []):
+        legs = pos.get("legs") or []
+        entry_net = float(pos.get("entry_net", 0.0))   # $ signed: + credit, − debit
+        kind = "credit" if entry_net >= 0 else "debit"
+        calls = [l for l in legs if (parse_occ(l["symbol"]) or {}).get("type") == "call"]
+        puts = [l for l in legs if (parse_occ(l["symbol"]) or {}).get("type") == "put"]
+        if len(legs) >= 4 and calls and puts:
+            label = "iron condor (credit)"
+        elif puts and not calls:
+            label = "bear-put DEBIT spread" if kind == "debit" else "bull-put CREDIT spread"
+        elif calls and not puts:
+            label = "bull-call DEBIT spread" if kind == "debit" else "bear-call CREDIT spread"
+        else:
+            label = f"{len(legs)}-leg {kind} spread"
+        plan = ("target +50% credit / stop −100% credit" if kind == "credit"
+                else "target +100% debit / stop −50% debit")
+        out.append({
+            "underlying": _decision_underlying({"legs": legs}) or "?",
+            "structure": label,
+            "qty": int(pos.get("qty", 1)),
+            "legs": [f"{l['side']} {(parse_occ(l['symbol']) or {}).get('strike','?')}"
+                     f"{((parse_occ(l['symbol']) or {}).get('type','?') or '?')[0].upper()}"
+                     for l in legs],
+            "entry_net_$": round(entry_net),
+            "value_now_$": pos.get("value_now"),
+            "net_pl_$": pos.get("pl"),
+            "overnight": bool(pos.get("overnight")),
+            "managed_by_code": f"stop/target auto-enforced ({plan}); EOD-closed 15:45 unless overnight",
+            "opened": pos.get("opened"),
+        })
+    return out
 
 
 # ===========================================================================
@@ -1585,6 +1685,30 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
         if recent and min(recent) < cfg.MULTILEG_COOLDOWN_MIN:
             return False, (f"multi-leg cooldown ({min(recent):.0f}<"
                            f"{cfg.MULTILEG_COOLDOWN_MIN}m since last spread)")
+    # No shared short legs across spreads. Re-using the SAME short option as the short
+    # leg of more than one spread (the 6/10 SMCI tangle: three bear-puts all short the
+    # 33500) builds an unbalanced, oversized short that the close path can't unwind —
+    # closing one spread's leg collides with the other's resting order ("wash trade
+    # detected"), and the contract becomes un-exitable. One short strike = exactly one
+    # open spread.
+    if action == "multi_leg":
+        open_shorts = set()
+        for m in (state.get("active_multileg") or []):
+            for l in (m.get("legs") or []):
+                if l.get("side") == "sell":
+                    open_shorts.add(l.get("symbol"))
+        for l in (decision.get("legs") or []):
+            if l.get("side") == "sell" and l.get("symbol") in open_shorts:
+                return False, (f"short leg {l.get('symbol')} is already the short of an "
+                               f"open spread — refusing to share a short strike (tangle risk)")
+    # Per-name daily re-entry cap. Stops re-running the SAME thesis on one underlying
+    # all day (6/9: 7 MRVL spreads, mostly unfilled) — each submit leaks spread/slippage.
+    if action in ("iron_condor", "multi_leg"):
+        und = _decision_underlying(decision) or decision.get("symbol")
+        n_today = int((state.get("entries_today") or {}).get(und, 0))
+        if und and n_today >= cfg.MAX_SPREADS_PER_NAME_PER_DAY:
+            return False, (f"{und}: {n_today} spreads already today "
+                           f"(cap {cfg.MAX_SPREADS_PER_NAME_PER_DAY}) — no more re-entries on this name")
     today = now.strftime("%Y-%m-%d")
     if today in cfg.ECON_BLACKOUT_DATES and action not in ("hold", "close"):
         return False, "econ blackout day — no new entries"
@@ -2196,6 +2320,7 @@ def run_cycle(dry: bool = False):
         "now_et": now.isoformat(),
         "account": acct,
         "positions": positions,
+        "open_spreads": open_spreads_for_context(state),
         "growth_sleeve": gs.summary(state),
         "overnight_drift": od.summary(state),
         "tail_hedge": th.summary(state),
@@ -2367,6 +2492,12 @@ def run_cycle(dry: bool = False):
                             else:
                                 log(f"overnight hold DENIED {decision.get('symbol')}: {why_on}")
                         state.setdefault("active_multileg", []).append(ml_entry)
+                        # Per-name daily entry tally (counts submits, filled or not — an
+                        # unfilled re-submit still costs and is exactly the churn we cap).
+                        _und = _decision_underlying(decision) or decision.get("symbol")
+                        if _und:
+                            et = state.setdefault("entries_today", {})
+                            et[_und] = int(et.get(_und, 0)) + 1
                 result = {"status": "dry_run" if dry else "submitted", "action": action,
                           "order_id": order_id, "ref_price": ref_price}
             except Exception as e:
