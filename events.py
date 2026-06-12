@@ -304,9 +304,11 @@ def iv_rank(vix) -> float | None:
 # ===========================================================================
 # Top-level: assess the cycle's event posture
 # ===========================================================================
-def assess(state, scan, vix, now, dry) -> dict | None:
+def assess(state, scan, vix, now, dry, index_iv_rank=None) -> dict | None:
     """Resolve this cycle's event posture + RIDE targets + inject set. None when the
-    router is off (callers treat None as 'no event influence')."""
+    router is off (callers treat None as 'no event influence'). index_iv_rank: the real
+    per-underlying ATM IV-rank from options_intel (preferred over the VIX proxy for
+    FADE_VOL when available)."""
     if not cfg.EVENT_ROUTER_ENABLED:
         return None
     breaking = _breaking_events(now)
@@ -322,7 +324,7 @@ def assess(state, scan, vix, now, dry) -> dict | None:
         for s in (m.get("short") or []):
             ride.setdefault(s, {"dir": "short", "theme": ev["theme"], "headline": ev["headline"]})
 
-    ivr = iv_rank(vix)
+    ivr = index_iv_rank if index_iv_rank is not None else iv_rank(vix)
     posture = "RIDE" if ride else ("BRACE" if sched["brace"] else
                                    ("FADE_VOL" if (ivr is not None and ivr >= cfg.EVENT_IV_RANK_HIGH) else "NEUTRAL"))
     return {

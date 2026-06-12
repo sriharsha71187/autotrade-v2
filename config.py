@@ -179,6 +179,12 @@ EVENT_MAX_RIDE_TRADES = 2        # cap new catalyst trades per RIDE theme/day (a
 EVENT_IV_RANK_HIGH    = 70.0     # iv_rank above this => FADE_VOL (premium-selling favored)
 EVENT_NEWS_LIMIT      = 30       # market-wide headlines pulled per cycle for detection
 EVENT_STATE_FILE      = HOME / "autotrade_events.json"  # econ-calendar + iv-baseline cache
+# Options intel (free IV/greeks-derived signals: real ATM IV-rank + 25Δ skew). Powers
+# a real-IV FADE_VOL and surfaces options positioning to the model. Read-only, no risk.
+OPTIONS_INTEL_ENABLED = True
+OPTIONS_INTEL_FILE    = HOME / "autotrade_options_intel.json"  # rolling per-name ATM-IV history
+OPTIONS_INTEL_MAX_NAMES = 3      # single-name movers to profile per cycle (+ the index ETFs)
+OPTIONS_SKEW_THRESHOLD = 0.02    # |25Δ call IV − put IV| above this => a directional skew
 # Anti-chase RELAXATION for a fresh-catalyst RIDE name (wider bounds, never removed —
 # a continuation entry, not a blow-off-top chase; still a defined-risk debit spread).
 ANTI_CHASE_MAX_VWAP_EXT_EVENT    = 0.08
@@ -372,6 +378,9 @@ RUNTIME_SETTABLE = {
     "EVENT_FRESH_MIN": int,
     "EVENT_MAX_RIDE_TRADES": int,
     "EVENT_IV_RANK_HIGH": float,
+    "OPTIONS_INTEL_ENABLED": bool,
+    "OPTIONS_INTEL_MAX_NAMES": int,
+    "OPTIONS_SKEW_THRESHOLD": float,
     "OVERNIGHT_MOMENTUM_ENABLED": bool,
     "VIX_CONDOR_CEILING": float,
     "MOMENTUM_MAX_DAY_PCT": float,

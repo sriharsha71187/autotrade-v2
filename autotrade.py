@@ -2402,6 +2402,27 @@ def run_cycle(dry: bool = False):
     vix = get_vix()
     now = et_now()
 
+    # Options intel (free IV/greeks-derived positioning): real ATM IV-rank + 25Δ skew
+    # per underlying — for the index ETFs and the top single-name movers. Read-only.
+    # Feeds the event router's FADE_VOL (real IV-rank, not the VIX proxy) and is
+    # surfaced to the model so it can read where vol/skew actually sit.
+    options_intel = {}
+    if cfg.OPTIONS_INTEL_ENABLED:
+        import options_intel as oi_mod
+        movers = [r["symbol"] for r in scan if not r.get("event_catalyst")][:cfg.OPTIONS_INTEL_MAX_NAMES]
+        for u in list(cfg.PREMIUM_INDEX_UNDERLYINGS) + movers:
+            if u in options_intel:
+                continue
+            row = next((r for r in scan if r["symbol"] == u), None)
+            spot = row.get("last") if row else None
+            try:
+                info = oi_mod.compute(odc, u, spot, now) if spot else None
+            except Exception as e:
+                log(f"options_intel {u} failed: {e}")
+                info = None
+            if info:
+                options_intel[u] = info
+
     # Event router (two-sided macro/news: RISK + OPPORTUNITY). Detect live events, set
     # the cycle's posture, and INJECT the affected instruments into the scan NOW — so
     # the bot sees XLE/ITA/GLD the moment the event breaks, not after they climb the
@@ -2411,7 +2432,8 @@ def run_cycle(dry: bool = False):
     if cfg.EVENT_ROUTER_ENABLED:
         import events as ev
         try:
-            event_state = ev.assess(state, scan, vix, now, dry)
+            event_state = ev.assess(state, scan, vix, now, dry,
+                                     index_iv_rank=(options_intel.get("SPY") or {}).get("iv_rank"))
             inject = [s for s in (event_state or {}).get("inject", [])
                       if s not in {r["symbol"] for r in scan}]
             if inject:
@@ -2495,6 +2517,7 @@ def run_cycle(dry: bool = False):
         "fear_greed": fear_greed(),
         "news": breaking_news([r["symbol"] for r in scan[:10]]),
         "events": (__import__("events").summary(event_state) if event_state else None),
+        "options_intel": options_intel or None,
         "stats": honest_trade_stats(tc, state),
         "learnings": load_learnings(),
         "focus": state.get("focus"),

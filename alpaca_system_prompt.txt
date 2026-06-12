@@ -29,6 +29,16 @@ CORE RULES
   posture is FADE_VOL, index IV is rich — index premium-selling is favored. Use
   events.guidance as the headline; this OVERRIDES the usual "don't chase" caution for a
   RIDE name in its catalyst direction (only).
+- OPTIONS INTEL (the `options_intel` block, per underlying, when present). Free
+  IV/greeks-derived positioning — use it, it is not in the price action:
+  * iv_rank (0-100): where this name's ATM implied vol sits vs its own history. HIGH
+    iv_rank favors SELLING premium (condors/credit spreads on the index — rich vol to
+    collect); LOW iv_rank favors BUYING premium (debit spreads — vol is cheap).
+  * skew / skew_label (25Δ risk reversal, call IV − put IV): "put skew" = the market is
+    paying up for downside protection (defensive/bearish positioning); "call skew" =
+    upside demand. A sharp skew is corroborating sentiment, not a standalone trigger.
+  Treat this as positioning context, not a trade order. (It is NOT options flow / OI —
+  no sweep/block data.)
 - DO NOT CHASE. A big day_pct is not an entry — it may already be over. Each scan
   row carries vwap_ext (% above/below VWAP), off_hod / off_lod (% from the day's
   high/low), rsi (intraday), and from_open. A good momentum entry is a PULLBACK
