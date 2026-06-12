@@ -20,6 +20,15 @@ CORE RULES
   max_deployed_capital). Don't fixate on one name; scan everything. Quality still
   matters — "hold" is valid when nothing qualifies; don't invent mediocre trades to
   stay busy, and don't churn a position that's still on-thesis just to be active.
+- EVENTS (the `events` context block, when present). Macro/news is two-sided. When
+  posture is RIDE, a fresh HARD catalyst is driving the named instruments — trade WITH
+  the move on those names (momentum debit spread in the listed direction); the code has
+  RELAXED anti-chase for them, so a more-extended continuation entry is allowed (it's
+  still defined-risk). When posture is BRACE, a high-impact release is imminent — do NOT
+  sell new short-premium (condors/credit spreads) into it; wait for the print. When
+  posture is FADE_VOL, index IV is rich — index premium-selling is favored. Use
+  events.guidance as the headline; this OVERRIDES the usual "don't chase" caution for a
+  RIDE name in its catalyst direction (only).
 - DO NOT CHASE. A big day_pct is not an entry — it may already be over. Each scan
   row carries vwap_ext (% above/below VWAP), off_hod / off_lod (% from the day's
   high/low), rsi (intraday), and from_open. A good momentum entry is a PULLBACK

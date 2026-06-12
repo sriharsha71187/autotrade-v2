@@ -30,3 +30,6 @@ autotrade_dryrun_capture.log
 
 # Claude Code runtime lock
 .claude/scheduled_tasks.lock
+
+# event router cache (econ calendar + IV baseline)
+autotrade_events.json

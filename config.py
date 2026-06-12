@@ -39,7 +39,7 @@ def _load_env() -> dict:
             key, _, val = line.partition("=")
             data[key.strip()] = val.strip().strip('"').strip("'")
     for k in ("ALPACA_API_KEY", "ALPACA_SECRET_KEY", "ANTHROPIC_API_KEY",
-              "CLAUDE_MODEL", "TELEGRAM_TOKEN", "TELEGRAM_CHAT_ID"):
+              "CLAUDE_MODEL", "TELEGRAM_TOKEN", "TELEGRAM_CHAT_ID", "FMP_API_KEY"):
         if os.environ.get(k):
             data[k] = os.environ[k]
     return data
@@ -58,6 +58,10 @@ CLAUDE_MODEL      = _env.get("CLAUDE_MODEL", "claude-fable-5")
 CLAUDE_MAX_TOKENS = int(_env.get("CLAUDE_MAX_TOKENS", "8000"))
 TELEGRAM_TOKEN    = _env.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID  = _env.get("TELEGRAM_CHAT_ID", "")
+# Financial Modeling Prep — free economic-calendar feed for the event router. Optional:
+# with no key the scheduled/BRACE half is a no-op (the breaking-event RIDE half still
+# works off the news feed). Add FMP_API_KEY=... to ~/.autotrade.env to enable it.
+FMP_API_KEY       = _env.get("FMP_API_KEY", "")
 
 # ---- hard guardrails (enforced in code, not left to the model) -------------
 PAPER            = True
@@ -161,6 +165,49 @@ ANTI_CHASE_MAX_VWAP_EXT = 0.04   # block long if >4% above VWAP (short if >4% be
 ANTI_CHASE_MIN_OFF_EXTREME = 0.01  # block if within 1% of the day's high (long) / low (short)
 RSI_OVERBOUGHT = 80.0            # block longs when intraday RSI above this
 RSI_OVERSOLD   = 20.0            # block shorts when intraday RSI below this
+
+# ---- event router (two-sided: macro/news is RISK and OPPORTUNITY) -----------
+# A fresh hard catalyst that creates a directional move is exactly what the momentum
+# books want — so the same event datum routes to RIDE (trade WITH the move, relaxed
+# anti-chase, defined-risk) or BRACE (no new short-premium into a binary you can't
+# predict) or FADE_VOL (after the spike, sell the now-rich index IV). See
+# docs/EVENT_ROUTER_SPEC.md. Ships OFF; enable + watch like every other book.
+EVENT_ROUTER_ENABLED  = False
+EVENT_FRESH_MIN       = 90       # a headline older than this is priced in (skip)
+EVENT_PRE_MIN         = 30       # BRACE this many minutes before a HIGH-impact release
+EVENT_MAX_RIDE_TRADES = 2        # cap new catalyst trades per RIDE theme/day (anti-churn)
+EVENT_IV_RANK_HIGH    = 70.0     # iv_rank above this => FADE_VOL (premium-selling favored)
+EVENT_NEWS_LIMIT      = 30       # market-wide headlines pulled per cycle for detection
+EVENT_STATE_FILE      = HOME / "autotrade_events.json"  # econ-calendar + iv-baseline cache
+# Anti-chase RELAXATION for a fresh-catalyst RIDE name (wider bounds, never removed —
+# a continuation entry, not a blow-off-top chase; still a defined-risk debit spread).
+ANTI_CHASE_MAX_VWAP_EXT_EVENT    = 0.08
+ANTI_CHASE_MIN_OFF_EXTREME_EVENT = 0.003
+RSI_OVERBOUGHT_EVENT = 90.0
+RSI_OVERSOLD_EVENT   = 10.0
+# Live economic-calendar feed (Financial Modeling Prep). US, high-impact only.
+EVENT_ECON_COUNTRIES  = ("US",)
+EVENT_ECON_MIN_IMPACT = "High"
+# Headline keyword signatures -> theme. First match wins.
+EVENT_SIGNATURES = {
+    "oil_geopolitical": ["iran", "israel", "missile", "air strike", "airstrike",
+                         "sanction", "opec", "strait of hormuz", "invasion",
+                         "attack on", "ceasefire", "oil embargo", "tanker"],
+    "rate_dovish":      ["rate cut", "cuts rates", "dovish", "signals easing",
+                         "pauses hikes"],
+    "rate_hawkish":     ["rate hike", "raises rates", "hawkish", "higher for longer"],
+    "macro_shock":      ["new tariff", "tariffs on", "credit downgrade",
+                         "downgrades u.s.", "sovereign default", "debt default"],
+}
+# theme -> affected liquid instruments + risk direction. The deterministic fast path;
+# unmapped events fall back to a (cached) model call.
+EVENT_THEME_MAP = {
+    "oil_geopolitical": {"long": ["XLE", "USO", "XOM", "CVX", "ITA", "LMT", "RTX", "GLD"],
+                         "short": ["JETS", "AAL", "DAL", "UAL", "CCL"], "risk": "off"},
+    "rate_dovish":      {"long": ["SPY", "QQQ", "XLK", "IWM", "GLD"], "short": [], "risk": "on"},
+    "rate_hawkish":     {"long": [], "short": ["QQQ", "IWM", "XLK"], "risk": "off"},
+    "macro_shock":      {"long": ["GLD"], "short": ["SPY", "QQQ", "IWM"], "risk": "off"},
+}
 # Leveraged / inverse ETFs decay and whipsaw; exclude them from the scan so the
 # bot doesn't chase an inverse-ETF spike that's just the underlying selling off.
 LEVERAGED_ETF_EXCLUDE = {
@@ -316,6 +363,11 @@ RUNTIME_SETTABLE = {
     "MAX_SAME_DIRECTION_POSITIONS": int,
     "MAX_SPREADS_PER_NAME_PER_DAY": int,
     "CREDIT_SPREAD_INDEX_ONLY": bool,
+    "EVENT_ROUTER_ENABLED": bool,
+    "EVENT_PRE_MIN": int,
+    "EVENT_FRESH_MIN": int,
+    "EVENT_MAX_RIDE_TRADES": int,
+    "EVENT_IV_RANK_HIGH": float,
     "OVERNIGHT_MOMENTUM_ENABLED": bool,
     "VIX_CONDOR_CEILING": float,
     "MOMENTUM_MAX_DAY_PCT": float,

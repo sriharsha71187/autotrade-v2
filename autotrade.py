@@ -1672,28 +1672,37 @@ def manage_stops(tc, dry, skip=None):
 # ===========================================================================
 # Guardrails applied to a model decision before execution
 # ===========================================================================
-def anti_chase_reason(bullish, row):
+def anti_chase_reason(bullish, row, event=False):
     """A reason to BLOCK an extended momentum entry (buying the top / selling the
     bottom), or None. bullish=True for long/call, False for short/put. Indicators
-    that are missing are skipped (can't assess -> don't block)."""
+    that are missing are skipped (can't assess -> don't block).
+
+    event=True widens the bounds for a fresh-CATALYST name (the event router's RIDE
+    posture): a hard catalyst drives a continuation, so we allow a more-extended
+    entry WITH the move — still bounded (a continuation, not a blow-off chase), and
+    still a defined-risk structure."""
     if not row:
         return None
+    max_ext = cfg.ANTI_CHASE_MAX_VWAP_EXT_EVENT if event else cfg.ANTI_CHASE_MAX_VWAP_EXT
+    min_off = cfg.ANTI_CHASE_MIN_OFF_EXTREME_EVENT if event else cfg.ANTI_CHASE_MIN_OFF_EXTREME
+    ob = cfg.RSI_OVERBOUGHT_EVENT if event else cfg.RSI_OVERBOUGHT
+    os_ = cfg.RSI_OVERSOLD_EVENT if event else cfg.RSI_OVERSOLD
     ext, rsi_v = row.get("vwap_ext"), row.get("rsi")
     if bullish:
-        if ext is not None and ext > cfg.ANTI_CHASE_MAX_VWAP_EXT:
+        if ext is not None and ext > max_ext:
             return f"chasing: {ext:+.1%} above VWAP"
         off = row.get("off_hod")
-        if off is not None and off < cfg.ANTI_CHASE_MIN_OFF_EXTREME:
+        if off is not None and off < min_off:
             return f"chasing: {off:.1%} off high-of-day (at the top)"
-        if rsi_v is not None and rsi_v > cfg.RSI_OVERBOUGHT:
+        if rsi_v is not None and rsi_v > ob:
             return f"chasing: intraday RSI {rsi_v} overbought"
     else:
-        if ext is not None and ext < -cfg.ANTI_CHASE_MAX_VWAP_EXT:
+        if ext is not None and ext < -max_ext:
             return f"chasing: {ext:+.1%} below VWAP"
         off = row.get("off_lod")
-        if off is not None and off < cfg.ANTI_CHASE_MIN_OFF_EXTREME:
+        if off is not None and off < min_off:
             return f"chasing: {off:.1%} off low-of-day (at the bottom)"
-        if rsi_v is not None and rsi_v < cfg.RSI_OVERSOLD:
+        if rsi_v is not None and rsi_v < os_:
             return f"chasing: intraday RSI {rsi_v} oversold"
     return None
 
@@ -1732,7 +1741,7 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
                       offered_options=None, assets=None,
                       option_spread_pct=None, scan_row=None,
                       dir_counts=None, book_symbols=None,
-                      regime=None) -> tuple[bool, str]:
+                      regime=None, event_state=None) -> tuple[bool, str]:
     """ref_price: current per-share price of the asset being traded — the stock
     last price for buy_stock, the option premium per share for buy_option. Used
     for the notional and total-deployed-capital caps.
@@ -1850,6 +1859,16 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
         if und and und not in cfg.PREMIUM_INDEX_UNDERLYINGS:
             return False, (f"{und}: credit spreads/condors are index-only (VRP edge is "
                            f"index-level) — single names trade directional/earnings only")
+    # Event router — BRACE: no new SHORT-PREMIUM into a scheduled binary you can't
+    # predict. A condor/credit spread sold right before a high-impact release is a
+    # coin flip on the gap; defer it until the print is out (post-event the same
+    # event may FLIP to FADE_VOL and the elevated IV makes the sale attractive).
+    if event_state is not None and event_state.get("brace") \
+            and action in ("iron_condor", "multi_leg") \
+            and _decision_strategy(decision) in ("iron_condor", "credit_spread"):
+        nxt = (event_state.get("next_event") or {})
+        return False, (f"BRACE: {nxt.get('name','high-impact event')} in "
+                       f"{nxt.get('mins_until','<')}m — no new short-premium into the release")
     # Cooldown
     if sym and action in ("buy_stock", "buy_option"):
         last = state.get("last_entry_time", {}).get(sym)
@@ -1906,8 +1925,11 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
                                f"(got stop={stop}, target={target})")
             if assets and not assets.get(sym, {}).get("shortable", False):
                 return False, f"{sym} is not shortable"
-        # Anti-chase: don't buy the top / short the bottom of an extended move.
-        cr = anti_chase_reason(direction == "long", scan_row)
+        # Anti-chase: don't buy the top / short the bottom of an extended move —
+        # UNLESS this name is a fresh event-router catalyst in the SAME direction
+        # (RIDE), in which case the bounds widen for a continuation entry.
+        _rd = ((event_state or {}).get("ride", {}) or {}).get(sym, {}).get("dir")
+        cr = anti_chase_reason(direction == "long", scan_row, event=(_rd == direction))
         if cr:
             return False, f"{sym} {cr}"
         # Correlation cap: don't put the whole book on one directional bet.
@@ -1942,7 +1964,10 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
         # Anti-chase on the underlying: a call into an extended up-move (or a put
         # into an extended down-move) is buying the top — block it.
         bullish = (parse_occ(osym) or {}).get("type") == "call"
-        cr = anti_chase_reason(bullish, scan_row)
+        _und = _decision_underlying(decision)
+        _rd = ((event_state or {}).get("ride", {}) or {}).get(_und, {}).get("dir")
+        cr = anti_chase_reason(bullish, scan_row,
+                               event=(_rd == ("long" if bullish else "short")))
         if cr:
             return False, f"{sym or osym} {cr}"
         side_key = "bull" if bullish else "bear"
@@ -2191,6 +2216,9 @@ def status_text(tc, state) -> str:
                   + ("FLAT (no new entries)" if reg.get('flat')
                      else "allowed: " + (", ".join(reg.get('allowed_strategies') or []) or "-"))
                   if reg else "Regime: engine off / not yet computed"),
+                 (f"Events: router {'ON' if cfg.EVENT_ROUTER_ENABLED else 'OFF'}"
+                  + (f" — FMP feed {'keyed' if cfg.FMP_API_KEY else 'NO KEY (BRACE dormant)'}"
+                     if cfg.EVENT_ROUTER_ENABLED else "")),
                  f"Last action: {state.get('last_action','-')}"]
         return "\n".join(lines)
     except Exception as e:
@@ -2375,6 +2403,30 @@ def run_cycle(dry: bool = False):
     vix = get_vix()
     now = et_now()
 
+    # Event router (two-sided macro/news: RISK + OPPORTUNITY). Detect live events, set
+    # the cycle's posture, and INJECT the affected instruments into the scan NOW — so
+    # the bot sees XLE/ITA/GLD the moment the event breaks, not after they climb the
+    # movers list. Runs before regime/context so everything downstream sees them.
+    # No-op when EVENT_ROUTER_ENABLED is off.
+    event_state = None
+    if cfg.EVENT_ROUTER_ENABLED:
+        import events as ev
+        try:
+            event_state = ev.assess(state, scan, vix, now, dry)
+            inject = [s for s in (event_state or {}).get("inject", [])
+                      if s not in {r["symbol"] for r in scan}]
+            if inject:
+                for r in signal_scan(inject):
+                    if r.get("last", 0) >= cfg.MIN_PRICE:
+                        r["event_catalyst"] = True
+                        scan.append(r)
+                log(f"event router: {event_state['posture']} — injected {inject}")
+            elif event_state and event_state["posture"] != "NEUTRAL":
+                log(f"event router: {event_state['posture']}")
+        except Exception as e:
+            log(f"event router failed (continuing without): {e}")
+            event_state = None
+
     # Deterministic regime gate (OFF by default). When enabled, a pure-code
     # classifier decides which strategies are permitted this cycle — or forces the
     # book FLAT. If it's flat AND there is nothing open to manage, skip the model
@@ -2443,6 +2495,7 @@ def run_cycle(dry: bool = False):
         "vix": vix,
         "fear_greed": fear_greed(),
         "news": breaking_news([r["symbol"] for r in scan[:10]]),
+        "events": (__import__("events").summary(event_state) if event_state else None),
         "stats": honest_trade_stats(tc, state),
         "learnings": load_learnings(),
         "focus": state.get("focus"),
@@ -2535,7 +2588,7 @@ def run_cycle(dry: bool = False):
         ok, reason = passes_guardrails(decision, state, acct, now, ref_price,
                                        offered_options, assets, opt_spread, scan_row,
                                        directional_counts(positions), held_books,
-                                       regime=regime)
+                                       regime=regime, event_state=event_state)
         if not ok:
             log(f"guardrail blocked {action}: {reason}")
             result = {"status": "blocked", "action": action, "reason": reason}
