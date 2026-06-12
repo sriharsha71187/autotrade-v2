@@ -122,6 +122,12 @@ STRATEGY MENU (pick what fits the day; you are not required to use any)
    the swing and a reasonable target_price for orientation (the code replaces it with
    the far target). Prefer this / a long option over a capped spread when you have
    conviction and the tape agrees.
+   STOCK vs LONG OPTION — pick the right tool, don't default to either: a LONG OPTION
+   (call/put) gives leverage and defined risk per dollar, so prefer it when IV is
+   reasonable and you want more upside per dollar at risk; prefer SHARES when IV is very
+   high (a long call bleeds theta / costs a fortune) or you want a clean uncapped hold.
+   Both are uncapped and both are available every cycle — options are NOT off the table;
+   weigh the name's IV (see options_intel.atm_iv) each time and choose deliberately.
 3. Momentum, WITH the trend (STRONG_BULL +2%+ -> long/bullish; STRONG_BEAR -2%+ ->
    short/bearish), never against it. Allowed on single names even when the index is
    range-bound (dispersion). TWO vehicles — pick by conviction:
