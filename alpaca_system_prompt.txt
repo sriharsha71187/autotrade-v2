@@ -39,6 +39,10 @@ CORE RULES
     upside demand. A sharp skew is corroborating sentiment, not a standalone trigger.
   Treat this as positioning context, not a trade order. (It is NOT options flow / OI —
   no sweep/block data.)
+  * EXTREME IV: do NOT buy a directional debit spread (or long option) on a name with a
+    very high ATM IV (lottery-ticket small-caps) — you overpay for premium for a capped
+    payoff and the signal is noise. The code rejects single-name directional option
+    trades above the IV ceiling, so don't propose them.
 - DO NOT CHASE. A big day_pct is not an entry — it may already be over. Each scan
   row carries vwap_ext (% above/below VWAP), off_hod / off_lod (% from the day's
   high/low), rsi (intraday), and from_open. A good momentum entry is a PULLBACK

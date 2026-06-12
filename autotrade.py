@@ -1796,7 +1796,7 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
                       offered_options=None, assets=None,
                       option_spread_pct=None, scan_row=None,
                       dir_counts=None, book_symbols=None,
-                      regime=None, event_state=None) -> tuple[bool, str]:
+                      regime=None, event_state=None, options_intel=None) -> tuple[bool, str]:
     """ref_price: current per-share price of the asset being traded — the stock
     last price for buy_stock, the option premium per share for buy_option. Used
     for the notional and total-deployed-capital caps.
@@ -1924,6 +1924,20 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
         nxt = (event_state.get("next_event") or {})
         return False, (f"BRACE: {nxt.get('name','high-impact event')} in "
                        f"{nxt.get('mins_until','<')}m — no new short-premium into the release")
+    # Extreme-IV gate. A directional DEBIT trade (debit spread / long option) on a name
+    # with sky-high ATM IV is a lottery ticket: the premium is hugely overpriced for a
+    # capped payoff, and the signal (incl. skew) is noise. The 6/12 RDW loss — 132% IV,
+    # skew flipped call->put in 30 min — is exactly this. Block single-name directional
+    # option trades above the IV ceiling; legit high-IV momentum (MU/MRVL ~105%) passes.
+    if options_intel and (action == "buy_option"
+                          or (action == "multi_leg" and _decision_strategy(decision) == "debit_spread")):
+        und = _decision_underlying(decision)
+        oi = options_intel.get(und) if und else None
+        iv = oi.get("atm_iv") if oi else None
+        if iv is not None and iv > cfg.OPTION_MAX_ATM_IV:
+            return False, (f"{und}: ATM IV {iv:.0f}% > {cfg.OPTION_MAX_ATM_IV:.0f}% ceiling — "
+                           f"extreme-IV lottery ticket, directional debit overpays for premium "
+                           f"(capped payoff, noisy signal)")
     # Cooldown
     if sym and action in ("buy_stock", "buy_option"):
         last = state.get("last_entry_time", {}).get(sym)
@@ -2501,14 +2515,18 @@ def run_cycle(dry: bool = False):
                                      index_iv_rank=(options_intel.get("SPY") or {}).get("iv_rank"))
             inject = [s for s in (event_state or {}).get("inject", [])
                       if s not in {r["symbol"] for r in scan}]
+            # Log the triggering headline(s) so a RIDE can be audited later (was it a
+            # real event or a keyword false-positive?).
+            _heads = "; ".join(f"[{e['theme']}|{e['age_min']}m] {e['headline'][:100]}"
+                               for e in (event_state.get("breaking") or [])) if event_state else ""
             if inject:
                 for r in signal_scan(inject):
                     if r.get("last", 0) >= cfg.MIN_PRICE:
                         r["event_catalyst"] = True
                         scan.append(r)
-                log(f"event router: {event_state['posture']} — injected {inject}")
+                log(f"event router: {event_state['posture']} — injected {inject} :: {_heads}")
             elif event_state and event_state["posture"] != "NEUTRAL":
-                log(f"event router: {event_state['posture']}")
+                log(f"event router: {event_state['posture']} :: {_heads}")
         except Exception as e:
             log(f"event router failed (continuing without): {e}")
             event_state = None
@@ -2675,10 +2693,26 @@ def run_cycle(dry: bool = False):
             bid, opt_ask, ref_price = option_quote(odc, decision.get("option_symbol"))
             if bid and opt_ask and ref_price:
                 opt_spread = (opt_ask - bid) / ref_price
+        # Make sure options intel exists for the name being traded (for the extreme-IV
+        # gate) — compute on-demand if this underlying wasn't in the cycle's profiled set
+        # (RDW-type screener movers usually aren't).
+        if cfg.OPTIONS_INTEL_ENABLED and action in ("buy_option", "multi_leg"):
+            _u = _decision_underlying(decision)
+            if _u and _u not in options_intel:
+                _row = next((r for r in scan if r["symbol"] == _u), None)
+                _spot = _row.get("last") if _row else None
+                try:
+                    import options_intel as _oimod
+                    _info = _oimod.compute(odc, _u, _spot, now) if _spot else None
+                    if _info:
+                        options_intel[_u] = _info
+                except Exception as _e:
+                    log(f"options_intel on-demand {_u} failed: {_e}")
         ok, reason = passes_guardrails(decision, state, acct, now, ref_price,
                                        offered_options, assets, opt_spread, scan_row,
                                        directional_counts(positions), held_books,
-                                       regime=regime, event_state=event_state)
+                                       regime=regime, event_state=event_state,
+                                       options_intel=options_intel)
         if not ok:
             log(f"guardrail blocked {action}: {reason}")
             result = {"status": "blocked", "action": action, "reason": reason}

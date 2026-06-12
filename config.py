@@ -191,6 +191,12 @@ OPTIONS_INTEL_ENABLED = True
 OPTIONS_INTEL_FILE    = HOME / "autotrade_options_intel.json"  # rolling per-name ATM-IV history
 OPTIONS_INTEL_MAX_NAMES = 3      # single-name movers to profile per cycle (+ the index ETFs)
 OPTIONS_SKEW_THRESHOLD = 0.02    # |25Δ call IV − put IV| above this => a directional skew
+# Extreme-IV ceiling for DIRECTIONAL option trades (debit spreads / long options). A name
+# with sky-high ATM IV is a lottery ticket — the debit is hugely overpriced for a capped
+# payoff and the signal (incl. skew) is noise (the 6/12 RDW lesson: 132% IV, skew flipped
+# call->put in 30 min). Above this, single-name directional option trades are rejected.
+# Legit high-IV momentum names (MU/MRVL ~105%) still pass; only the >ceiling junk is cut.
+OPTION_MAX_ATM_IV = 110.0        # ATM IV % ceiling for single-name directional option trades
 # Anti-chase RELAXATION for a fresh-catalyst RIDE name (wider bounds, never removed —
 # a continuation entry, not a blow-off-top chase; still a defined-risk debit spread).
 ANTI_CHASE_MAX_VWAP_EXT_EVENT    = 0.08
@@ -387,6 +393,7 @@ RUNTIME_SETTABLE = {
     "OPTIONS_INTEL_ENABLED": bool,
     "OPTIONS_INTEL_MAX_NAMES": int,
     "OPTIONS_SKEW_THRESHOLD": float,
+    "OPTION_MAX_ATM_IV": float,
     "OPTION_TRAIL_ACTIVATE": float,
     "OPTION_TRAIL_GIVEBACK": float,
     "CYCLE_ACTIVE_INTERVAL_MIN": float,
