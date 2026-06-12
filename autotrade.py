@@ -2871,6 +2871,58 @@ def main():
             print(json.dumps(od.summary(st), indent=2))
         elif mode == "status":
             print(status_text(trading_client(), load_state()))
+        elif mode == "pnl":
+            # Account P&L + open positions (allowlisted; no heredoc needed).
+            a = trading_client().get_account()
+            eq, le = float(a.equity), float(a.last_equity)
+            print(f"equity ${eq:,.2f} | day P&L ${eq-le:+,.2f} ({(eq-le)/le*100:+.2f}%) "
+                  f"| cash ${float(a.cash):,.0f}")
+            ps = trading_client().get_all_positions()
+            print(f"open positions: {len(ps)}")
+            for p in sorted(ps, key=lambda x: -abs(float(x.unrealized_pl or 0))):
+                print(f"  {p.symbol:24s} qty={float(p.qty):>8.2f}  "
+                      f"uPL ${float(p.unrealized_pl or 0):+9.2f}  "
+                      f"mv ${float(p.market_value or 0):+10.0f}")
+        elif mode == "intel":
+            # Options intel (IV-rank + skew) for a symbol, or the index ETFs by default.
+            import options_intel as oi
+            import yfinance as yf
+            syms = [args[1].upper()] if len(args) > 1 else list(cfg.PREMIUM_INDEX_UNDERLYINGS)
+            odc, now = option_data_client(), et_now()
+            for u in syms:
+                try:
+                    spot = float(yf.Ticker(u).fast_info.last_price)
+                except Exception:
+                    spot = None
+                info = oi.compute(odc, u, spot, now) if spot else None
+                print(json.dumps(info, indent=2) if info else f"{u}: no data")
+        elif mode == "warm-iv":
+            # Seed/refresh IV-rank for the names we trade options on (no prompts).
+            import options_intel as oi
+            import yfinance as yf
+            names = sorted(set(cfg.MOMENTUM_UNIVERSE) | set(cfg.EARNINGS_UNIVERSE))
+            odc, now = option_data_client(), et_now()
+            px = yf.download(names, period="1d", interval="1d", progress=False,
+                             group_by="ticker", threads=True)
+            ok = 0
+            for u in names:
+                try:
+                    df = px[u] if len(names) > 1 else px
+                    spot = float(df["Close"].dropna().iloc[-1])
+                except Exception:
+                    spot = None
+                info = None
+                try:
+                    info = oi.compute(odc, u, spot, now) if spot else None
+                except Exception:
+                    info = None
+                if info and info.get("iv_rank") is not None:
+                    ok += 1
+                    print(f"  {u:6s} ATM IV {info['atm_iv']:5.1f}%  IV-rank {info['iv_rank']:5.1f}"
+                          f"  skew {info['skew']:+6.1f}  ({info['iv_rank_basis']})")
+                else:
+                    print(f"  {u:6s} -- skipped")
+            print(f"warmed {ok}/{len(names)} names")
         else:
             print(__doc__)
     except Exception as e:
