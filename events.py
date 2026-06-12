@@ -120,44 +120,80 @@ def _breaking_events(now) -> list[dict]:
 # ===========================================================================
 # Detection — scheduled economic calendar (live feed: Financial Modeling Prep)
 # ===========================================================================
-def _fetch_econ_calendar(day_iso: str) -> list[dict]:
-    """US high-impact events for `day_iso`, via FMP. Cached once/day in EVENT_STATE_FILE.
-    Empty if no FMP_API_KEY (the BRACE half just stays dormant)."""
-    if not _OK or not cfg.FMP_API_KEY:
+def _fetch_econ_calendar(now) -> list[dict]:
+    """US high-impact scheduled events for the current week. Default provider is the
+    free Forex Factory / faireconomy weekly JSON (no key); FMP is an option for paid
+    users. Cached per ISO-week in EVENT_STATE_FILE. Each event: {name, date(ISO),
+    impact, actual, forecast}."""
+    if not _OK:
         return []
+    week = now.strftime("%G-W%V")
     c = _load_cache()
     econ = c.get("econ") or {}
-    if econ.get("date") == day_iso:
+    if econ.get("week") == week and econ.get("provider") == cfg.EVENT_ECON_PROVIDER:
         return econ.get("events", [])
+    events = (_fetch_fmp(now) if cfg.EVENT_ECON_PROVIDER == "fmp"
+              else _fetch_faireconomy())
+    c["econ"] = {"week": week, "provider": cfg.EVENT_ECON_PROVIDER, "events": events}
+    _save_cache(c)
+    return events
+
+
+def _fetch_faireconomy() -> list[dict]:
+    """Free weekly calendar (Forex Factory mirror). Dates are ISO8601 WITH a tz offset,
+    so no timezone guessing. Filters to US ('USD') high-impact."""
     try:
-        r = requests.get(
-            "https://financialmodelingprep.com/api/v3/economic_calendar",
-            params={"from": day_iso, "to": day_iso, "apikey": cfg.FMP_API_KEY},
-            timeout=12,
-        ).json()
-        events = []
+        r = requests.get(cfg.EVENT_ECON_URL, headers={"User-Agent": "Mozilla/5.0"}, timeout=12)
+        out = []
+        for e in (r.json() or []):
+            if e.get("country") != cfg.EVENT_ECON_COUNTRY:
+                continue
+            if (e.get("impact") or "") != cfg.EVENT_ECON_MIN_IMPACT:
+                continue
+            out.append({"name": e.get("title", ""), "date": e.get("date", ""),
+                        "impact": e.get("impact", ""),
+                        "actual": e.get("actual"), "forecast": e.get("forecast")})
+        return out
+    except Exception as ex:
+        _log(f"events: faireconomy calendar failed: {ex}")
+        return []
+
+
+def _fetch_fmp(now) -> list[dict]:
+    """Paid FMP calendar (only if EVENT_ECON_PROVIDER='fmp' and a valid key). US
+    high-impact for today (FMP stamps US releases in ET wall-clock)."""
+    if not cfg.FMP_API_KEY:
+        return []
+    try:
+        day = now.strftime("%Y-%m-%d")
+        r = requests.get("https://financialmodelingprep.com/stable/economic-calendar",
+                         params={"from": day, "to": day, "apikey": cfg.FMP_API_KEY},
+                         timeout=12).json()
+        out = []
         for e in (r or []):
-            if e.get("country") not in cfg.EVENT_ECON_COUNTRIES:
+            if e.get("country") != "US" or (e.get("impact") or "").lower() != "high":
                 continue
-            if (e.get("impact") or "").lower() != cfg.EVENT_ECON_MIN_IMPACT.lower():
-                continue
-            events.append({"name": e.get("event", ""), "date": e.get("date", ""),
-                           "impact": e.get("impact", ""),
-                           "actual": e.get("actual"), "estimate": e.get("estimate")})
-        c["econ"] = {"date": day_iso, "events": events}
-        _save_cache(c)
-        return events
-    except Exception as e:
-        _log(f"events: econ calendar fetch failed: {e}")
+            d = e.get("date", "")
+            if d and "T" not in d:
+                d = d.replace(" ", "T") + now.strftime("%z")[:3] + ":00"  # attach ET offset
+            out.append({"name": e.get("event", ""), "date": d, "impact": e.get("impact", ""),
+                        "actual": e.get("actual"), "forecast": e.get("estimate")})
+        return out
+    except Exception as ex:
+        _log(f"events: fmp calendar failed: {ex}")
         return []
 
 
 def _event_dt(date_str: str, now):
-    """Parse an FMP event time. FMP stamps US releases in ET wall-clock; attach `now`'s
-    tzinfo so the comparison is apples-to-apples."""
+    """Parse an event time. faireconomy gives ISO8601 WITH offset (tz-aware); FMP gives
+    a space-separated ET stamp we normalize to ISO upstream. Returns tz-aware or None."""
+    if not date_str:
+        return None
     try:
-        dt = datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
-        return dt.replace(tzinfo=now.tzinfo)
+        dt = datetime.fromisoformat(date_str)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=now.tzinfo)
+        return dt
     except Exception:
         return None
 
@@ -165,7 +201,7 @@ def _event_dt(date_str: str, now):
 def _scheduled(now) -> dict:
     """BRACE if a HIGH-impact US release is within EVENT_PRE_MIN ahead (and hasn't
     posted an `actual` yet). Returns {brace, next_event, post_surprise}."""
-    events = _fetch_econ_calendar(now.strftime("%Y-%m-%d"))
+    events = _fetch_econ_calendar(now)
     brace, nxt = False, None
     for e in events:
         dt = _event_dt(e.get("date", ""), now)

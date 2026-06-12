@@ -185,8 +185,12 @@ ANTI_CHASE_MAX_VWAP_EXT_EVENT    = 0.08
 ANTI_CHASE_MIN_OFF_EXTREME_EVENT = 0.003
 RSI_OVERBOUGHT_EVENT = 90.0
 RSI_OVERSOLD_EVENT   = 10.0
-# Live economic-calendar feed (Financial Modeling Prep). US, high-impact only.
-EVENT_ECON_COUNTRIES  = ("US",)
+# Live economic-calendar feed. Default = the free Forex Factory / faireconomy weekly
+# JSON (no key, includes ISO times WITH tz offset + impact). FMP's calendar is now
+# paywalled, so it's only used if you set EVENT_ECON_PROVIDER="fmp" with a paid key.
+EVENT_ECON_PROVIDER   = "faireconomy"   # "faireconomy" (free) | "fmp" (needs paid key)
+EVENT_ECON_URL        = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+EVENT_ECON_COUNTRY    = "USD"           # faireconomy uses "USD"; FMP uses "US"
 EVENT_ECON_MIN_IMPACT = "High"
 # Headline keyword signatures -> theme. First match wins.
 EVENT_SIGNATURES = {

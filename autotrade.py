@@ -2217,8 +2217,7 @@ def status_text(tc, state) -> str:
                      else "allowed: " + (", ".join(reg.get('allowed_strategies') or []) or "-"))
                   if reg else "Regime: engine off / not yet computed"),
                  (f"Events: router {'ON' if cfg.EVENT_ROUTER_ENABLED else 'OFF'}"
-                  + (f" — FMP feed {'keyed' if cfg.FMP_API_KEY else 'NO KEY (BRACE dormant)'}"
-                     if cfg.EVENT_ROUTER_ENABLED else "")),
+                  + (f" — econ feed: {cfg.EVENT_ECON_PROVIDER}" if cfg.EVENT_ROUTER_ENABLED else "")),
                  f"Last action: {state.get('last_action','-')}"]
         return "\n".join(lines)
     except Exception as e:
