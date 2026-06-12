@@ -1333,17 +1333,22 @@ def manage_multileg(tc, odc, state, dry):
             pos["pl"] = round(pl)
             pos["value_now"] = round(-cost_to_close)   # $ to liquidate the spread now
             reason = None
-            if entry_net >= 0:               # credit structure
+            if entry_net >= 0:               # credit structure (profit capped at credit)
                 if pl <= -1.0 * entry_net:
                     reason = f"stop (P&L ${pl:.0f} on ${entry_net:.0f} credit)"
                 elif pl >= 0.5 * entry_net:
                     reason = f"target (P&L ${pl:.0f} on ${entry_net:.0f} credit)"
-            else:                            # debit structure
+            else:                            # DEBIT structure — let winners run, trail the peak
                 debit = abs(entry_net)
+                pf = pl / debit                          # profit as a fraction of the debit
+                pos["hw_pf"] = max(pos.get("hw_pf", pf), pf)   # high-water profit fraction
                 if pl <= -0.5 * debit:
                     reason = f"stop (P&L ${pl:.0f} on ${debit:.0f} debit)"
-                elif pl >= 1.0 * debit:
-                    reason = f"target (P&L ${pl:.0f} on ${debit:.0f} debit)"
+                elif pos["hw_pf"] >= cfg.OPTION_TRAIL_ACTIVATE:
+                    # Trailing profit-lock (replaces the old hard +100%-of-debit cap):
+                    # bank gains a give-back below the peak so a runner isn't sold at 2x.
+                    if pf <= pos["hw_pf"] * (1 - cfg.OPTION_TRAIL_GIVEBACK):
+                        reason = f"trail (peak {pos['hw_pf']:+.0%} → {pf:+.0%} of debit)"
             if reason:
                 log(f"MULTILEG EXIT {symbols}: {reason}")
                 tg_send(f"🧩 Closing spread: {reason}.")
@@ -1382,7 +1387,7 @@ def open_spreads_for_context(state) -> list:
         else:
             label = f"{len(legs)}-leg {kind} spread"
         plan = ("target +50% credit / stop −100% credit" if kind == "credit"
-                else "target +100% debit / stop −50% debit")
+                else f"trail peak after +{int(cfg.OPTION_TRAIL_ACTIVATE*100)}% / stop −50% debit")
         out.append({
             "underlying": _decision_underlying({"legs": legs}) or "?",
             "structure": label,
@@ -1393,8 +1398,13 @@ def open_spreads_for_context(state) -> list:
             "entry_net_$": round(entry_net),
             "value_now_$": pos.get("value_now"),
             "net_pl_$": pos.get("pl"),
+            "peak_profit_pct_of_debit": (round(pos["hw_pf"] * 100) if kind == "debit"
+                                         and pos.get("hw_pf") is not None else None),
             "overnight": bool(pos.get("overnight")),
-            "managed_by_code": f"stop/target auto-enforced ({plan}); EOD-closed 15:45 unless overnight",
+            "managed_by_code": (f"stop/target auto-enforced ({plan}); "
+                                + ("debit winners TRAIL the peak (give-back "
+                                   f"{int(cfg.OPTION_TRAIL_GIVEBACK*100)}%); " if kind == "debit" else "")
+                                + "EOD-closed 15:45 unless overnight"),
             "opened": pos.get("opened"),
         })
     return out
@@ -1460,10 +1470,16 @@ def manage_options(tc, odc, state, dry):
             reason = "0DTE/EOD close" if (meta and meta["expiry"] <= today) else "EOD close"
         elif mid is not None and o.get("entry"):
             pl = (mid - o["entry"]) / o["entry"]
+            o["hw_pl"] = max(o.get("hw_pl", pl), pl)      # high-water profit
             if pl <= cfg.OPTION_STOP_PCT:
                 reason = f"stop {pl:+.0%}"
-            elif pl >= cfg.OPTION_TARGET_PCT:
-                reason = f"target {pl:+.0%}"
+            elif o["hw_pl"] >= cfg.OPTION_TRAIL_ACTIVATE:
+                # Trailing profit-lock: once a winner, let it run and bank gains a set
+                # give-back below the peak (replaces the old hard +100% cap so a runner
+                # isn't force-sold at 2x). The model can still take profit earlier.
+                trail = o["hw_pl"] * (1 - cfg.OPTION_TRAIL_GIVEBACK)
+                if pl <= trail:
+                    reason = f"trail (peak {o['hw_pl']:+.0%} → {pl:+.0%})"
         if reason:
             log(f"OPTION EXIT {sym}: {reason}")
             tg_send(f"📊 Exiting {sym} ({reason}).")

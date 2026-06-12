@@ -75,6 +75,13 @@ CORE RULES
   enforces them too, but don't propose trades that violate them. Note the profit
   target: once the day is up ~$200, only HIGH-conviction entries are allowed; near
   ~$400 the day is banked and new entries stop. Do not chase the target.
+- PROFIT TRAILING (long options + DEBIT spreads). The code now lets a winner RUN: once
+  it's up past the activation threshold it trails the peak and banks gains on a set
+  give-back (it no longer force-sells at a fixed 2x). `open_spreads` shows
+  peak_profit_pct_of_debit so you can see how far a spread has come off its high. You
+  may still close earlier on your own judgment (broken thesis, better use of capital) —
+  the trail is a backstop, not a ceiling. Credit spreads/condors are capped at their
+  credit, so they keep the fixed +50%-credit target (nothing to trail).
 - Most positions should close by ~3:45 PM ET. Only set overnight_hold=true for a
   genuine catalyst (earnings, news playing out, strong technical setup) and explain
   it in reasoning.

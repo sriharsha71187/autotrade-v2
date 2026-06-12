@@ -136,8 +136,13 @@ CYCLE_FAST_INTERVAL_MIN   = 2      # 9:30-10:30 ET
 CYCLE_NORMAL_INTERVAL_MIN = 5      # rest of the regular session
 
 # ---- single-leg option exit management (code-enforced, like condors) --------
-OPTION_STOP_PCT        = -0.50     # close a long option down 50% from entry
-OPTION_TARGET_PCT      = 1.00      # take profit up 100% from entry
+OPTION_STOP_PCT        = -0.50     # hard stop: close a long option / debit spread down 50%
+OPTION_TARGET_PCT      = 1.00      # (legacy fixed target — superseded by the trailing lock)
+# Trailing profit-lock for long options + DEBIT spreads: once a winner, let it run and
+# bank gains a give-back below the peak (replaces the old hard +100% cap so runners
+# aren't force-sold at 2x). Credit spreads/condors are capped at their credit -> no trail.
+OPTION_TRAIL_ACTIVATE  = 0.40      # start trailing once profit reaches +40%
+OPTION_TRAIL_GIVEBACK  = 0.25      # exit when profit falls to 75% of its peak
 OPTION_EOD_CLOSE_HOUR  = 15        # force-close long options + spreads at/after this ET time
 OPTION_EOD_CLOSE_MIN   = 45        # ...15:45 ET (and any 0DTE before expiry)
 STOCK_EOD_CLOSE_MIN    = 50        # flatten stocks at 15:50 ET (DAY brackets die at the close,
@@ -381,6 +386,8 @@ RUNTIME_SETTABLE = {
     "OPTIONS_INTEL_ENABLED": bool,
     "OPTIONS_INTEL_MAX_NAMES": int,
     "OPTIONS_SKEW_THRESHOLD": float,
+    "OPTION_TRAIL_ACTIVATE": float,
+    "OPTION_TRAIL_GIVEBACK": float,
     "OVERNIGHT_MOMENTUM_ENABLED": bool,
     "VIX_CONDOR_CEILING": float,
     "MOMENTUM_MAX_DAY_PCT": float,
