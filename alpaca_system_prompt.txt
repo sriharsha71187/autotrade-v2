@@ -115,8 +115,13 @@ STRATEGY MENU (pick what fits the day; you are not required to use any)
    short strikes ~1.2-1.5 sigma from spot via expected move, ~$5 wings. SIZE IT to
    the guardrails.sizing rule: add contracts so the structure's max-loss is about
    guardrails.option_risk_target (not a token 1-lot). Skip if VIX > 25 or trending.
-2. Trend/VWAP stock trade: go LONG the day's strongest BULL name or SHORT the
-   weakest BEAR name from the scan; stop beyond the recent swing.
+2. Trend/VWAP stock trade (UNCAPPED): go LONG the day's strongest BULL name or SHORT
+   the weakest BEAR name from the scan, WITH the tape; stop beyond the recent swing.
+   This is now an uncapped runner — the code widens the take-profit far out and a
+   trailing stop locks gains as it works, so a clean trend can run. Set stop_price at
+   the swing and a reasonable target_price for orientation (the code replaces it with
+   the far target). Prefer this / a long option over a capped spread when you have
+   conviction and the tape agrees.
 3. Momentum, WITH the trend (STRONG_BULL +2%+ -> long/bullish; STRONG_BEAR -2%+ ->
    short/bearish), never against it. Allowed on single names even when the index is
    range-bound (dispersion). TWO vehicles — pick by conviction:

@@ -970,11 +970,17 @@ def setup_qualifies(state, scan, positions, vix, now) -> tuple[bool, str]:
     in_momentum_window = 10 * 60 <= mins < (cfg.MOMENTUM_OPTION_CUTOFF_HOUR * 60
                                             + cfg.MOMENTUM_OPTION_CUTOFF_MIN)
     in_condor_window = (h == 10 and 0 <= m <= 30)
-    # Momentum: a strong mover during the momentum window.
+    # Momentum: a strong single-name mover, OR a trending broad tape, during the window.
     if in_momentum_window:
         for r in scan:
-            if abs(r["day_pct"]) >= 2.0 and r["symbol"] not in cfg.BLACKLIST:
+            if abs(r["day_pct"]) >= cfg.QUALIFY_MOMENTUM_PCT and r["symbol"] not in cfg.BLACKLIST:
                 return True, f"momentum setup: {r['symbol']} {r['day_pct']:+.1f}%"
+        # A trending tape is itself a participate-with-it setup — don't sit out a clean
+        # orderly trend just because no single name has hit the momentum threshold.
+        idx = [r["day_pct"] for r in scan if r["symbol"] in cfg.CORE_UNIVERSE
+               and r.get("day_pct") is not None]
+        if idx and abs(sum(idx) / len(idx)) >= cfg.QUALIFY_TAPE_PCT:
+            return True, f"trending tape {sum(idx)/len(idx):+.1f}% — participate with it"
     # Condor: range-bound index, calm VIX, in the 10:00–10:30 window.
     if in_condor_window and (vix is None or vix < cfg.VIX_CONDOR_CEILING):
         calm = [r for r in scan if r["symbol"] in cfg.CORE_UNIVERSE
@@ -1142,7 +1148,13 @@ def call_claude(context: dict) -> dict:
 # ===========================================================================
 # Order execution
 # ===========================================================================
-def place_stock_bracket(tc, symbol, qty, side, stop_price, target_price, dry):
+def place_stock_bracket(tc, symbol, qty, side, stop_price, target_price, dry, ref=None):
+    # Uncapped: widen the take-profit to a FAR level so the win isn't capped — the trailing
+    # chandelier stop (manage_stops) becomes the real exit and a runner can run. The model's
+    # target was only used for the bracket-orientation check in passes_guardrails.
+    if cfg.STOCK_UNCAPPED and ref:
+        f = cfg.STOCK_UNCAPPED_TARGET_PCT
+        target_price = round(ref * (1 + f), 2) if side == "buy" else round(ref * (1 - f), 2)
     if dry:
         log(f"[DRY] would BRACKET {side} {qty} {symbol} stop={stop_price} tp={target_price}")
         return None
@@ -2819,7 +2831,7 @@ def run_cycle(dry: bool = False):
                     side = "buy" if direction == "long" else "sell"
                     o = place_stock_bracket(tc, decision["symbol"], int(decision["qty"]),
                                             side, decision["stop_price"],
-                                            decision["target_price"], dry)
+                                            decision["target_price"], dry, ref=ref_price)
                     order_id = str(o.id) if o else None
                     state.setdefault("last_entry_time", {})[decision["symbol"]] = now.isoformat()
                 elif action == "buy_option":

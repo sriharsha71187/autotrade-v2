@@ -321,6 +321,17 @@ REGIME_TREND_PCT  = 1.0   # |move| >= this -> trending; else range-bound
 REGIME_STRONG_PCT = 2.0   # |move| >= this -> STRONG trend (momentum debit spreads)
 REGIME_TAPE_PCT   = 0.30  # mean index-ETF move >= this -> risk_on/risk_off tape (don't fight it)
 
+# Uncapped stock trend trades: place the bracket's take-profit FAR away so the win isn't
+# capped — the trailing chandelier stop (manage_stops) becomes the real exit and a runner
+# can run. (Alpaca brackets require a TP leg; "far" = effectively no cap intraday.)
+STOCK_UNCAPPED            = True
+STOCK_UNCAPPED_TARGET_PCT = 0.30   # far target = entry ± 30% (rarely hit; trail governs)
+
+# Pre-filter: don't sit out clean orderly trends. A single name moving this much, OR a
+# trending broad tape, is enough to call the model (was a hard 2.0% single-name only).
+QUALIFY_MOMENTUM_PCT = 1.3   # single-name |day move| that qualifies a momentum setup
+QUALIFY_TAPE_PCT     = 0.6   # mean index-ETF |move| that qualifies a "trade with the tape" setup
+
 # ---- tail-hedge convexity book ---------------------------------------------
 # Small always-on long-vol overlay: cheap OTM SPY puts that pay on a crash, sized
 # as a fixed small premium drag, scaled up in the HIGH-VIX regime. Separate book,

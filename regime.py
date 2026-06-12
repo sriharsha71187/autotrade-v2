@@ -161,6 +161,13 @@ def classify(scan, vix, now=None, event_day: bool = False) -> dict:
             reason += (f" | dispersion: {top['symbol']} {top['day_pct']:+.1f}% — "
                        f"single-name momentum (spread or uncapped long) enabled")
 
+    # Uncapped STOCK trend trade, WITH the established direction. The fixed bracket target
+    # is widened at order time so the trailing stop governs (manage_stops) — a runner runs.
+    if direction and not flat:
+        sl = "stock_long" if direction == "long" else "stock_short"
+        if sl not in allowed:
+            allowed = allowed + [sl]
+
     return {
         "trend": trend, "vol": vol, "index": idx, "index_move": move, "vix": vix,
         "tape": tape, "tape_bias": tape_bias,
