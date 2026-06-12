@@ -132,8 +132,9 @@ STOP_TRAIL_MIN_STEP_PCT = 0.002   # only move the stop if it tightens ≥0.2% (a
 # ---- cadence (bot-side; scheduler just ticks every minute) ------------------
 # Faster during the opening hour (densest opportunity + the 10:00-10:30 condor
 # window), normal the rest of the session. A flock prevents overlapping cycles.
-CYCLE_FAST_INTERVAL_MIN   = 2      # 9:30-10:30 ET
-CYCLE_NORMAL_INTERVAL_MIN = 5      # rest of the regular session
+CYCLE_FAST_INTERVAL_MIN   = 2      # 9:30-10:30 ET (opening hour — densest opportunity)
+CYCLE_ACTIVE_INTERVAL_MIN = 3      # conditional: open position / live event / elevated vol
+CYCLE_NORMAL_INTERVAL_MIN = 5      # quiet stretches (flat, nothing open) — save the call
 
 # ---- single-leg option exit management (code-enforced, like condors) --------
 OPTION_STOP_PCT        = -0.50     # hard stop: close a long option / debit spread down 50%
@@ -388,6 +389,8 @@ RUNTIME_SETTABLE = {
     "OPTIONS_SKEW_THRESHOLD": float,
     "OPTION_TRAIL_ACTIVATE": float,
     "OPTION_TRAIL_GIVEBACK": float,
+    "CYCLE_ACTIVE_INTERVAL_MIN": float,
+    "CYCLE_NORMAL_INTERVAL_MIN": float,
     "OVERNIGHT_MOMENTUM_ENABLED": bool,
     "VIX_CONDOR_CEILING": float,
     "MOMENTUM_MAX_DAY_PCT": float,

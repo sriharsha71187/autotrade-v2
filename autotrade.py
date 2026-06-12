@@ -2255,12 +2255,22 @@ def _acquire_cycle_lock():
         return None
 
 
-def _cycle_interval_min(now) -> float:
-    """Faster cadence in the opening hour (9:30–10:30 ET), normal otherwise."""
+def _cycle_interval_min(now, state) -> float:
+    """Conditional cadence. Opening hour (9:30–10:30 ET) is always FAST (2m). Otherwise
+    run at the ACTIVE rate (3m) when there's something to stay on top of — an open
+    intraday option position, a live event-router posture (RIDE/BRACE), or elevated vol
+    — and the NORMAL rate (5m) on quiet, flat stretches to save the model call. Reads
+    only cheap last-known state stashed by prior cycles (no extra API calls at the
+    throttle gate)."""
     mins_since_open = (now.hour - 9) * 60 + now.minute - 30
     if 0 <= mins_since_open < 60:
         return cfg.CYCLE_FAST_INTERVAL_MIN
-    return cfg.CYCLE_NORMAL_INTERVAL_MIN
+    active = (
+        bool(state.get("active_multileg") or state.get("active_options"))
+        or state.get("last_event_posture") in ("RIDE", "BRACE")
+        or (state.get("last_regime") or {}).get("vol") in ("ELEVATED", "HIGH")
+    )
+    return cfg.CYCLE_ACTIVE_INTERVAL_MIN if active else cfg.CYCLE_NORMAL_INTERVAL_MIN
 
 
 def _throttle_skip(state, now) -> bool:
@@ -2273,7 +2283,7 @@ def _throttle_skip(state, now) -> bool:
         elapsed = (now - datetime.fromisoformat(last)).total_seconds() / 60
     except Exception:
         return False
-    return elapsed < _cycle_interval_min(now) - 0.5   # 0.5m grace for tick jitter
+    return elapsed < _cycle_interval_min(now, state) - 0.5   # 0.5m grace for tick jitter
 
 
 # ===========================================================================
@@ -2463,6 +2473,9 @@ def run_cycle(dry: bool = False):
         except Exception as e:
             log(f"event router failed (continuing without): {e}")
             event_state = None
+    # Stash the posture so the NEXT tick's cadence throttle can read it cheaply
+    # (a live RIDE/BRACE keeps the bot on the 3-min active cadence).
+    state["last_event_posture"] = event_state["posture"] if event_state else None
 
     # Deterministic regime gate (OFF by default). When enabled, a pure-code
     # classifier decides which strategies are permitted this cycle — or forces the
