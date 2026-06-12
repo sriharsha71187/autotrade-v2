@@ -82,7 +82,7 @@ OPTION_RISK_TARGET     = 900.0     # TARGET max-loss to SIZE each defined-risk o
                                    # the model trading teaspoon-sized $50-risk condors
 OPTION_MAX_SPREAD_PCT  = 0.15      # skip options whose bid-ask spread exceeds this (illiquid)
 MAX_DEPLOYED_CAPITAL   = 40_000.0  # cap on total exposure across all open trades
-MAX_SAME_DIRECTION_POSITIONS = 6   # correlation cap: don't put the whole book on one
+MAX_SAME_DIRECTION_POSITIONS = 10  # correlation cap: don't put the whole book on one
                                    # directional bet (e.g. 7 tech shorts on a selloff)
 CONDOR_WING_WIDTH      = 5.0       # $ width of condor wings, for max-loss sizing
 # The 14:00 ET options cutoff is for 0DTE / same-day index structures (condors,
@@ -120,6 +120,8 @@ MULTILEG_COOLDOWN_MIN  = 12        # min gap between spread/condor ENTRIES, so a
 MAX_SPREADS_PER_NAME_PER_DAY = 3   # cap re-entries on ONE underlying/day — stops the
                                    # churn (6/9: 7 MRVL spreads, mostly unfilled) that
                                    # just bleeds spread/slippage on the same thesis
+STOPPED_COOLDOWN_MIN = 75          # after a name's trade is stopped/cut at a loss, wait this
+                                   # long before re-entering it (was a full-day lock)
 VIX_CONDOR_CEILING     = 25.0
 
 # ---- active stock management: trail the bracket stop to lock in gains ---------
@@ -196,7 +198,9 @@ OPTIONS_SKEW_THRESHOLD = 0.02    # |25Δ call IV − put IV| above this => a dir
 # payoff and the signal (incl. skew) is noise (the 6/12 RDW lesson: 132% IV, skew flipped
 # call->put in 30 min). Above this, single-name directional option trades are rejected.
 # Legit high-IV momentum names (MU/MRVL ~105%) still pass; only the >ceiling junk is cut.
-OPTION_MAX_ATM_IV = 110.0        # ATM IV % ceiling for single-name directional option trades
+OPTION_MAX_ATM_IV = 120.0        # ATM IV % ceiling for single-name directional option trades
+                                 # (120 gives legit high-IV semis headroom; still cuts RDW-type
+                                 #  lottery tickets ~130%+)
 # Anti-chase RELAXATION for a fresh-catalyst RIDE name (wider bounds, never removed —
 # a continuation entry, not a blow-off-top chase; still a defined-risk debit spread).
 ANTI_CHASE_MAX_VWAP_EXT_EVENT    = 0.08
@@ -406,6 +410,7 @@ RUNTIME_SETTABLE = {
     "OPTIONS_INTEL_MAX_NAMES": int,
     "OPTIONS_SKEW_THRESHOLD": float,
     "OPTION_MAX_ATM_IV": float,
+    "STOPPED_COOLDOWN_MIN": int,
     "OPTION_TRAIL_ACTIVATE": float,
     "OPTION_TRAIL_GIVEBACK": float,
     "CYCLE_ACTIVE_INTERVAL_MIN": float,

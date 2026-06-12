@@ -106,7 +106,7 @@ def default_state() -> dict:
         "active_options": [],       # [{symbol, qty, entry, opened}] long options we manage
         "aborted_today": [],        # symbols deliberately aborted (1 abort/symbol/day)
         "entries_today": {},        # {underlying: spread/condor submit count} — per-name daily cap
-        "stopped_today": [],        # underlyings stopped/cut at a loss today — no re-entry (anti-churn)
+        "stopped_today": {},        # {underlying: iso lock-time} stopped/cut at a loss — cooldown before re-entry
         "loss_override": False,     # OVERRIDE command: keep trading past the daily loss halt (today only)
         "last_cycle_at": None,      # iso-ts of the last real cycle (for cadence throttle)
         "last_action": "",          # human-readable summary of last cycle action
@@ -1229,17 +1229,20 @@ def multileg_risk(legs, net_price, qty) -> float | None:
 
 
 def _lock_name_today(state, underlying, why):
-    """Lock a single name out for the rest of the day after a trade on it was closed at a
-    LOSS (a code stop, or the model cutting a broken thesis). Stops the bot from re-losing
-    the same idea on the same name — the 6/12 ADBE/RDW churn. Index ETFs are exempt (the
-    premium books legitimately re-use them)."""
+    """Lock a single name out for STOPPED_COOLDOWN_MIN after a trade on it was closed at a
+    LOSS (a code stop, or the model cutting a broken thesis). Stops re-losing the same idea
+    on the same name (the 6/12 ADBE/RDW churn) without killing the name for the whole day —
+    a clean later setup on a two-way name is fine once the cooldown passes. Index ETFs are
+    exempt (the premium books legitimately re-use them)."""
     if not underlying or underlying in cfg.PREMIUM_INDEX_UNDERLYINGS:
         return
-    locked = state.setdefault("stopped_today", [])
-    if underlying not in locked:
-        locked.append(underlying)
-        log(f"NAME LOCKED {underlying} for the day ({why}) — no re-entry")
-        tg_send(f"🔒 {underlying} locked for today ({why}) — no re-entry.")
+    locked = state.setdefault("stopped_today", {})
+    if not isinstance(locked, dict):                  # migrate legacy list form
+        locked = {n: et_now().isoformat() for n in locked}
+        state["stopped_today"] = locked
+    locked[underlying] = et_now().isoformat()
+    log(f"NAME LOCKED {underlying} for {cfg.STOPPED_COOLDOWN_MIN}m ({why})")
+    tg_send(f"🔒 {underlying} locked {cfg.STOPPED_COOLDOWN_MIN}m ({why}).")
 
 
 def close_symbols(tc, symbols, dry):
@@ -2003,15 +2006,23 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
             return False, (f"{und}: ATM IV {iv:.0f}% > {cfg.OPTION_MAX_ATM_IV:.0f}% ceiling — "
                            f"extreme-IV lottery ticket, directional debit overpays for premium "
                            f"(capped payoff, noisy signal)")
-    # Stopped-out -> done for the day: once a single-name option trade is closed at a LOSS
-    # (a code stop or a thesis cut), don't re-enter that name — stop re-losing the same
-    # idea on the same name (the 6/12 ADBE/RDW churn).
+    # Stopped-out cooldown: once a single-name option trade is closed at a LOSS (code stop
+    # or thesis cut), don't re-enter that name for STOPPED_COOLDOWN_MIN — stop re-losing the
+    # same idea (the 6/12 ADBE/RDW churn) without killing a two-way name for the whole day.
     if action in ("buy_option", "multi_leg"):
         und = _decision_underlying(decision)
-        if und and und not in cfg.PREMIUM_INDEX_UNDERLYINGS \
-                and und in (state.get("stopped_today") or []):
-            return False, (f"{und}: locked for the day — a prior trade on it was stopped/cut "
-                           f"at a loss; no re-entry (anti-churn)")
+        locked = state.get("stopped_today") or {}
+        if isinstance(locked, list):                  # legacy form -> treat as locked
+            locked = {n: now.isoformat() for n in locked}
+        ts = locked.get(und) if und and und not in cfg.PREMIUM_INDEX_UNDERLYINGS else None
+        if ts:
+            try:
+                elapsed = (now - datetime.fromisoformat(ts)).total_seconds() / 60
+            except Exception:
+                elapsed = 1e9
+            if elapsed < cfg.STOPPED_COOLDOWN_MIN:
+                return False, (f"{und}: stopped {elapsed:.0f}m ago — cooling down "
+                               f"{cfg.STOPPED_COOLDOWN_MIN}m before re-entry (anti-churn)")
     # Cooldown
     if sym and action in ("buy_stock", "buy_option"):
         last = state.get("last_entry_time", {}).get(sym)
