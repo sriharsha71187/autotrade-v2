@@ -1035,6 +1035,7 @@ def _parse_model_json(text: str):
 
 
 _LAST_API_ALERT_AT = None   # throttle for the "engine down" Telegram alert
+_LAST_TAPE_ALERT_AT = None  # throttle for the "fighting the tape" self-diagnostic alert
 _ANTHROPIC_CLIENT = None
 
 # Strict JSON schema for structured outputs — the API CONSTRAINS the model to emit
@@ -1812,6 +1813,20 @@ def _spread_directional_bias(legs) -> "str | None":
     return "bullish" if short["strike"] > long_["strike"] else "bearish"
 
 
+def _trade_bias(decision) -> "str | None":
+    """Directional lean of any decision: 'bullish'/'bearish', else None (condor/hold).
+    Used for the tape filter (don't fight a clearly directional market)."""
+    a = decision.get("action")
+    if a == "buy_stock":
+        return "bearish" if decision.get("direction") == "short" else "bullish"
+    if a == "buy_option":
+        t = (parse_occ(decision.get("option_symbol")) or {}).get("type")
+        return "bullish" if t == "call" else ("bearish" if t == "put" else None)
+    if a == "multi_leg":
+        return _spread_directional_bias(decision.get("legs") or [])
+    return None
+
+
 def passes_guardrails(decision, state, acct, now, ref_price=None,
                       offered_options=None, assets=None,
                       option_spread_pct=None, scan_row=None,
@@ -1923,6 +1938,24 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
         if bias == "bullish" and sig == "STRONG_BEAR":
             return False, (f"{sym} STRONG_BEAR ({dp:+.1f}%) — refusing a bullish spread "
                            f"into a breakdown (no fading momentum)")
+    # Don't FIGHT THE TAPE. On a clearly risk-on day the bot was stacking weak bearish
+    # single-name bets and bleeding (6/12: 5/5 bearish, market green). Block a directional
+    # entry that opposes a clearly-directional broad market UNLESS the name itself is a
+    # strong dislocation (|move| >= STRONG) — a real catalyst can fight the tape, a weak
+    # signal can't.
+    if regime is not None and regime.get("tape_bias") in ("risk_on", "risk_off") \
+            and action in ("buy_stock", "buy_option", "multi_leg"):
+        tb = _trade_bias(decision)
+        dp = abs((scan_row or {}).get("day_pct") or 0.0)
+        tape = regime.get("tape")
+        if tb == "bearish" and regime["tape_bias"] == "risk_on" and dp < cfg.REGIME_STRONG_PCT:
+            return False, (f"counter-tape: bearish bet while the market is risk-on "
+                           f"(tape {tape:+.2f}%) and {sym or ''} only {dp:.1f}% — don't fade "
+                           f"a green tape on a weak signal (trade WITH it)")
+        if tb == "bullish" and regime["tape_bias"] == "risk_off" and dp < cfg.REGIME_STRONG_PCT:
+            return False, (f"counter-tape: bullish bet while the market is risk-off "
+                           f"(tape {tape:+.2f}%) and {sym or ''} only {dp:.1f}% — don't fight "
+                           f"a red tape on a weak signal (trade WITH it)")
     # Index-only premium selling. The VRP edge a credit spread/condor harvests is
     # reliably negative only at the INDEX level (priced correlation risk); single-name
     # variance premia are ~zero and just bear idiosyncratic jump risk (what bled the
@@ -2023,11 +2056,15 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
                                f"(got stop={stop}, target={target})")
             if assets and not assets.get(sym, {}).get("shortable", False):
                 return False, f"{sym} is not shortable"
-        # Anti-chase: don't buy the top / short the bottom of an extended move —
-        # UNLESS this name is a fresh event-router catalyst in the SAME direction
-        # (RIDE), in which case the bounds widen for a continuation entry.
+        # Anti-chase: don't buy the top / short the bottom of an extended move — UNLESS
+        # this is a fresh event-router catalyst (RIDE) OR a WITH-TAPE breakout (a long on
+        # a green tape / short on a red tape), in which case the bounds widen so we stop
+        # filtering out the bullish breakouts and only catching bearish pullback-shorts.
         _rd = ((event_state or {}).get("ride", {}) or {}).get(sym, {}).get("dir")
-        cr = anti_chase_reason(direction == "long", scan_row, event=(_rd == direction))
+        _with_tape = (regime is not None and (
+            (direction == "long" and regime.get("tape_bias") == "risk_on")
+            or (direction == "short" and regime.get("tape_bias") == "risk_off")))
+        cr = anti_chase_reason(direction == "long", scan_row, event=(_rd == direction or _with_tape))
         if cr:
             return False, f"{sym} {cr}"
         # Correlation cap: don't put the whole book on one directional bet.
@@ -2064,8 +2101,11 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
         bullish = (parse_occ(osym) or {}).get("type") == "call"
         _und = _decision_underlying(decision)
         _rd = ((event_state or {}).get("ride", {}) or {}).get(_und, {}).get("dir")
-        cr = anti_chase_reason(bullish, scan_row,
-                               event=(_rd == ("long" if bullish else "short")))
+        _dir = "long" if bullish else "short"
+        _with_tape = (regime is not None and (
+            (bullish and regime.get("tape_bias") == "risk_on")
+            or (not bullish and regime.get("tape_bias") == "risk_off")))
+        cr = anti_chase_reason(bullish, scan_row, event=(_rd == _dir or _with_tape))
         if cr:
             return False, f"{sym or osym} {cr}"
         side_key = "bull" if bullish else "bear"
@@ -2577,6 +2617,22 @@ def run_cycle(dry: bool = False):
         log(f"regime: {regime['trend']}/{regime['vol']} flat={regime['flat']} "
             f"allowed={regime['allowed']} :: {regime['reason']}")
         state["last_regime"] = regime_mod.summary(regime)   # for STATUS visibility
+        # Self-diagnostic: if the open intraday book is net AGAINST a clearly directional
+        # tape (e.g. mostly short while the market is risk-on), say so — proactively,
+        # without being asked. This is the 6/12 failure made visible.
+        _dc = directional_counts(positions)
+        _tb = regime.get("tape_bias")
+        _fighting = ((_tb == "risk_on" and _dc.get("bear", 0) - _dc.get("bull", 0) >= 2)
+                     or (_tb == "risk_off" and _dc.get("bull", 0) - _dc.get("bear", 0) >= 2))
+        if _fighting:
+            global _LAST_TAPE_ALERT_AT
+            if (_LAST_TAPE_ALERT_AT is None
+                    or (now - _LAST_TAPE_ALERT_AT).total_seconds() > 1800):
+                tg_send(f"⚠️ FIGHTING THE TAPE: book is {_dc.get('bull',0)} long / "
+                        f"{_dc.get('bear',0)} short while the market is {_tb} "
+                        f"(tape {regime.get('tape'):+.2f}%). Trades should lean WITH it.")
+                log(f"self-diagnostic: fighting the tape ({_dc} vs {_tb})")
+                _LAST_TAPE_ALERT_AT = now
         nothing_open = (not positions and not state.get("active_multileg")
                         and not state.get("active_options"))
         if regime["flat"] and nothing_open:

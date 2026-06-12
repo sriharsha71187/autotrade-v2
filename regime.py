@@ -43,6 +43,22 @@ def _index_move(scan) -> tuple[float | None, str | None]:
     return None, None
 
 
+def _tape(scan) -> tuple[float | None, str]:
+    """Broad-market direction = mean day_pct of the major index ETFs present. Returns
+    (tape_pct, bias) where bias is 'risk_on' / 'risk_off' / 'neutral'. This is the
+    'don't fight the tape' signal — on a clearly green tape, lean long, not short."""
+    vals = [float(r["day_pct"]) for r in (scan or [])
+            if r.get("symbol") in ("SPY", "QQQ", "IWM", "DIA") and r.get("day_pct") is not None]
+    if not vals:
+        return None, "unknown"
+    tape = sum(vals) / len(vals)
+    if tape >= cfg.REGIME_TAPE_PCT:
+        return tape, "risk_on"
+    if tape <= -cfg.REGIME_TAPE_PCT:
+        return tape, "risk_off"
+    return tape, "neutral"
+
+
 def _vol_band(vix) -> str:
     if vix is None:
         return "UNKNOWN"
@@ -83,9 +99,15 @@ def classify(scan, vix, now=None, event_day: bool = False) -> dict:
     move, idx = _index_move(scan)
     vol = _vol_band(vix)
     trend = _trend_band(move)
+    tape, tape_bias = _tape(scan)
     allowed: list[str] = []
     flat = False
     direction = None
+    # Directional menu: a CAPPED debit spread AND an UNCAPPED long option (long call/put
+    # — defined-risk = premium, but unlimited upside). The model picks: spread when IV is
+    # rich / it's a grind, long option when there's conviction + room to run. This is the
+    # "no upside caps" philosophy — winners are no longer structurally capped.
+    DIRECTIONAL = ["debit_spread", "long_option"]
 
     if event_day:
         flat = True
@@ -98,14 +120,17 @@ def classify(scan, vix, now=None, event_day: bool = False) -> dict:
         reason = (f"VIX {vix:.1f} >= {cfg.REGIME_VIX_HIGH:.0f} (HIGH) — short-vol "
                   f"lethal here; intraday flat, tail hedge only")
     elif trend in ("STRONG_UP", "STRONG_DOWN"):
-        allowed = ["debit_spread"]
+        allowed = list(DIRECTIONAL)
         direction = "long" if trend == "STRONG_UP" else "short"
         reason = (f"{idx} {move:+.1f}% STRONG {'up' if direction == 'long' else 'down'} "
-                  f"— momentum defined-risk debit spread only")
+                  f"— momentum WITH the trend (debit spread or uncapped long option)")
     elif trend in ("UP", "DOWN"):
-        flat = True
-        reason = (f"{idx} {move:+.1f}% mild drift (chop, not a clean trend or range) "
-                  f"— no high-quality setup, flat")
+        # Mild drift: PARTICIPATE with the drift (was FLAT — that sat out every orderly
+        # trend day). Directional, with the move.
+        allowed = list(DIRECTIONAL)
+        direction = "long" if trend == "UP" else "short"
+        reason = (f"{idx} {move:+.1f}% drift — trade WITH it "
+                  f"(debit spread or uncapped long option)")
     else:  # RANGE
         if vol == "LOW":
             flat = True
@@ -116,26 +141,29 @@ def classify(scan, vix, now=None, event_day: bool = False) -> dict:
             reason = (f"{idx} range-bound, VIX {vol} — short premium "
                       f"(0DTE condor in its window / mean-reversion credit spread)")
 
-    # Dispersion overlay: even when the INDEX is range-bound or just chopping, single
-    # names can be in a strong DIRECTIONAL move (e.g. a semi breakout — MRVL +14%,
-    # INTC +12% — while SPY is flat). A single-name momentum DEBIT spread (defined-risk,
-    # WITH the trend, anti-chase-guarded) is a real opportunity the index-only read
-    # misses. Enable it whenever a strong mover is present, except in the HIGH-vol /
-    # event-day lockout (where standing down still wins).
+    # Dispersion overlay: even when the INDEX is range-bound, single names can be in a
+    # strong DIRECTIONAL move (a semi breakout while SPY is flat). Enable single-name
+    # momentum — both the capped debit spread AND the uncapped long option — WITH the
+    # name's move. The `direction` hint and `tape` let the engine prefer trades that
+    # don't fight the broad market.
     if not event_day and vol not in ("HIGH", "UNKNOWN"):
         strong = [r for r in (scan or [])
                   if r.get("symbol") not in ("SPY", "QQQ", "IWM", "DIA")
                   and abs(r.get("day_pct") or 0) >= cfg.REGIME_STRONG_PCT]
         if strong:
-            if "debit_spread" not in allowed:
-                allowed = allowed + ["debit_spread"]
+            for s in DIRECTIONAL:
+                if s not in allowed:
+                    allowed = allowed + [s]
             flat = False
             top = max(strong, key=lambda r: abs(r.get("day_pct") or 0))
+            if direction is None:
+                direction = "long" if (top.get("day_pct") or 0) > 0 else "short"
             reason += (f" | dispersion: {top['symbol']} {top['day_pct']:+.1f}% — "
-                       f"single-name momentum debit spreads enabled")
+                       f"single-name momentum (spread or uncapped long) enabled")
 
     return {
         "trend": trend, "vol": vol, "index": idx, "index_move": move, "vix": vix,
+        "tape": tape, "tape_bias": tape_bias,
         "allowed": allowed, "flat": flat, "direction": direction, "reason": reason,
     }
 
@@ -158,6 +186,7 @@ def summary(regime: dict) -> dict:
     return {
         "trend": regime.get("trend"), "vol": regime.get("vol"),
         "index_move_pct": regime.get("index_move"),
+        "tape_pct": regime.get("tape"), "tape_bias": regime.get("tape_bias"),
         "allowed_strategies": regime.get("allowed"),
         "flat": regime.get("flat"),
         "direction": regime.get("direction"),

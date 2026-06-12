@@ -74,10 +74,10 @@ DAILY_LOSS_HALT  = -300.0
 DAILY_PROFIT_TARGET  = 200.0
 DAILY_PROFIT_STRETCH = 400.0
 PER_TRADE_NOTIONAL_CAP = 5_000.0   # cap on a single stock entry (qty * price)
-PER_OPTION_NOTIONAL_CAP = 1_000.0  # HARD ceiling on one option structure's max-loss
+PER_OPTION_NOTIONAL_CAP = 1_200.0  # HARD ceiling on one option structure's max-loss
                                    # (kept under the daily loss halt so a single
                                    #  condor can never trip the whole-day stop alone)
-OPTION_RISK_TARGET     = 600.0     # TARGET max-loss to SIZE each defined-risk options
+OPTION_RISK_TARGET     = 900.0     # TARGET max-loss to SIZE each defined-risk options
                                    # trade toward (wider wings / more contracts) — stops
                                    # the model trading teaspoon-sized $50-risk condors
 OPTION_MAX_SPREAD_PCT  = 0.15      # skip options whose bid-ask spread exceeds this (illiquid)
@@ -319,6 +319,7 @@ REGIME_VIX_HIGH     = 28.0
 # Index (SPY) trend classification from its day move vs prior close.
 REGIME_TREND_PCT  = 1.0   # |move| >= this -> trending; else range-bound
 REGIME_STRONG_PCT = 2.0   # |move| >= this -> STRONG trend (momentum debit spreads)
+REGIME_TAPE_PCT   = 0.30  # mean index-ETF move >= this -> risk_on/risk_off tape (don't fight it)
 
 # ---- tail-hedge convexity book ---------------------------------------------
 # Small always-on long-vol overlay: cheap OTM SPY puts that pay on a crash, sized

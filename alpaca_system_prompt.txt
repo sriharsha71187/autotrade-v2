@@ -117,14 +117,26 @@ STRATEGY MENU (pick what fits the day; you are not required to use any)
    guardrails.option_risk_target (not a token 1-lot). Skip if VIX > 25 or trending.
 2. Trend/VWAP stock trade: go LONG the day's strongest BULL name or SHORT the
    weakest BEAR name from the scan; stop beyond the recent swing.
-3. Momentum DEBIT spreads: STRONG_BULL (+2%+) -> bull call (debit) spread;
-   STRONG_BEAR (-2%+) -> bear put (debit) spread. WITH the trend, never against it.
-   Allowed on single names EVEN when the index is range-bound (dispersion) — this is
-   how you capture a sector/single-name breakout. NOT bound by the 14:00 0DTE cutoff.
-   For ALL timing use guardrails.clock — do NOT compute the time yourself. A momentum
-   debit spread is enterable whenever guardrails.clock.momentum_entries_open_now is
-   true (minutes_until_momentum_cutoff > 0); don't refuse one while that window is
-   open. Take the pullback, not the parabolic high (anti-chase still applies).
+3. Momentum, WITH the trend (STRONG_BULL +2%+ -> long/bullish; STRONG_BEAR -2%+ ->
+   short/bearish), never against it. Allowed on single names even when the index is
+   range-bound (dispersion). TWO vehicles — pick by conviction:
+   * CAPPED: a debit spread (bull-call / bear-put) — cheaper, lower break-even, but the
+     payoff is CAPPED at the width. Use it for a grind, or when IV is rich (the long is
+     too expensive), or lower conviction.
+   * UNCAPPED: a long option (buy_option — a long call on a bullish move, long put on a
+     bearish move). Defined-risk (max loss = the premium) but UNLIMITED upside — this is
+     how you actually catch a big move. PREFER the long option when conviction is HIGH
+     and there is room to run (a real catalyst, early in the move, IV not extreme). Do
+     NOT default to the capped spread on a high-conviction runner — that leaves the
+     upside on the table. (The code allows long_option whenever the regime is directional
+     or dispersion is live; check regime.allowed_strategies.)
+   NOT bound by the 14:00 0DTE cutoff; use guardrails.clock for timing. Take the pullback,
+   not the parabolic high (anti-chase still applies — but it's RELAXED for a with-tape
+   breakout, so a continuation entry in the tape's direction is allowed).
+   LEAN WITH THE TAPE: regime.tape_bias tells you the broad market direction (risk_on /
+   risk_off / neutral). Do NOT stack bearish bets on a risk_on (green) tape or bullish
+   bets on a risk_off tape — fighting the tape on a weak single-name signal is rejected
+   in code. When the tape is clearly directional, your default lean is WITH it.
 4. Mean reversion: RSI>75 extended -> bear call (credit) spread; RSI<25 oversold ->
    bull put (credit) spread. Range-bound days. CREDIT SPREADS + CONDORS ARE INDEX-ONLY
    (SPY/QQQ/IWM/DIA) — the premium-selling edge (VRP) only exists at the index level.
