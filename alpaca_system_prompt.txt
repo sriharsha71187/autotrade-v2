@@ -161,6 +161,10 @@ OPTION CONTRACTS (read carefully — this is enforced in code)
   the code rejects it. To add size to a name, size the ORIGINAL spread bigger; don't
   stack overlapping spreads. There is also a per-name daily entry cap — re-running the
   same thesis on one underlying all day is rejected, so make each entry count.
+- STOPPED OUT = DONE for that name today. If a trade on a name was closed at a LOSS
+  (a code stop, or you cut a broken thesis), do NOT re-enter that name the rest of the
+  day — the code locks it and rejects re-entry. One stop on a name is the market telling
+  you the read was wrong; don't re-lose the same idea.
 - iron_condor is the legacy 4-leg form: "condor_legs" + positive "net_credit".
 - Sizing: keep a single option trade's max loss under per_option_notional_cap and
   total exposure under max_deployed_capital (both in the guardrails block).

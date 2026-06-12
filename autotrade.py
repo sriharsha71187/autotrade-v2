@@ -106,6 +106,7 @@ def default_state() -> dict:
         "active_options": [],       # [{symbol, qty, entry, opened}] long options we manage
         "aborted_today": [],        # symbols deliberately aborted (1 abort/symbol/day)
         "entries_today": {},        # {underlying: spread/condor submit count} — per-name daily cap
+        "stopped_today": [],        # underlyings stopped/cut at a loss today — no re-entry (anti-churn)
         "loss_override": False,     # OVERRIDE command: keep trading past the daily loss halt (today only)
         "last_cycle_at": None,      # iso-ts of the last real cycle (for cadence throttle)
         "last_action": "",          # human-readable summary of last cycle action
@@ -1214,6 +1215,20 @@ def multileg_risk(legs, net_price, qty) -> float | None:
     return max(0.0, width - net_price) * 100 * qty
 
 
+def _lock_name_today(state, underlying, why):
+    """Lock a single name out for the rest of the day after a trade on it was closed at a
+    LOSS (a code stop, or the model cutting a broken thesis). Stops the bot from re-losing
+    the same idea on the same name — the 6/12 ADBE/RDW churn. Index ETFs are exempt (the
+    premium books legitimately re-use them)."""
+    if not underlying or underlying in cfg.PREMIUM_INDEX_UNDERLYINGS:
+        return
+    locked = state.setdefault("stopped_today", [])
+    if underlying not in locked:
+        locked.append(underlying)
+        log(f"NAME LOCKED {underlying} for the day ({why}) — no re-entry")
+        tg_send(f"🔒 {underlying} locked for today ({why}) — no re-entry.")
+
+
 def close_symbols(tc, symbols, dry):
     """Market-close each symbol/leg. Returns the SET of symbols confirmed FLAT (closed
     now, or already gone from the account). Callers MUST only drop tracking for symbols
@@ -1392,6 +1407,9 @@ def manage_multileg(tc, odc, state, dry):
                 log(f"MULTILEG EXIT {symbols}: {reason}")
                 tg_send(f"🧩 Closing spread: {reason}.")
                 flat = close_symbols(tc, symbols, dry)
+                # Stopped out -> lock the name for the day (no re-losing the same idea).
+                if reason.startswith("stop") and all(s in flat for s in symbols):
+                    _lock_name_today(state, _decision_underlying({"legs": legs}), "spread stopped out")
                 # Keep tracking unless every leg confirmed flat (no silent orphan).
                 if not all(s in flat for s in symbols):
                     log(f"MULTILEG EXIT INCOMPLETE {[s for s in symbols if s not in flat]} — keeping tracked")
@@ -1523,6 +1541,8 @@ def manage_options(tc, odc, state, dry):
             log(f"OPTION EXIT {sym}: {reason}")
             tg_send(f"📊 Exiting {sym} ({reason}).")
             flat = close_symbols(tc, [sym], dry)
+            if sym in flat and reason.startswith("stop"):
+                _lock_name_today(state, (meta or {}).get("underlying"), "long option stopped out")
             if sym not in flat:              # close failed -> keep tracking, retry (no orphan)
                 log(f"OPTION EXIT INCOMPLETE {sym} — keeping tracked")
                 still.append(o)
@@ -1938,6 +1958,15 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
             return False, (f"{und}: ATM IV {iv:.0f}% > {cfg.OPTION_MAX_ATM_IV:.0f}% ceiling — "
                            f"extreme-IV lottery ticket, directional debit overpays for premium "
                            f"(capped payoff, noisy signal)")
+    # Stopped-out -> done for the day: once a single-name option trade is closed at a LOSS
+    # (a code stop or a thesis cut), don't re-enter that name — stop re-losing the same
+    # idea on the same name (the 6/12 ADBE/RDW churn).
+    if action in ("buy_option", "multi_leg"):
+        und = _decision_underlying(decision)
+        if und and und not in cfg.PREMIUM_INDEX_UNDERLYINGS \
+                and und in (state.get("stopped_today") or []):
+            return False, (f"{und}: locked for the day — a prior trade on it was stopped/cut "
+                           f"at a loss; no re-entry (anti-churn)")
     # Cooldown
     if sym and action in ("buy_stock", "buy_option"):
         last = state.get("last_entry_time", {}).get(sym)
@@ -2676,6 +2705,14 @@ def run_cycle(dry: bool = False):
             log(f"close skipped — exit handled by bracket: {skip}")
         if do:
             close_symbols(tc, do, dry)
+        # If the model is cutting a tracked single-name spread that's at a LOSS, lock the
+        # name for the day — don't re-lose the same idea (the 6/12 RDW thesis-cut churn).
+        _targets = set(do) | set(close_targets)
+        for _pos in (state.get("active_multileg") or []):
+            _legs = [l.get("symbol") for l in (_pos.get("legs") or [])]
+            _und = _decision_underlying({"legs": _pos.get("legs") or []})
+            if (_und in _targets or any(s in _targets for s in _legs)) and (_pos.get("pl") or 0) < 0:
+                _lock_name_today(state, _und, "spread cut at a loss")
         result = {"status": "close", "action": action,
                   "closed": do, "skipped_bracketed": skip}
 
