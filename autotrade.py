@@ -2857,8 +2857,8 @@ def run_eod():
         "or a stat). (2) flag any rule from a small sample as tentative. (3) NEVER "
         "produce coercive/quota rules ('must trade X times') or 'always trade <ticker>' "
         "rules — reject those. (4) historical edge applies only when the live signal "
-        "scan agrees. Output ONLY a JSON array of "
-        "{rule, evidence, tentative(bool), date} objects."
+        "scan agrees. Output a JSON object {\"learnings\": [{rule, evidence, "
+        "tentative(bool), date}, ...]}."
     )
     user = (
         f"Date: {day}\nMeasured stats: {json.dumps(stats, default=str)}\n\n"
@@ -2868,18 +2868,28 @@ def run_eod():
         "Generate new evidenced rules. Return the FULL updated learnings array "
         "(keep still-relevant existing rules, drop tentative ones not reaffirmed in 14 days)."
     )
+    # Same hardening as the decision path: official SDK, structured outputs (so the
+    # learnings array can't come back malformed), a budget that fits fable-5's thinking,
+    # and explicit refusal/truncation handling. On any failure, keep existing learnings.
+    learnings_schema = {
+        "type": "object", "additionalProperties": False,
+        "properties": {"learnings": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "properties": {"rule": {"type": "string"}, "evidence": {"type": "string"},
+                           "tentative": {"type": "boolean"}, "date": {"type": "string"}},
+            "required": ["rule", "evidence", "tentative", "date"]}}},
+        "required": ["learnings"],
+    }
     try:
-        r = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={"x-api-key": cfg.ANTHROPIC_API_KEY,
-                     "anthropic-version": "2023-06-01", "content-type": "application/json"},
-            json={"model": cfg.CLAUDE_MODEL, "max_tokens": 2000,
-                  "system": system,
-                  "messages": [{"role": "user", "content": user}]},
-            timeout=120,
-        ).json()
-        text = "".join(b.get("text", "") for b in r.get("content", []) if b.get("type") == "text")
-        learnings = _parse_model_json(text)
+        r = _anthropic_client().messages.create(
+            model=cfg.CLAUDE_MODEL, max_tokens=cfg.CLAUDE_MAX_TOKENS,
+            system=system, messages=[{"role": "user", "content": user}],
+            output_config={"format": {"type": "json_schema", "schema": learnings_schema}},
+        )
+        if r.stop_reason in ("refusal", "max_tokens"):
+            raise RuntimeError(f"learnings call ended on {r.stop_reason}")
+        text = "".join(b.text for b in r.content if b.type == "text")
+        learnings = _parse_model_json(text).get("learnings", [])
         # Safety net: strip any rule that smells coercive even if the model slipped.
         banned = ("always trade", "must trade", "quota", "at least", "every cycle")
         learnings = [r for r in learnings
