@@ -1997,19 +1997,20 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
     # capped payoff, and the signal (incl. skew) is noise. The 6/12 RDW loss — 132% IV,
     # skew flipped call->put in 30 min — is exactly this. Block single-name directional
     # option trades above the IV ceiling; legit high-IV momentum (MU/MRVL ~105%) passes.
-    if options_intel and (action == "buy_option"
+    # Also covers buy_stock: a 130%-IV name is a squeezy lottery ticket to trade
+    # directionally as SHARES too (short-squeeze / gap risk), not just via options.
+    if options_intel and (action in ("buy_option", "buy_stock")
                           or (action == "multi_leg" and _decision_strategy(decision) == "debit_spread")):
         und = _decision_underlying(decision)
         oi = options_intel.get(und) if und else None
         iv = oi.get("atm_iv") if oi else None
         if iv is not None and iv > cfg.OPTION_MAX_ATM_IV:
             return False, (f"{und}: ATM IV {iv:.0f}% > {cfg.OPTION_MAX_ATM_IV:.0f}% ceiling — "
-                           f"extreme-IV lottery ticket, directional debit overpays for premium "
-                           f"(capped payoff, noisy signal)")
+                           f"extreme-IV lottery ticket (overpriced/noisy/squeezy), skip")
     # Stopped-out cooldown: once a single-name option trade is closed at a LOSS (code stop
     # or thesis cut), don't re-enter that name for STOPPED_COOLDOWN_MIN — stop re-losing the
     # same idea (the 6/12 ADBE/RDW churn) without killing a two-way name for the whole day.
-    if action in ("buy_option", "multi_leg"):
+    if action in ("buy_option", "multi_leg", "buy_stock"):
         und = _decision_underlying(decision)
         locked = state.get("stopped_today") or {}
         if isinstance(locked, list):                  # legacy form -> treat as locked
@@ -2812,7 +2813,7 @@ def run_cycle(dry: bool = False):
         # Make sure options intel exists for the name being traded (for the extreme-IV
         # gate) — compute on-demand if this underlying wasn't in the cycle's profiled set
         # (RDW-type screener movers usually aren't).
-        if cfg.OPTIONS_INTEL_ENABLED and action in ("buy_option", "multi_leg"):
+        if cfg.OPTIONS_INTEL_ENABLED and action in ("buy_option", "multi_leg", "buy_stock"):
             _u = _decision_underlying(decision)
             if _u and _u not in options_intel:
                 _row = next((r for r in scan if r["symbol"] == _u), None)
