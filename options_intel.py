@@ -111,16 +111,48 @@ def _seed_from_vol_index(underlying: str, existing: list) -> list:
         return existing
 
 
+def _seed_from_realized_vol(underlying: str, atm_iv: float) -> list:
+    """Backfill a single name's IV-rank baseline from its REALIZED-vol history (free,
+    yfinance), scaled so today's point anchors at the live ATM IV. No free source of
+    real historical single-name IV exists at scale, so this is a principled proxy: it
+    captures the name's vol REGIME shape (when its vol is high vs low for itself), and
+    converges to true IV-rank as live IV observations accrue on top."""
+    try:
+        import yfinance as yf, math
+        df = yf.download(underlying, period="1y", interval="1d", progress=False, auto_adjust=True)
+        if getattr(df.columns, "nlevels", 1) > 1:
+            df.columns = df.columns.get_level_values(0)
+        close = df["Close"].dropna()
+        if len(close) < 40:
+            return []
+        rets = (close / close.shift(1)).apply(lambda x: math.log(x) if x and x > 0 else 0).dropna()
+        rv = rets.rolling(21).std() * math.sqrt(252)        # annualized realized vol (fraction)
+        rv = rv.dropna()
+        if rv.empty or float(rv.iloc[-1]) <= 0:
+            return []
+        scale = atm_iv / float(rv.iloc[-1])
+        scale = max(0.6, min(2.5, scale))                   # IV/RV premium ~1.0-1.5; clamp noise
+        return [{"d": idx.strftime("%Y-%m-%d"), "v": round(float(v) * scale, 4)}
+                for idx, v in rv.items()][-250:]
+    except Exception as e:
+        _log(f"options_intel: RV seed {underlying} failed: {e}")
+        return []
+
+
 def iv_rank(underlying: str, atm_iv: float, today: str) -> float | None:
     """Percentile (0-100) of today's ATM IV within the rolling history for this name.
-    Index ETFs are seeded from their vol index on first use (works day 1); single names
-    accrue forward (no free historical IV). None until ≥20 observations."""
+    Seeded on first use so it works day 1: index ETFs from their vol index (real), single
+    names from realized-vol history anchored to current IV (proxy). None until ≥20 obs."""
     c = _load()
     hist = (c.get("iv_hist") or {}).get(underlying) or []
-    # One-time seed for index names so IV-rank is meaningful immediately.
-    if len(hist) < 20 and underlying in _VOL_INDEX and underlying not in (c.get("seeded") or {}):
-        hist = _seed_from_vol_index(underlying, hist)
-        c.setdefault("iv_hist", {})[underlying] = hist
+    # One-time seed so IV-rank is meaningful immediately (real for indices, RV-proxy for
+    # single names). Marked in `seeded` so we don't re-fetch.
+    if len(hist) < 20 and underlying not in (c.get("seeded") or {}):
+        seed = (_seed_from_vol_index(underlying, hist) if underlying in _VOL_INDEX
+                else _seed_from_realized_vol(underlying, atm_iv))
+        if seed:
+            hist = seed
+            c.setdefault("iv_hist", {})[underlying] = hist
         c.setdefault("seeded", {})[underlying] = today
         _save(c)
     if not hist or hist[-1].get("d") != today:
@@ -168,6 +200,7 @@ def compute(odc, underlying: str, spot: float, now) -> dict | None:
         "underlying": underlying,
         "atm_iv": round(atm_iv * 100, 1),             # as a % (e.g. 19.8)
         "iv_rank": iv_rank(underlying, atm_iv, today),
+        "iv_rank_basis": ("vol-index" if underlying in _VOL_INDEX else "rv-proxy"),
         "skew": round(skew * 100, 1),                 # vol points (call − put)
         "skew_label": label,
         "expiry": exp,
