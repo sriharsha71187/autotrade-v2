@@ -37,6 +37,11 @@ import warnings
 warnings.filterwarnings("ignore", message=".*OpenSSL.*")
 
 import requests
+try:
+    import anthropic
+    _ANTHROPIC_OK = True
+except Exception:
+    _ANTHROPIC_OK = False
 
 import config as cfg
 
@@ -1029,54 +1034,88 @@ def _parse_model_json(text: str):
 
 
 _LAST_API_ALERT_AT = None   # throttle for the "engine down" Telegram alert
+_ANTHROPIC_CLIENT = None
+
+# Strict JSON schema for structured outputs — the API CONSTRAINS the model to emit
+# exactly this shape, so a malformed / prose / truncated-into-garbage response is
+# impossible (that whole "no JSON value found" failure class is gone). All objects use
+# additionalProperties:false; conditionally-unused fields are nullable, matching how the
+# model already emits the full object with nulls.
+_LEG_SCHEMA = {"type": "object", "additionalProperties": False,
+               "properties": {"symbol": {"type": "string"}, "side": {"type": "string"}},
+               "required": ["symbol", "side"]}
+_DECISION_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "properties": {
+        "action": {"type": "string",
+                   "enum": ["hold", "buy_stock", "buy_option", "multi_leg",
+                            "iron_condor", "close", "abort"]},
+        "symbol": {"type": ["string", "null"]},
+        "direction": {"type": ["string", "null"]},
+        "option_symbol": {"type": ["string", "null"]},
+        "qty": {"type": ["integer", "null"]},
+        "stop_price": {"type": ["number", "null"]},
+        "target_price": {"type": ["number", "null"]},
+        "legs": {"type": ["array", "null"], "items": _LEG_SCHEMA},
+        "net_price": {"type": ["number", "null"]},
+        "condor_legs": {"type": ["array", "null"], "items": _LEG_SCHEMA},
+        "net_credit": {"type": ["number", "null"]},
+        "close_symbols": {"type": "array", "items": {"type": "string"}},
+        "overnight_hold": {"type": "boolean"},
+        "conviction": {"type": "string", "enum": ["low", "medium", "high"]},
+        "reasoning": {"type": "string"},
+    },
+    "required": ["action", "symbol", "direction", "option_symbol", "qty", "stop_price",
+                 "target_price", "legs", "net_price", "condor_legs", "net_credit",
+                 "close_symbols", "overnight_hold", "conviction", "reasoning"],
+}
+
+
+def _anthropic_client():
+    global _ANTHROPIC_CLIENT
+    if _ANTHROPIC_CLIENT is None:
+        _ANTHROPIC_CLIENT = anthropic.Anthropic(api_key=cfg.ANTHROPIC_API_KEY, timeout=90.0)
+    return _ANTHROPIC_CLIENT
 
 
 def call_claude(context: dict) -> dict:
     system_prompt = Path(__file__).with_name("alpaca_system_prompt.txt").read_text()
     user_msg = (
         "Here is the current market + account context as JSON. Decide the single "
-        "best action for this 5-minute cycle. Respond with ONLY a JSON object, no "
-        "prose, no markdown fences.\n\n"
-        f"{json.dumps(context, indent=2, default=str)}\n\n"
-        "Schema: {\"action\": \"hold|buy_stock|buy_option|multi_leg|iron_condor|close|abort\", "
-        "\"symbol\": str|null, \"direction\": \"long|short\", "
-        "\"option_symbol\": str|null, \"qty\": int, "
-        "\"stop_price\": float|null, \"target_price\": float|null, "
-        "\"legs\": [{\"symbol\": str, \"side\": \"buy|sell\"}]|null, "
-        "\"net_price\": float|null, "
-        "\"condor_legs\": [..]|null, \"net_credit\": float|null, "
-        "\"close_symbols\": [..], \"overnight_hold\": bool, "
-        "\"conviction\": \"low|medium|high\", \"reasoning\": str}"
+        "best action for this 5-minute cycle.\n\n"
+        f"{json.dumps(context, indent=2, default=str)}"
     )
     last_err = None
     for attempt in range(2):  # one retry — a wake-up timeout shouldn't force a hold
         try:
-            r = requests.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={"x-api-key": cfg.ANTHROPIC_API_KEY,
-                         "anthropic-version": "2023-06-01",
-                         "content-type": "application/json"},
-                json={"model": cfg.CLAUDE_MODEL, "max_tokens": cfg.CLAUDE_MAX_TOKENS,
-                      "system": system_prompt,
-                      "messages": [{"role": "user", "content": user_msg}]},
-                timeout=90,
-            ).json()
-            # Surface a real API error instead of letting an empty `content` fall
-            # through to the parser as a bogus "no JSON value found" (that masked a
-            # whole credit-balance outage on 6/11 as if it were a parse bug).
-            if r.get("type") == "error" or "error" in r:
-                err = r.get("error", {}) or {}
-                raise RuntimeError(f"API {err.get('type','error')}: "
-                                   f"{err.get('message', r)}")
-            # fable-5 reasons before answering. If the budget runs out mid-thought the
-            # JSON answer is truncated/empty — name it explicitly so it doesn't look
-            # like a parse bug, and so the outage alert fires.
-            if r.get("stop_reason") == "max_tokens":
-                raise RuntimeError("model truncated at max_tokens (thinking budget too "
-                                   "small for the JSON answer — raise CLAUDE_MAX_TOKENS)")
-            text = "".join(b.get("text", "") for b in r.get("content", [])
-                           if b.get("type") == "text")
-            return _parse_model_json(text)
+            r = _anthropic_client().messages.create(
+                model=cfg.CLAUDE_MODEL, max_tokens=cfg.CLAUDE_MAX_TOKENS,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_msg}],
+                # Structured outputs: the response text is GUARANTEED to be JSON
+                # matching _DECISION_SCHEMA (or it's a refusal / max_tokens, handled
+                # below) — no more malformed-output parse failures.
+                output_config={"format": {"type": "json_schema", "schema": _DECISION_SCHEMA}},
+            )
+            # fable-5 can decline via a safety classifier (HTTP 200, refusal); and it
+            # reasons before answering, so a too-small budget truncates the answer.
+            # Name both explicitly so they surface (and alert) instead of masquerading
+            # as a parse bug.
+            if r.stop_reason == "refusal":
+                cat = getattr(getattr(r, "stop_details", None), "category", None)
+                raise RuntimeError(f"API model refusal (category={cat})")
+            if r.stop_reason == "max_tokens":
+                raise RuntimeError("model truncated at max_tokens "
+                                   "(raise CLAUDE_MAX_TOKENS)")
+            text = "".join(b.text for b in r.content if b.type == "text")
+            return _parse_model_json(text)   # structured output -> this never fails now
+        except anthropic.APIStatusError as e:
+            # Billing/auth/rate-limit/bad-model — a real API failure (the 6/11 credit
+            # outage). Carry the typed reason so the outage alert fires.
+            last_err = RuntimeError(f"API {getattr(e, 'type', 'error')}: "
+                                    f"{getattr(e, 'message', str(e))}")
+            if attempt == 0:
+                time.sleep(3)
         except Exception as e:
             last_err = e
             if attempt == 0:
