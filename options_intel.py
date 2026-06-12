@@ -81,14 +81,51 @@ def _target_expiry(rows, today, target_dte=30):
     return min(exps, key=dte)
 
 
+# An index ETF's ATM IV ≈ its volatility index, which has years of free history — so we
+# SEED the IV-rank baseline immediately instead of accruing forward for a month. IWM is
+# omitted: its vol index (^RVX) isn't served free, and a cross-index proxy would bias
+# the level — so IWM honestly accrues forward.
+_VOL_INDEX = {"SPY": "^VIX", "QQQ": "^VXN", "DIA": "^VXD"}
+
+
+def _seed_from_vol_index(underlying: str, existing: list) -> list:
+    """Backfill an index ETF's ATM-IV history from its vol index (VIX/VXN/RVX) closes.
+    Vol indices are quoted in % points (VIX 20 = 20%); our ATM IV is a fraction (0.20),
+    so divide by 100 to match scale."""
+    vi = _VOL_INDEX.get(underlying)
+    if not vi:
+        return existing
+    try:
+        import yfinance as yf
+        df = yf.download(vi, period="1y", interval="1d", progress=False, auto_adjust=False)
+        if getattr(df.columns, "nlevels", 1) > 1:
+            df.columns = df.columns.get_level_values(0)
+        closes = df["Close"].dropna()
+        have = {h["d"] for h in existing}
+        seeded = [{"d": idx.strftime("%Y-%m-%d"), "v": round(float(v) / 100.0, 4)}
+                  for idx, v in closes.items()
+                  if idx.strftime("%Y-%m-%d") not in have]
+        return sorted(existing + seeded, key=lambda h: h["d"])[-250:]
+    except Exception as e:
+        _log(f"options_intel: seed {underlying} from {vi} failed: {e}")
+        return existing
+
+
 def iv_rank(underlying: str, atm_iv: float, today: str) -> float | None:
-    """Percentile (0-100) of today's ATM IV within our stored rolling history for this
-    name. Appended at most once/day; None until enough history (≥20 days)."""
+    """Percentile (0-100) of today's ATM IV within the rolling history for this name.
+    Index ETFs are seeded from their vol index on first use (works day 1); single names
+    accrue forward (no free historical IV). None until ≥20 observations."""
     c = _load()
     hist = (c.get("iv_hist") or {}).get(underlying) or []
+    # One-time seed for index names so IV-rank is meaningful immediately.
+    if len(hist) < 20 and underlying in _VOL_INDEX and underlying not in (c.get("seeded") or {}):
+        hist = _seed_from_vol_index(underlying, hist)
+        c.setdefault("iv_hist", {})[underlying] = hist
+        c.setdefault("seeded", {})[underlying] = today
+        _save(c)
     if not hist or hist[-1].get("d") != today:
         hist.append({"d": today, "v": round(atm_iv, 4)})
-        hist = hist[-120:]
+        hist = hist[-250:]
         c.setdefault("iv_hist", {})[underlying] = hist
         _save(c)
     vals = [h["v"] for h in hist]
