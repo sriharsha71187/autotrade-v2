@@ -26,9 +26,10 @@ python3 -m venv "$DIR/venv"
 "$DIR/venv/bin/python3" -m pip install --quiet --upgrade pip
 echo "==> Installing dependencies into the venv"
 # pip auto-selects the newest alpaca-py compatible with this Python (3.9 -> last 3.9 build).
-"$DIR/venv/bin/python3" -m pip install --quiet alpaca-py yfinance requests || \
-    echo "    (install failed — run manually: $DIR/venv/bin/python3 -m pip install alpaca-py yfinance requests)"
-echo "    installed alpaca-py / yfinance / requests"
+# anthropic = decision model SDK (required); flask = optional local dashboard (dashboard.py).
+"$DIR/venv/bin/python3" -m pip install --quiet alpaca-py yfinance requests anthropic flask || \
+    echo "    (install failed — run manually: $DIR/venv/bin/python3 -m pip install alpaca-py yfinance requests anthropic flask)"
+echo "    installed alpaca-py / yfinance / requests / anthropic / flask"
 
 echo
 echo "Done. EOD learning is NOT scheduled automatically — run it after the close with:"

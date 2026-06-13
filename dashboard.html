@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AutoTrade Cockpit</title>
+<style>
+  :root{
+    --bg:#0b0e14; --panel:#141923; --panel2:#1b212e; --line:#27304080;
+    --fg:#dfe6f1; --mut:#8a97ab; --grn:#37d39b; --red:#ff6b6b; --amb:#ffb454;
+    --blu:#5aa9ff; --vio:#b48cff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  a{color:var(--blu)}
+  header{display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+    padding:12px 18px;border-bottom:1px solid var(--line);background:#0d111a;
+    position:sticky;top:0;z-index:5}
+  header h1{font-size:15px;margin:0;letter-spacing:.5px;color:var(--fg)}
+  .clock{color:var(--mut);font-size:12px}
+  .spacer{flex:1}
+  .stat{display:flex;flex-direction:column;line-height:1.2}
+  .stat .lbl{color:var(--mut);font-size:10px;text-transform:uppercase;letter-spacing:.6px}
+  .stat .val{font-size:18px;font-weight:600}
+  .badge{padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;
+    border:1px solid var(--line)}
+  .b-grn{color:var(--grn);background:#37d39b18}
+  .b-red{color:var(--red);background:#ff6b6b18}
+  .b-amb{color:var(--amb);background:#ffb45418}
+  .b-mut{color:var(--mut);background:#8a97ab14}
+  .b-blu{color:var(--blu);background:#5aa9ff18}
+  .pos{color:var(--grn)} .neg{color:var(--red)}
+  main{display:grid;grid-template-columns:1.15fr 1.55fr 1fr;gap:12px;padding:12px}
+  @media(max-width:1200px){main{grid-template-columns:1fr 1fr}}
+  @media(max-width:820px){main{grid-template-columns:1fr}}
+  .col{display:flex;flex-direction:column;gap:12px;min-width:0}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  .card h2{margin:0;padding:9px 12px;font-size:11px;text-transform:uppercase;
+    letter-spacing:.7px;color:var(--mut);border-bottom:1px solid var(--line);
+    display:flex;justify-content:space-between;align-items:center}
+  .card .body{padding:8px 12px;max-height:46vh;overflow:auto}
+  table{width:100%;border-collapse:collapse}
+  th,td{text-align:left;padding:4px 6px;white-space:nowrap}
+  th{color:var(--mut);font-weight:500;font-size:10px;text-transform:uppercase;
+    border-bottom:1px solid var(--line)}
+  tbody tr:hover{background:#ffffff06}
+  td.num{text-align:right;font-variant-numeric:tabular-nums}
+  .muted{color:var(--mut)}
+  .pill{display:inline-block;padding:1px 6px;border-radius:6px;font-size:10px;font-weight:600}
+  .p-sub{color:var(--grn);background:#37d39b1a}
+  .p-blk{color:var(--red);background:#ff6b6b1a}
+  .p-cls{color:var(--blu);background:#5aa9ff1a}
+  .p-hold{color:var(--mut);background:#8a97ab14}
+  .dec{border-bottom:1px solid var(--line);padding:7px 2px}
+  .dec:last-child{border-bottom:0}
+  .dec .top{display:flex;gap:8px;align-items:center}
+  .dec .t{color:var(--mut);font-size:11px}
+  .dec .sym{font-weight:700}
+  .dec .act{color:var(--vio);font-size:11px}
+  .dec .reason{color:var(--red);font-size:11.5px;margin-top:3px}
+  .dec .why{color:var(--mut);font-size:11.5px;margin-top:3px}
+  .rule{border-bottom:1px solid var(--line);padding:6px 0}
+  .rule:last-child{border-bottom:0}
+  .rule .meta{color:var(--mut);font-size:10.5px}
+  .scope{color:var(--blu)}
+  canvas{width:100%;height:120px;display:block}
+  .kv{display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid var(--line)}
+  .kv:last-child{border-bottom:0}
+  #err{color:var(--amb);font-size:11px}
+  .dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:5px}
+  .live{background:var(--grn);box-shadow:0 0 6px var(--grn)}
+  .dead{background:var(--red)}
+</style>
+</head>
+<body>
+<header>
+  <h1>⚡ AUTOTRADE COCKPIT</h1>
+  <span class="badge b-mut">PAPER</span>
+  <span class="clock"><span id="dot" class="dot live"></span><span id="now">—</span></span>
+  <div class="spacer"></div>
+  <div class="stat"><span class="lbl">Equity</span><span class="val" id="equity">—</span></div>
+  <div class="stat"><span class="lbl">Day P&amp;L</span><span class="val" id="daypl">—</span></div>
+  <div class="stat"><span class="lbl">Realized</span><span class="val" id="realized">—</span></div>
+  <div class="stat"><span class="lbl">VIX</span><span class="val" id="vix">—</span></div>
+  <div class="stat"><span class="lbl">Model</span><span class="val" id="model" style="font-size:12px">—</span></div>
+  <div id="flags"></div>
+  <span id="err"></span>
+</header>
+
+<main>
+  <!-- left column -->
+  <div class="col">
+    <div class="card">
+      <h2>Regime / Tape</h2>
+      <div class="body" id="regime"></div>
+    </div>
+    <div class="card">
+      <h2>Positions <span id="poscount" class="muted"></span></h2>
+      <div class="body"><table><thead><tr>
+        <th>Sym</th><th>Side</th><th class="num">Qty</th><th class="num">Avg</th>
+        <th class="num">Last</th><th class="num">uP&amp;L</th></tr></thead>
+        <tbody id="positions"></tbody></table></div>
+    </div>
+    <div class="card">
+      <h2>Tracked spreads / options</h2>
+      <div class="body" id="tracked"></div>
+    </div>
+    <div class="card">
+      <h2>Equity</h2>
+      <div class="body"><canvas id="spark" width="600" height="120"></canvas>
+        <div class="muted" id="sparklbl" style="text-align:center"></div></div>
+    </div>
+  </div>
+
+  <!-- centre: the decision & veto stream -->
+  <div class="col">
+    <div class="card">
+      <h2>Decision &amp; veto stream <span id="tally" class="muted"></span></h2>
+      <div class="body" id="stream" style="max-height:84vh"></div>
+    </div>
+  </div>
+
+  <!-- right column -->
+  <div class="col">
+    <div class="card">
+      <h2>Realized by strategy (today)</h2>
+      <div class="body" id="bystrat"></div>
+    </div>
+    <div class="card">
+      <h2>Signal scan — top movers</h2>
+      <div class="body"><table><thead><tr>
+        <th>Sym</th><th>Signal</th><th class="num">Day%</th><th class="num">RSI</th>
+        <th class="num">VWAPx</th></tr></thead><tbody id="scan"></tbody></table></div>
+    </div>
+    <div class="card">
+      <h2>Learnings <span id="lcount" class="muted"></span></h2>
+      <div class="body" id="learnings" style="max-height:40vh"></div>
+    </div>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const money = n => (n==null||isNaN(n)) ? "—" : "$"+Number(n).toLocaleString(undefined,{maximumFractionDigits:0});
+const money2 = n => (n==null||isNaN(n)) ? "—" : "$"+Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+const signed = n => (n==null||isNaN(n)) ? "—" : (n>=0?"+":"")+Number(n).toLocaleString(undefined,{maximumFractionDigits:0});
+const cls = n => n>0?"pos":n<0?"neg":"muted";
+const esc = s => (s==null?"":String(s)).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+
+function render(d){
+  $("err").textContent="";
+  $("now").textContent = d.now || "—";
+  const a = d.account||{};
+  $("equity").textContent = money2(a.equity);
+  const dp=$("daypl"); dp.textContent = a.day_pl==null?"—":signed(a.day_pl)+" ("+(a.day_pl_pct>=0?"+":"")+(a.day_pl_pct||0).toFixed(2)+"%)";
+  dp.className="val "+cls(a.day_pl);
+  const rp=$("realized"); rp.textContent = d.day_realized_pl==null?"—":signed(d.day_realized_pl); rp.className="val "+cls(d.day_realized_pl);
+  $("vix").textContent = d.vix==null?"—":Number(d.vix).toFixed(1);
+
+  // model badge
+  const m=d.model||{}; const mb=$("model");
+  mb.textContent = (m.in_use||"—").replace("claude-","");
+  mb.className = "val "+(m.on_fallback?"neg":"pos"); mb.style.fontSize="12px";
+  mb.title = m.on_fallback ? ("preferred "+m.preferred+" unavailable — running fallback "+m.fallback) : "running preferred model";
+
+  // flags
+  const f=d.flags||{}; let fl="";
+  if(f.halted) fl+='<span class="badge b-red">HALTED</span> ';
+  if(f.loss_override) fl+='<span class="badge b-amb">LOSS-OVERRIDE</span> ';
+  if(f.focus) fl+='<span class="badge b-blu">FOCUS '+esc(f.focus)+'</span> ';
+  if(m.on_fallback) fl+='<span class="badge b-amb">FALLBACK</span> ';
+  $("flags").innerHTML = fl;
+
+  // regime
+  const r=d.regime;
+  if(r){
+    const tape = r.tape_bias||"—";
+    const tcls = tape==="risk_on"?"b-grn":tape==="risk_off"?"b-red":"b-mut";
+    $("regime").innerHTML =
+      '<div class="kv"><span class="muted">trend / vol</span><span>'+esc(r.trend)+' / '+esc(r.vol)+'</span></div>'+
+      '<div class="kv"><span class="muted">tape</span><span class="badge '+tcls+'">'+esc(tape)+' '+(r.tape_pct==null?"":(r.tape_pct>=0?"+":"")+Number(r.tape_pct).toFixed(2)+"%")+'</span></div>'+
+      '<div class="kv"><span class="muted">direction</span><span>'+esc(r.direction||"—")+'</span></div>'+
+      '<div class="kv"><span class="muted">allowed</span><span>'+(r.flat?'<span class="badge b-red">FLAT</span>':esc((r.allowed_strategies||[]).join(", ")||"—"))+'</span></div>'+
+      '<div class="muted" style="margin-top:6px">'+esc(r.reason||"")+'</div>';
+  } else $("regime").innerHTML='<span class="muted">no scan yet today</span>';
+
+  // positions
+  const ps=d.positions||[];
+  $("poscount").textContent = ps.length?("· "+ps.length):"";
+  $("positions").innerHTML = ps.length? ps.map(p=>{
+    const side=String(p.side||"").replace("PositionSide.","").toLowerCase();
+    return '<tr><td class="sym">'+esc(p.symbol)+'</td><td class="muted">'+esc(side)+'</td>'+
+      '<td class="num">'+(p.qty)+'</td><td class="num">'+money2(p.avg_entry).slice(1)+'</td>'+
+      '<td class="num">'+money2(p.current).slice(1)+'</td>'+
+      '<td class="num '+cls(p.unrealized_pl)+'">'+signed(p.unrealized_pl)+'</td></tr>';
+  }).join("") : '<tr><td colspan="6" class="muted">flat</td></tr>';
+
+  // tracked structures
+  const sp=(d.tracked&&d.tracked.spreads)||[], op=(d.tracked&&d.tracked.options)||[];
+  let th="";
+  if(!sp.length&&!op.length) th='<span class="muted">none tracked</span>';
+  sp.forEach(s=>{ const syms=(s.legs||[]).map(l=>l.symbol).join(" / ");
+    th+='<div class="kv"><span>'+esc((s.legs&&s.legs[0]&&s.legs[0].symbol||"spread").slice(0,6))+' ×'+(s.qty||1)+' <span class="muted" style="font-size:10px">'+esc(syms)+'</span></span>'+
+        '<span class="'+cls(s.pl)+'">'+(s.pl==null?"—":signed(s.pl))+'</span></div>'; });
+  op.forEach(o=>{ th+='<div class="kv"><span>'+esc(o.symbol)+' ×'+(o.qty||1)+'</span><span class="'+cls(o.pl)+'">'+(o.pl==null?"—":signed(o.pl))+'</span></div>'; });
+  $("tracked").innerHTML=th;
+
+  // decision & veto stream
+  const c=d.counts||{};
+  $("tally").innerHTML='· '+ (c.submitted||0)+' sub · '+(c.blocked||0)+' blk · '+(c.close||0)+' cls · '+(c.hold||0)+' hold';
+  $("stream").innerHTML = (d.decisions||[]).map(x=>{
+    let pill,pcls;
+    if(x.status==="submitted"){pill="SUBMITTED";pcls="p-sub";}
+    else if(x.status==="blocked"){pill="BLOCKED";pcls="p-blk";}
+    else if(x.status==="close"){pill="CLOSE";pcls="p-cls";}
+    else {pill="hold";pcls="p-hold";}
+    const head='<div class="top"><span class="t">'+esc(x.t)+'</span>'+
+      '<span class="pill '+pcls+'">'+pill+'</span>'+
+      (x.symbol?'<span class="sym">'+esc(x.symbol)+'</span>':'')+
+      '<span class="act">'+esc(x.action||"")+'</span>'+
+      (x.conviction&&x.conviction!=="low"?'<span class="muted">· '+esc(x.conviction)+'</span>':'')+'</div>';
+    const body = x.reason ? '<div class="reason">⊘ '+esc(x.reason)+'</div>'
+                          : (x.reasoning?'<div class="why">'+esc(x.reasoning)+'</div>':'');
+    return '<div class="dec">'+head+body+'</div>';
+  }).join("") || '<span class="muted">no cycles recorded today yet</span>';
+
+  // by strategy
+  const bs=d.by_strategy||{}; const keys=Object.keys(bs);
+  $("bystrat").innerHTML = keys.length? keys.sort((a,b)=>bs[b]-bs[a]).map(k=>
+    '<div class="kv"><span>'+esc(k)+'</span><span class="'+cls(bs[k])+'">'+signed(bs[k])+'</span></div>').join("")
+    : '<span class="muted">no realized P&L today</span>';
+
+  // scan
+  $("scan").innerHTML = (d.scan||[]).slice(0,12).map(s=>{
+    const sig=s.signal||""; const sc=sig.includes("BULL")?"pos":sig.includes("BEAR")?"neg":"muted";
+    return '<tr><td class="sym">'+esc(s.symbol)+'</td><td class="'+sc+'">'+esc(sig)+'</td>'+
+      '<td class="num '+cls(s.day_pct)+'">'+(s.day_pct==null?"—":(s.day_pct>=0?"+":"")+Number(s.day_pct).toFixed(1))+'</td>'+
+      '<td class="num">'+(s.rsi==null?"—":Number(s.rsi).toFixed(0))+'</td>'+
+      '<td class="num">'+(s.vwap_ext==null?"—":(s.vwap_ext>=0?"+":"")+(Number(s.vwap_ext)*100).toFixed(1))+'</td></tr>';
+  }).join("") || '<tr><td colspan="5" class="muted">—</td></tr>';
+
+  // learnings
+  const L=d.learnings||[];
+  $("lcount").textContent = L.length?("· "+L.length):"";
+  $("learnings").innerHTML = L.map(l=>{
+    const ic = l.status==="tentative"?"🧪":l.status==="contested"?"⚖️":"✅";
+    return '<div class="rule">'+ic+' '+esc(l.rule)+
+      '<div class="meta">×'+(l.confirmations||1)+(l.scope?' · <span class="scope">'+esc(l.scope)+'</span>':'')+'</div></div>';
+  }).join("") || '<span class="muted">none</span>';
+
+  drawSpark(d.equity_curve||{});
+}
+
+function drawSpark(ec){
+  const cv=$("spark"), ctx=cv.getContext("2d");
+  const W=cv.width=cv.clientWidth*2, H=cv.height=240; ctx.scale(1,1);
+  ctx.clearRect(0,0,W,H);
+  const intr=ec.intraday||[], daily=ec.daily||[];
+  let series, lbl;
+  if(intr.length>=2){ series=intr.map(p=>p.equity); lbl="intraday (live, "+intr.length+" pts)"; }
+  else { series=daily.map(p=>p.equity); lbl="daily close ("+daily.length+" days)"; }
+  $("sparklbl").textContent=lbl;
+  if(series.length<2){ ctx.fillStyle="#8a97ab"; ctx.font="22px monospace"; ctx.fillText("collecting…",18,H/2); return; }
+  const min=Math.min(...series), max=Math.max(...series), pad=24;
+  const x=i=>pad+i*(W-2*pad)/(series.length-1);
+  const y=v=>H-pad-(max===min?0.5:(v-min)/(max-min))*(H-2*pad);
+  const up = series[series.length-1]>=series[0];
+  ctx.lineWidth=3; ctx.strokeStyle=up?"#37d39b":"#ff6b6b";
+  ctx.beginPath(); series.forEach((v,i)=>{ i?ctx.lineTo(x(i),y(v)):ctx.moveTo(x(i),y(v)); }); ctx.stroke();
+  // area fill
+  ctx.lineTo(x(series.length-1),H-pad); ctx.lineTo(x(0),H-pad); ctx.closePath();
+  ctx.fillStyle=up?"#37d39b14":"#ff6b6b14"; ctx.fill();
+  ctx.fillStyle="#8a97ab"; ctx.font="18px monospace";
+  ctx.fillText("$"+min.toLocaleString(),4,H-6); ctx.fillText("$"+max.toLocaleString(),4,18);
+}
+
+async function tick(){
+  try{
+    const res = await fetch("/api/state",{cache:"no-store"});
+    if(!res.ok) throw new Error("HTTP "+res.status);
+    render(await res.json());
+    $("dot").className="dot live";
+  }catch(e){
+    $("dot").className="dot dead";
+    $("err").textContent = "⚠ "+e.message+" (retrying)";
+  }
+}
+tick(); setInterval(tick, 5000);
+</script>
+</body>
+</html>

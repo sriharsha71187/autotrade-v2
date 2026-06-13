@@ -73,6 +73,17 @@ $PY $A warm-iv             # seed/refresh IV-rank for the names we trade options
 $PY $A growth | overnight  # run/inspect a specific code-managed book
 ```
 
+## Local dashboard
+A read-only "glass cockpit" — renders live state from the data the engine already
+writes each cycle (snapshots / state / outcomes / learnings) plus a couple of live
+Alpaca reads. It never trades and binds to **localhost only**.
+```bash
+~/autotrade/venv/bin/python3 ~/autotrade/dashboard.py   # -> http://127.0.0.1:8787
+```
+Shows: live equity / day P&L / realized-by-strategy, regime & tape, open positions and
+tracked spreads, the **decision & veto stream** (every cycle's action + why a guardrail
+blocked it), the signal scan, the learnings rulebook, and an equity curve. Polls every 5s.
+
 ## Scheduling (launchd, macOS)
 - `com.autotrade.cycle` — runs every 60s; the engine itself decides whether to act
   (conditional cadence: ~3 min when active, ~5 min when quiet).
