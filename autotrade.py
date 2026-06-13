@@ -3251,20 +3251,29 @@ def compute_outcomes(tc=None, day=None) -> dict:
 # ===========================================================================
 # EOD learning
 # ===========================================================================
-def run_eod():
-    if not _ALPACA_OK:
-        log(f"alpaca-py not importable: {_ALPACA_ERR}")
-        return
-    tc = trading_client()
-    day = et_now().strftime("%Y-%m-%d")
-    stats = honest_trade_stats(tc)
-    snap_file = cfg.SNAPSHOT_DIR / f"{day}.jsonl"
-    snapshots = []
-    if snap_file.exists():
-        snapshots = [json.loads(l) for l in snap_file.read_text().splitlines() if l.strip()]
+# Strict structured-output schema for the enriched rule shape. nullable strings for the
+# optional link/scope fields (the model emits the full object, with nulls where unused).
+_LEARNINGS_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "properties": {"learnings": {"type": "array", "items": {
+        "type": "object", "additionalProperties": False,
+        "properties": {
+            "id": {"type": "string"}, "rule": {"type": "string"},
+            "evidence": {"type": "string"}, "scope": {"type": ["string", "null"]},
+            "status": {"type": "string",
+                       "enum": ["active", "tentative", "contested", "retired"]},
+            "confirmations": {"type": "integer"}, "refutations": {"type": "integer"},
+            "since": {"type": "string"}, "date": {"type": "string"},
+            "supersedes": {"type": ["string", "null"]},
+            "superseded_by": {"type": ["string", "null"]}},
+        "required": ["id", "rule", "evidence", "scope", "status", "confirmations",
+                     "refutations", "since", "date", "supersedes", "superseded_by"]}}},
+    "required": ["learnings"],
+}
 
-    existing = load_learnings()
-    system = (
+
+def _learnings_system_prompt() -> str:
+    return (
         "You maintain the LEARNINGS rulebook for an autonomous trading bot. You are given "
         "the standing rulebook (each rule has id, status, scope, confirmations, refutations, "
         "since) and one day of evidence. Update it under a strict EVIDENCE-WEIGHTED policy. "
@@ -3290,38 +3299,48 @@ def run_eod():
         "confirmations, refutations, since, date, supersedes, superseded_by}, ... ]} — the "
         "FULL updated rulebook (active + contested + any newly-retired)."
     )
+
+
+def _load_day_snapshots(day: str) -> list:
+    f = cfg.SNAPSHOT_DIR / f"{day}.jsonl"
+    if not f.exists():
+        return []
+    return [json.loads(l) for l in f.read_text().splitlines() if l.strip()]
+
+
+def _stats_from_outcomes(day: str) -> dict:
+    """The persisted realized-P&L summary for a PAST day (honest_trade_stats only works
+    for 'today', so a historical replay must read the outcomes file instead)."""
+    f = cfg.OUTCOMES_DIR / f"{day}.json"
+    if not f.exists():
+        return {"note": "no outcomes file for this day"}
+    try:
+        o = json.loads(f.read_text())
+        return {"day_realized_pl": o.get("day_realized_pl"),
+                "by_strategy": o.get("realized_by_strategy", {}),
+                "by_symbol": o.get("by_symbol", {})}
+    except Exception:
+        return {"note": "outcomes file unreadable"}
+
+
+def _learning_pass(day, stats, snapshots, existing, snap_cap=60):
+    """One day's learning generation + reconcile. Returns (learnings, flips, ok). Pure of
+    side effects (no file write / Telegram) so both the nightly EOD run and the multi-day
+    backfill can drive it. On any model/parse failure returns (existing, [], False) so the
+    caller keeps the prior rulebook intact."""
     user = (
         f"Date: {day}\nMeasured stats: {json.dumps(stats, default=str)}\n\n"
-        f"Intraday snapshots ({len(snapshots)}): {json.dumps(snapshots[-60:], default=str)}\n\n"
+        f"Intraday snapshots ({len(snapshots)}): {json.dumps(snapshots[-snap_cap:], default=str)}\n\n"
         f"Standing rulebook: {json.dumps(existing, default=str)}\n\n"
         "For each 5-min snapshot, what was the optimal action vs what the bot did? Apply the "
         "contradiction policy above and return the full updated rulebook."
     )
-    # Strict structured-output schema for the enriched rule shape. nullable strings for the
-    # optional link/scope fields (the model emits the full object, with nulls where unused).
-    _ns = {"type": ["string", "null"]}
-    learnings_schema = {
-        "type": "object", "additionalProperties": False,
-        "properties": {"learnings": {"type": "array", "items": {
-            "type": "object", "additionalProperties": False,
-            "properties": {
-                "id": {"type": "string"}, "rule": {"type": "string"},
-                "evidence": {"type": "string"}, "scope": _ns,
-                "status": {"type": "string",
-                           "enum": ["active", "tentative", "contested", "retired"]},
-                "confirmations": {"type": "integer"}, "refutations": {"type": "integer"},
-                "since": {"type": "string"}, "date": {"type": "string"},
-                "supersedes": _ns, "superseded_by": _ns},
-            "required": ["id", "rule", "evidence", "scope", "status", "confirmations",
-                         "refutations", "since", "date", "supersedes", "superseded_by"]}}},
-        "required": ["learnings"],
-    }
-    flips = []
     try:
         r = _anthropic_client().messages.create(
             model=cfg.CLAUDE_MODEL, max_tokens=cfg.CLAUDE_MAX_TOKENS,
-            system=system, messages=[{"role": "user", "content": user}],
-            output_config={"format": {"type": "json_schema", "schema": learnings_schema}},
+            system=_learnings_system_prompt(),
+            messages=[{"role": "user", "content": user}],
+            output_config={"format": {"type": "json_schema", "schema": _LEARNINGS_SCHEMA}},
         )
         if r.stop_reason in ("refusal", "max_tokens"):
             raise RuntimeError(f"learnings call ended on {r.stop_reason}")
@@ -3334,11 +3353,78 @@ def run_eod():
         # CODE enforces the mechanical invariants the model can't be trusted with
         # (hysteresis lock, clock preservation, count clamping, silent-delete guard).
         learnings, flips = reconcile_learnings(existing, proposed, day)
+        return learnings, flips, True
+    except Exception as e:
+        log(f"learning pass {day} failed: {e}")
+        return existing, [], False
+
+
+def backfill_learnings(days: int = 14):
+    """Rebuild the rulebook from the last `days` of logged evidence by REPLAYING each
+    trading day in chronological order through the same evidence-weighted pass run_eod
+    uses. Confirmations accumulate as a rule recurs; hysteresis uses the real dates.
+    Starts from an EMPTY rulebook (the current file is backed up first) so the result is
+    a clean chronological build — not a double-count of the most recent day. The file is
+    rewritten after each day, so a mid-run failure is resumable and never loses progress."""
+    import datetime as _dt
+    cutoff = (et_now().date() - _dt.timedelta(days=days)).isoformat()
+    day_list = sorted(f.stem for f in cfg.SNAPSHOT_DIR.glob("*.jsonl") if f.stem >= cutoff)
+    if not day_list:
+        log(f"backfill: no snapshot days within {days}d (since {cutoff})")
+        tg_send(f"📚 Backfill: no logged days in the last {days}d — nothing to rebuild.")
+        return
+    if cfg.LEARNINGS_FILE.exists():
+        bak = cfg.LEARNINGS_FILE.with_suffix(".json.bak")
+        bak.write_text(cfg.LEARNINGS_FILE.read_text())
+        log(f"backfill: backed up current learnings -> {bak.name}")
+    log(f"backfill: replaying {len(day_list)} days {day_list[0]}..{day_list[-1]}")
+    tg_send(f"📚 Rebuilding learnings from {len(day_list)} days "
+            f"({day_list[0]} → {day_list[-1]})…")
+    existing, all_flips, failed = [], [], []
+    for d in day_list:
+        snaps = _load_day_snapshots(d)
+        stats = _stats_from_outcomes(d)
+        learnings, flips, ok = _learning_pass(d, stats, snaps, existing, snap_cap=40)
+        if ok:
+            existing = learnings
+            cfg.LEARNINGS_FILE.write_text(json.dumps(existing, indent=2, default=str))
+            all_flips += flips
+            log(f"backfill {d}: {len(snaps)} cycles -> {len(existing)} rules ({len(flips)} events)")
+        else:
+            failed.append(d)
+            log(f"backfill {d}: pass failed — keeping {len(existing)} rules, continuing")
+    active = [l for l in existing if l.get("status") != "retired"]
+    retired = [l for l in existing if l.get("status") == "retired"]
+
+    def _fmt(l):
+        icon = {"active": "• ", "tentative": "🧪 ", "contested": "⚖️ "}.get(l.get("status"), "• ")
+        scope = f" [{l['scope']}]" if l.get("scope") else ""
+        ev = (l.get("evidence") or "").strip()
+        return (f"{icon}{(l.get('rule') or '').strip()}{scope} "
+                f"(×{l.get('confirmations', 1)})" + (f"\n   ↳ {ev}" if ev else ""))
+
+    fail_note = f" ({len(failed)} day(s) skipped: {', '.join(failed)})" if failed else ""
+    tg_send(f"📚 Learnings rebuilt from {len(day_list) - len(failed)}/{len(day_list)} days{fail_note}. "
+            f"{len(active)} active, {len(retired)} retired. {len(all_flips)} contradiction events.")
+    if active:
+        tg_send_long("📚 Rebuilt rulebook:\n\n" + "\n\n".join(_fmt(l) for l in
+                     sorted(active, key=lambda x: -x.get("confirmations", 0))))
+    log(f"backfill complete: {len(active)} active, {len(retired)} retired rules")
+
+
+def run_eod():
+    if not _ALPACA_OK:
+        log(f"alpaca-py not importable: {_ALPACA_ERR}")
+        return
+    tc = trading_client()
+    day = et_now().strftime("%Y-%m-%d")
+    stats = honest_trade_stats(tc)
+    snapshots = _load_day_snapshots(day)
+    existing = load_learnings()
+    learnings, flips, ok = _learning_pass(day, stats, snapshots, existing)
+    if ok:
         cfg.LEARNINGS_FILE.write_text(json.dumps(learnings, indent=2, default=str))
         log(f"EOD: wrote {len(learnings)} learnings ({len(flips)} contradiction events)")
-    except Exception as e:
-        log(f"EOD learning failed: {e}")
-        learnings = existing
 
     # EOD summary + the LEARNINGS themselves, pushed to Telegram. The whole point of
     # the self-learning loop is that the rules reach the user — not just a count.
@@ -3414,6 +3500,11 @@ def main():
                     lock.close()  # release the flock
         elif mode == "eod":
             run_eod()
+        elif mode == "backfill":
+            # Rebuild the learnings rulebook from the last N days of logs (default 14)
+            # by chronological replay. Usage: autotrade.py backfill [days]
+            n = int(args[1]) if len(args) > 1 and args[1].isdigit() else 14
+            backfill_learnings(days=n)
         elif mode == "outcomes":
             compute_outcomes()
         elif mode == "growth":
