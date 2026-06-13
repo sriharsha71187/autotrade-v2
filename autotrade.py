@@ -980,13 +980,157 @@ def honest_trade_stats(tc, state=None) -> dict:
             "by_symbol": by_symbol}
 
 
+def _learn_slug(rule: str) -> str:
+    """Stable id for a learning from its rule text (first words, kebab). Lets a rule be
+    tracked across nightly rewrites even as wording drifts slightly."""
+    import re
+    words = re.sub(r"[^a-z0-9 ]", "", (rule or "").lower()).split()
+    return "-".join(words[:6]) or "rule"
+
+
+_ACTIVE_STATUSES = ("active", "tentative", "contested")
+
+
+def _normalize_learning(d: dict) -> dict:
+    """Coerce any learning (legacy {rule,evidence,tentative,date} or new) into the full
+    evidence-weighted shape. Idempotent — safe to run on already-normalized rules."""
+    rule = (d.get("rule") or "").strip()
+    status = d.get("status")
+    if status not in ("active", "tentative", "contested", "retired"):
+        status = "tentative" if d.get("tentative") else "active"
+    return {
+        "id": d.get("id") or _learn_slug(rule),
+        "rule": rule,
+        "evidence": (d.get("evidence") or "").strip(),
+        "scope": d.get("scope") or None,                 # regime/condition it applies in (None = always)
+        "status": status,
+        "confirmations": int(d.get("confirmations") or (0 if status == "retired" else 1)),
+        "refutations": int(d.get("refutations") or 0),
+        "since": d.get("since") or d.get("date") or "",
+        "date": d.get("date") or "",
+        "supersedes": d.get("supersedes") or None,
+        "superseded_by": d.get("superseded_by") or None,
+        "last_flip": d.get("last_flip") or None,         # code-managed; not in the model schema
+    }
+
+
 def load_learnings() -> list[dict]:
     if cfg.LEARNINGS_FILE.exists():
         try:
-            return json.loads(cfg.LEARNINGS_FILE.read_text())
+            raw = json.loads(cfg.LEARNINGS_FILE.read_text())
+            return [_normalize_learning(d) for d in raw]
         except Exception:
             return []
     return []
+
+
+def active_learnings_for_context() -> list[dict]:
+    """The standing rulebook the live decision loop should see: retired rules excluded
+    (they no longer apply), compacted to the fields that guide a decision. Scope and
+    status let the model weight a contested or regime-conditional rule appropriately."""
+    out = []
+    for l in load_learnings():
+        if l.get("status") == "retired":
+            continue
+        out.append({"rule": l["rule"], "scope": l.get("scope"),
+                    "status": l.get("status"), "evidence": l.get("evidence"),
+                    "confirmations": l.get("confirmations", 1)})
+    return out
+
+
+def _learn_days_between(d1: str, d2: str) -> int:
+    """Whole days between two ISO dates; a large number if either can't be parsed (so a
+    missing/garbled date never falsely triggers the hysteresis lock)."""
+    try:
+        a = datetime.fromisoformat(d1).date()
+        b = datetime.fromisoformat(d2).date()
+        return abs((b - a).days)
+    except Exception:
+        return 999
+
+
+def _learn_clamp_step(old: int, new: int) -> int:
+    """Limit how far a confirmation/refutation count can move in one session (no
+    fabricated jumps), floored at 0."""
+    step = cfg.LEARNING_MAX_COUNT_STEP
+    if new > old:
+        return max(0, min(new, old + step))
+    if new < old:
+        return max(0, max(new, old - step))
+    return max(0, new)
+
+
+def _is_status_flip(old_status: str, new_status: str) -> bool:
+    """A 'flip' subject to hysteresis = retiring an active rule, or reviving a retired
+    one. contested<->active is NOT a flip — that's just evidence accumulating, which the
+    design wants to flow freely (contested is the holding state before a real reversal)."""
+    return ((old_status in _ACTIVE_STATUSES and new_status == "retired")
+            or (old_status == "retired" and new_status in _ACTIVE_STATUSES))
+
+
+def reconcile_learnings(existing: list[dict], proposed: list[dict], today: str):
+    """Merge the model's proposed rulebook onto the standing one under the
+    evidence-weighted + hysteresis policy. CODE enforces the mechanical invariants the
+    model can't be trusted to (clock preservation, count clamping, hysteresis lock,
+    silent-delete guard, retired-TTL pruning); the model already did the semantic work
+    (regime-scope vs reversal vs noise). Returns (final_list, flip_events) where
+    flip_events feeds the Telegram contradiction alert."""
+    prior = {l["id"]: l for l in (existing or [])}
+    seen, final, flips = set(), [], []
+    for p in (proposed or []):
+        p = _normalize_learning(p)
+        pid = p["id"]
+        if pid in seen:                      # dedupe a model that emitted the same id twice
+            continue
+        seen.add(pid)
+        e = prior.get(pid)
+        if e:
+            p["since"] = e.get("since") or p.get("since") or today
+            p["last_flip"] = e.get("last_flip")
+            p["confirmations"] = _learn_clamp_step(e.get("confirmations", 0), p.get("confirmations", 0))
+            p["refutations"] = _learn_clamp_step(e.get("refutations", 0), p.get("refutations", 0))
+            if _is_status_flip(e["status"], p["status"]):
+                locked = (e.get("last_flip")
+                          and _learn_days_between(e["last_flip"], today) < cfg.LEARNING_HYSTERESIS_DAYS)
+                if locked:
+                    # Just flipped — hold the incumbent; one day can't thrash it back.
+                    p["status"], p["rule"] = e["status"], e.get("rule", p["rule"])
+                    p["superseded_by"] = e.get("superseded_by")
+                    flips.append(("blocked", e, p))
+                elif p["status"] == "retired":
+                    # Retire only when the refutations actually out-evidence the
+                    # confirmations by the required edge; otherwise it's merely CONTESTED.
+                    if (p.get("refutations", 0) - p.get("confirmations", 0)) >= cfg.LEARNING_FLIP_MIN_EDGE:
+                        p["last_flip"] = today
+                        flips.append(("retired", e, p))
+                    else:
+                        p["status"] = "contested"
+                        flips.append(("contested", e, p))
+                else:                         # reviving a retired rule — allow, stamp the flip
+                    p["last_flip"] = today
+                    flips.append(("revived", e, p))
+        else:                                 # brand-new rule — first seen today, by definition
+            p["since"] = today
+            p["last_flip"] = None
+            p["confirmations"] = min(p.get("confirmations", 1) or 1, 1)
+            p["refutations"] = 0
+        if not p["date"]:
+            p["date"] = today
+        final.append(p)
+    # Carry-forward guard: any incumbent the model simply omitted is kept — recency must
+    # not erase accumulated evidence by omission. An omitted ACTIVE rule is flagged
+    # (kept_omitted); an omitted RETIRED rule is carried silently so its last_flip history
+    # survives for hysteresis (the TTL prune below still ages it out eventually).
+    for e in (existing or []):
+        if e["id"] not in seen:
+            final.append(e)
+            if e.get("status") in _ACTIVE_STATUSES:
+                flips.append(("kept_omitted", e, e))
+    # Prune long-retired rules so the file stays bounded (history served its purpose).
+    final = [l for l in final
+             if l.get("status") != "retired"
+             or _learn_days_between(l.get("last_flip") or l.get("date") or "", today) <= 30]
+    return final, flips
 
 
 # ===========================================================================
@@ -2831,7 +2975,7 @@ def run_cycle(dry: bool = False):
         "events": (__import__("events").summary(event_state) if event_state else None),
         "options_intel": options_intel or None,
         "stats": honest_trade_stats(tc, state),
-        "learnings": load_learnings(),
+        "learnings": active_learnings_for_context(),   # standing rulebook, retired rules excluded
         "focus": state.get("focus"),
         "guardrails": {
             "daily_loss_halt": cfg.DAILY_LOSS_HALT,
@@ -3121,34 +3265,58 @@ def run_eod():
 
     existing = load_learnings()
     system = (
-        "You review one trading day and produce LEARNINGS for an autonomous bot. "
-        "Rules: (1) every rule MUST cite specific evidence (a fill, a snapshot time, "
-        "or a stat). (2) flag any rule from a small sample as tentative. (3) NEVER "
-        "produce coercive/quota rules ('must trade X times') or 'always trade <ticker>' "
-        "rules — reject those. (4) historical edge applies only when the live signal "
-        "scan agrees. Output a JSON object {\"learnings\": [{rule, evidence, "
-        "tentative(bool), date}, ...]}."
+        "You maintain the LEARNINGS rulebook for an autonomous trading bot. You are given "
+        "the standing rulebook (each rule has id, status, scope, confirmations, refutations, "
+        "since) and one day of evidence. Update it under a strict EVIDENCE-WEIGHTED policy. "
+        "Hard rules:\n"
+        "(1) Every rule MUST cite specific evidence (a fill, a snapshot time, or a stat).\n"
+        "(2) PRESERVE each existing rule's id, since, and scope unless you are deliberately "
+        "changing scope; carry rules forward — do NOT silently drop a still-relevant rule.\n"
+        "(3) CONTRADICTIONS: when today's evidence conflicts with a standing rule, FIRST ask "
+        "if it's actually REGIME-CONDITIONAL — if so, set a 'scope' on BOTH rules (e.g. "
+        "'RANGE/high-VIX' vs 'trend day') instead of picking a winner. Only if it's a genuine "
+        "REVERSAL: do NOT delete the incumbent — set its status to 'contested' and bump its "
+        "refutations by 1. Mark it 'retired' (with superseded_by = the winning rule's id) ONLY "
+        "when refutations exceed confirmations by a clear margin over MULTIPLE days. A single "
+        "contradicting day never retires a rule.\n"
+        "(4) Reaffirmed a rule today? bump its confirmations by 1 (status stays/returns to "
+        "'active'). Move confirmations/refutations by at most 1 per day.\n"
+        "(5) status is one of: active, tentative (small sample), contested (evidence is "
+        "currently split), retired (superseded). New low-sample rules start 'tentative'.\n"
+        "(6) NEVER produce coercive/quota ('must trade X times') or 'always trade <ticker>' "
+        "rules. NEVER emit a rule that contradicts these PROTECTED PRIORS:\n    - "
+        + "\n    - ".join(cfg.LEARNING_PROTECTED_PRIORS) + "\n"
+        "Return a JSON object {\"learnings\": [ {id, rule, evidence, scope, status, "
+        "confirmations, refutations, since, date, supersedes, superseded_by}, ... ]} — the "
+        "FULL updated rulebook (active + contested + any newly-retired)."
     )
     user = (
         f"Date: {day}\nMeasured stats: {json.dumps(stats, default=str)}\n\n"
         f"Intraday snapshots ({len(snapshots)}): {json.dumps(snapshots[-60:], default=str)}\n\n"
-        f"Existing learnings: {json.dumps(existing, default=str)}\n\n"
-        "For each 5-min snapshot, what was the optimal action vs what the bot did? "
-        "Generate new evidenced rules. Return the FULL updated learnings array "
-        "(keep still-relevant existing rules, drop tentative ones not reaffirmed in 14 days)."
+        f"Standing rulebook: {json.dumps(existing, default=str)}\n\n"
+        "For each 5-min snapshot, what was the optimal action vs what the bot did? Apply the "
+        "contradiction policy above and return the full updated rulebook."
     )
-    # Same hardening as the decision path: official SDK, structured outputs (so the
-    # learnings array can't come back malformed), a budget that fits fable-5's thinking,
-    # and explicit refusal/truncation handling. On any failure, keep existing learnings.
+    # Strict structured-output schema for the enriched rule shape. nullable strings for the
+    # optional link/scope fields (the model emits the full object, with nulls where unused).
+    _ns = {"type": ["string", "null"]}
     learnings_schema = {
         "type": "object", "additionalProperties": False,
         "properties": {"learnings": {"type": "array", "items": {
             "type": "object", "additionalProperties": False,
-            "properties": {"rule": {"type": "string"}, "evidence": {"type": "string"},
-                           "tentative": {"type": "boolean"}, "date": {"type": "string"}},
-            "required": ["rule", "evidence", "tentative", "date"]}}},
+            "properties": {
+                "id": {"type": "string"}, "rule": {"type": "string"},
+                "evidence": {"type": "string"}, "scope": _ns,
+                "status": {"type": "string",
+                           "enum": ["active", "tentative", "contested", "retired"]},
+                "confirmations": {"type": "integer"}, "refutations": {"type": "integer"},
+                "since": {"type": "string"}, "date": {"type": "string"},
+                "supersedes": _ns, "superseded_by": _ns},
+            "required": ["id", "rule", "evidence", "scope", "status", "confirmations",
+                         "refutations", "since", "date", "supersedes", "superseded_by"]}}},
         "required": ["learnings"],
     }
+    flips = []
     try:
         r = _anthropic_client().messages.create(
             model=cfg.CLAUDE_MODEL, max_tokens=cfg.CLAUDE_MAX_TOKENS,
@@ -3158,13 +3326,16 @@ def run_eod():
         if r.stop_reason in ("refusal", "max_tokens"):
             raise RuntimeError(f"learnings call ended on {r.stop_reason}")
         text = "".join(b.text for b in r.content if b.type == "text")
-        learnings = _parse_model_json(text).get("learnings", [])
+        proposed = _parse_model_json(text).get("learnings", [])
         # Safety net: strip any rule that smells coercive even if the model slipped.
         banned = ("always trade", "must trade", "quota", "at least", "every cycle")
-        learnings = [r for r in learnings
-                     if not any(b in (r.get("rule", "").lower()) for b in banned)]
+        proposed = [p for p in proposed
+                    if not any(b in (p.get("rule", "").lower()) for b in banned)]
+        # CODE enforces the mechanical invariants the model can't be trusted with
+        # (hysteresis lock, clock preservation, count clamping, silent-delete guard).
+        learnings, flips = reconcile_learnings(existing, proposed, day)
         cfg.LEARNINGS_FILE.write_text(json.dumps(learnings, indent=2, default=str))
-        log(f"EOD: wrote {len(learnings)} learnings")
+        log(f"EOD: wrote {len(learnings)} learnings ({len(flips)} contradiction events)")
     except Exception as e:
         log(f"EOD learning failed: {e}")
         learnings = existing
@@ -3179,27 +3350,48 @@ def run_eod():
         pass
     realized = stats.get("day_realized_pl")
     pl_line = f" | realized P&L ${realized:+,.0f}" if isinstance(realized, (int, float)) else ""
-    # What's NEW vs the set we walked in with (match on rule text), so the message
-    # leads with today's deltas rather than re-sending the whole standing rulebook.
-    prior_rules = {(r.get("rule") or "").strip() for r in existing}
-    new_rules = [r for r in learnings if (r.get("rule") or "").strip() not in prior_rules]
+    # What's NEW vs the set we walked in with (match on id), so the message leads with
+    # today's deltas rather than re-sending the whole standing rulebook.
+    prior_ids = {l.get("id") for l in existing}
+    active = [l for l in learnings if l.get("status") != "retired"]
+    new_rules = [l for l in active if l.get("id") not in prior_ids]
 
-    def _fmt(r):
-        flag = "🧪 " if r.get("tentative") else "• "
-        ev = (r.get("evidence") or "").strip()
-        return f"{flag}{(r.get('rule') or '').strip()}" + (f"\n   ↳ {ev}" if ev else "")
+    _STATUS_ICON = {"active": "• ", "tentative": "🧪 ", "contested": "⚖️ ", "retired": "🗑️ "}
+
+    def _fmt(l):
+        flag = _STATUS_ICON.get(l.get("status"), "• ")
+        scope = f" [{l['scope']}]" if l.get("scope") else ""
+        n = l.get("confirmations", 1)
+        ev = (l.get("evidence") or "").strip()
+        return (f"{flag}{(l.get('rule') or '').strip()}{scope} (×{n})"
+                + (f"\n   ↳ {ev}" if ev else ""))
 
     header = (f"📒 EOD {day}: {daily}{pl_line}. "
-              f"{len(learnings)} active learnings ({len(new_rules)} new today). "
+              f"{len(active)} active learnings ({len(new_rules)} new today). "
               f"{len(snapshots)} snapshots reviewed.")
     tg_send(header)
     if new_rules:
         tg_send_long("🆕 New / updated learnings today:\n\n"
-                     + "\n\n".join(_fmt(r) for r in new_rules))
-    elif learnings:
+                     + "\n\n".join(_fmt(l) for l in new_rules))
+    elif active:
         # Nothing new — still surface the current standing rulebook so it's visible.
         tg_send_long("📚 Standing learnings (no new rules today):\n\n"
-                     + "\n\n".join(_fmt(r) for r in learnings))
+                     + "\n\n".join(_fmt(l) for l in active))
+    # Contradiction events — the whole point of the policy is that flips/contests are
+    # visible and auditable, not silent. Summarize what today's evidence did to the book.
+    if flips:
+        _VERB = {"contested": "⚖️ CONTESTED (held, gathering evidence)",
+                 "retired": "🗑️ RETIRED (superseded by stronger evidence)",
+                 "blocked": "🔒 FLIP BLOCKED by hysteresis (just changed; held incumbent)",
+                 "revived": "♻️ REVIVED from retired",
+                 "kept_omitted": "📌 KEPT (model omitted it; no silent delete)"}
+        lines = []
+        for kind, e, _p in flips:
+            if kind == "kept_omitted":
+                continue                      # routine guard; don't spam these
+            lines.append(f"{_VERB.get(kind, kind)}: {(e.get('rule') or '').strip()}")
+        if lines:
+            tg_send_long("⚠️ Contradiction events today:\n\n" + "\n\n".join(lines))
 
 
 # ===========================================================================

@@ -154,6 +154,26 @@ MULTILEG_FILL_TIMEOUT_MIN = 15     # cancel a multi-leg entry that hasn't filled
 EOD_FLATTEN_RETRIES    = 3         # verify-and-retry the EOD stock close (a partial fill must
                                    # not leave a remnant riding overnight unprotected)
 
+# ---- self-learning: contradiction handling (evidence-weighted + hysteresis) ----
+# When a new EOD learning contradicts a standing one, we DON'T let the newcomer win
+# by recency. The incumbent flips only when the challenger out-evidences it, a single
+# contradicting day merely marks the incumbent 'contested', and a rule that just
+# flipped is locked for a cooldown so it can't thrash. Code enforces the mechanical
+# invariants (hysteresis, since-preservation, count clamping); the model does the
+# semantic work (is this regime-conditional, a real reversal, or noise).
+LEARNING_HYSTERESIS_DAYS      = 3   # a rule that just flipped direction/status is locked this long
+LEARNING_FLIP_MIN_EDGE        = 2   # challenger needs >= this many more confirmations to retire incumbent
+LEARNING_MAX_COUNT_STEP       = 1   # confirmations/refutations may move at most this much per session
+# Inviolable human priors a learning may NEVER override. These are advisory-context
+# anchors for the EOD model; the REAL protection is that the deterministic guardrails
+# (regime gate, loss floor, defined-risk-only) are separate code a learning can't touch.
+LEARNING_PROTECTED_PRIORS = [
+    "never fade a strong single-name move (ride momentum, don't counter a live catalyst)",
+    "defined-risk structures only — every trade has a known max loss",
+    "respect the daily loss floor; ruin-prevention guardrails are not optional",
+    "re-judge every open position each run on current metrics; exit a broken thesis early",
+]
+
 # ---- dynamic universe (screener) -------------------------------------------
 # Each cycle the universe = core indices + a base watchlist + live screener
 # (most-actives ∪ top movers), filtered to tradable names priced over MIN_PRICE.
