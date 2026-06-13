@@ -205,6 +205,23 @@ def tg_send(text: str):
         log(f"telegram send failed: {e}")
 
 
+def tg_send_long(text: str, limit: int = 3500):
+    """Send a long message as multiple Telegram messages (the API caps a single
+    message at 4096 chars). Splits on line boundaries so a rule is never cut
+    mid-sentence; a single over-long line is hard-split as a last resort."""
+    lines, chunk = (text or "").split("\n"), ""
+    for ln in lines:
+        if len(chunk) + len(ln) + 1 > limit and chunk:
+            tg_send(chunk)
+            chunk = ""
+        while len(ln) > limit:                 # one pathological line longer than a whole chunk
+            tg_send(ln[:limit])
+            ln = ln[limit:]
+        chunk = ln if not chunk else f"{chunk}\n{ln}"
+    if chunk:
+        tg_send(chunk)
+
+
 def _normalize_cmd(text: str) -> str:
     """Canonicalize a raw command. Telegram clients send slash-commands
     (`/status`) and may append the bot handle (`/status@my_bot`); strip both so
@@ -3152,15 +3169,37 @@ def run_eod():
         log(f"EOD learning failed: {e}")
         learnings = existing
 
-    # EOD summary
+    # EOD summary + the LEARNINGS themselves, pushed to Telegram. The whole point of
+    # the self-learning loop is that the rules reach the user — not just a count.
     daily = "see Alpaca"
     try:
         a = account_snapshot(tc)
         daily = f"${a['equity']:,.0f} equity"
     except Exception:
         pass
-    tg_send(f"📒 EOD {day}: {daily}. {len(learnings)} active learnings. "
-            f"{len(snapshots)} snapshots reviewed.")
+    realized = stats.get("day_realized_pl")
+    pl_line = f" | realized P&L ${realized:+,.0f}" if isinstance(realized, (int, float)) else ""
+    # What's NEW vs the set we walked in with (match on rule text), so the message
+    # leads with today's deltas rather than re-sending the whole standing rulebook.
+    prior_rules = {(r.get("rule") or "").strip() for r in existing}
+    new_rules = [r for r in learnings if (r.get("rule") or "").strip() not in prior_rules]
+
+    def _fmt(r):
+        flag = "🧪 " if r.get("tentative") else "• "
+        ev = (r.get("evidence") or "").strip()
+        return f"{flag}{(r.get('rule') or '').strip()}" + (f"\n   ↳ {ev}" if ev else "")
+
+    header = (f"📒 EOD {day}: {daily}{pl_line}. "
+              f"{len(learnings)} active learnings ({len(new_rules)} new today). "
+              f"{len(snapshots)} snapshots reviewed.")
+    tg_send(header)
+    if new_rules:
+        tg_send_long("🆕 New / updated learnings today:\n\n"
+                     + "\n\n".join(_fmt(r) for r in new_rules))
+    elif learnings:
+        # Nothing new — still surface the current standing rulebook so it's visible.
+        tg_send_long("📚 Standing learnings (no new rules today):\n\n"
+                     + "\n\n".join(_fmt(r) for r in learnings))
 
 
 # ===========================================================================
