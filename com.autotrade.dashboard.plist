@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.autotrade.dashboard</string>
+
+    <!-- Local read-only "glass cockpit" at http://127.0.0.1:8787. Long-running Flask
+         server; KeepAlive restarts it if it ever dies, RunAtLoad starts it on login.
+         Binds to localhost only (it shows account data) — do NOT port-forward it. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/nirvaan/autotrade/venv/bin/python3</string>
+        <string>/Users/nirvaan/autotrade/dashboard.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/nirvaan/autotrade</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/dev/null</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/nirvaan/autotrade_dashboard.log</string>
+</dict>
+</plist>
