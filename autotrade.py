@@ -887,6 +887,21 @@ def attribute_by_strategy(by_symbol: dict, day: str, state: dict | None) -> dict
     return out
 
 
+def _fill_legs(o):
+    """Yield the symbol-bearing fill objects of a closed order. A multi-leg/complex
+    PARENT order carries NO symbol (o.symbol is None) — the OCC symbols live on its
+    .legs — yet it still reports a filled_qty. Iterating raw orders therefore created
+    a phantom None/'' symbol bucket with a real qty (the 6/12 'null symbol, 13 shares'
+    data-integrity bug). Expand a symbol-less parent into its legs so every fill is
+    attributed to a real symbol; drop a parent with neither symbol nor legs."""
+    if getattr(o, "symbol", None):
+        yield o
+        return
+    for leg in (getattr(o, "legs", None) or []):
+        if getattr(leg, "symbol", None):
+            yield leg
+
+
 def honest_trade_stats(tc, state=None) -> dict:
     """Realized P&L from today's fills, grouped by symbol. Counts ONLY matched
     round-trips (min of buy vs sell qty) so an OPEN position contributes ~0
@@ -902,23 +917,24 @@ def honest_trade_stats(tc, state=None) -> dict:
     today = et_now().date()
     # Accumulate buy/sell qty + notional per symbol from today's fills.
     agg = {}
-    for o in orders:
-        if not o.filled_at or o.filled_at.astimezone(ET).date() != today:
+    for parent in orders:
+        if not parent.filled_at or parent.filled_at.astimezone(ET).date() != today:
             continue
-        sym = o.symbol
-        qty = float(o.filled_qty or 0)
-        price = float(o.filled_avg_price or 0)
-        if qty <= 0 or price <= 0:
-            continue
-        d = agg.setdefault(sym, {"buy_qty": 0.0, "buy_notional": 0.0,
-                                 "sell_qty": 0.0, "sell_notional": 0.0, "fills": 0})
-        if str(o.side) == "OrderSide.SELL":
-            d["sell_qty"] += qty
-            d["sell_notional"] += qty * price
-        else:
-            d["buy_qty"] += qty
-            d["buy_notional"] += qty * price
-        d["fills"] += 1
+        for o in _fill_legs(parent):        # expand a symbol-less multi-leg parent into its legs
+            sym = o.symbol
+            qty = float(o.filled_qty or 0)
+            price = float(o.filled_avg_price or 0)
+            if not sym or qty <= 0 or price <= 0:
+                continue
+            d = agg.setdefault(sym, {"buy_qty": 0.0, "buy_notional": 0.0,
+                                     "sell_qty": 0.0, "sell_notional": 0.0, "fills": 0})
+            if str(o.side) == "OrderSide.SELL":
+                d["sell_qty"] += qty
+                d["sell_notional"] += qty * price
+            else:
+                d["buy_qty"] += qty
+                d["buy_notional"] += qty * price
+            d["fills"] += 1
     by_symbol = {}
     total_realized = 0.0
     for sym, d in agg.items():
@@ -1346,22 +1362,33 @@ def manage_multileg(tc, odc, state, dry):
                         status = ""
                 working = any(k in status for k in
                               ("new", "accept", "pending", "partial", "held", "replaced"))
-                if working:
-                    age_min = 1e9
-                    try:
-                        age_min = (et_now() - datetime.fromisoformat(pos["opened"])).total_seconds() / 60
-                    except Exception:
-                        pass
-                    if age_min > cfg.MULTILEG_FILL_TIMEOUT_MIN:
+                gone = any(k in status for k in ("cancel", "expired", "reject"))
+                age_min = 1e9
+                try:
+                    age_min = (et_now() - datetime.fromisoformat(pos["opened"])).total_seconds() / 60
+                except Exception:
+                    pass
+                if gone:                                   # order died WITHOUT a fill -> drop
+                    log(f"multileg {symbols} order {status or 'gone'} — dropping (no fill)")
+                    continue
+                if age_min > cfg.MULTILEG_FILL_TIMEOUT_MIN:
+                    # Past the fill window, still not showing as held: a working order never
+                    # filled (cancel it), or a filled spread has truly left the book
+                    # (closed/expired) -> stop tracking.
+                    if working:
                         log(f"multileg entry {oid} unfilled {age_min:.0f}m — canceling")
                         try:
                             tc.cancel_order_by_id(oid)
                         except Exception as e:
                             log(f"multileg cancel failed: {e}")
-                        continue  # drop tracking after cancel
-                    still.append(pos)   # order still working; wait for the fill
+                    else:
+                        log(f"multileg {symbols} not held past fill window — dropping")
                     continue
-                log(f"multileg {symbols} not held and order not working — dropping")
+                # WITHIN the fill window: order working, OR filled-but-position-not-synced-
+                # yet. KEEP — never orphan a filled spread on a transient position-sync lag
+                # (the 6/12 ADBE #2 bug: filled, dropped on a sync cycle, rode to expiry
+                # unmanaged while the model saw "open_spreads empty").
+                still.append(pos)
                 continue
             # EOD force-close: a 0DTE/short spread must not ride into expiration
             # (assignment / pin risk). Close at the same EOD time as single options —
@@ -1686,16 +1713,88 @@ def flatten_stocks_eod(tc, dry, skip=None):
         if dry:
             log(f"[DRY] would EOD-flatten stock {sym}")
             continue
-        try:
-            for o in tc.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN, limit=100)):
-                if o.symbol == sym and not parse_occ(o.symbol):
-                    tc.cancel_order_by_id(o.id)
-            time.sleep(0.5)
-            tc.close_position(sym)
-            log(f"EOD FLATTEN stock {sym}")
-            tg_send(f"🌆 EOD-flattened {sym}.")
-        except Exception as e:
-            log(f"eod flatten {sym} failed: {e}")
+        # Verify-and-retry: close_position submits a market order that can PARTIALLY
+        # fill (6/12 MSTR: 40 -> 9 shares, the 9 then rode overnight unprotected once
+        # its DAY bracket expired). Trusting one close() call leaves a remnant. Re-fetch
+        # the position and retry until it's actually flat (or attempts exhausted).
+        for attempt in range(cfg.EOD_FLATTEN_RETRIES):
+            try:
+                for o in tc.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN, limit=100)):
+                    if o.symbol == sym and not parse_occ(o.symbol):
+                        tc.cancel_order_by_id(o.id)
+                time.sleep(0.5)
+                tc.close_position(sym)
+                log(f"EOD FLATTEN stock {sym}" + (f" (retry {attempt})" if attempt else ""))
+            except Exception as e:
+                es = str(e)
+                if "position not found" in es or "40410000" in es:
+                    break                       # already flat
+                log(f"eod flatten {sym} failed: {e}")
+            time.sleep(1.0)
+            try:
+                still = next((q for q in tc.get_all_positions() if q.symbol == sym), None)
+            except Exception:
+                still = None
+            if still is None or abs(float(getattr(still, "qty", 0) or 0)) < 1e-9:
+                break                            # confirmed flat
+            log(f"eod flatten {sym}: {still.qty} still open after attempt {attempt} — retrying")
+        else:
+            log(f"eod flatten {sym}: STILL OPEN after {cfg.EOD_FLATTEN_RETRIES} attempts")
+            tg_send(f"⚠️ EOD flatten could not fully close {sym} — may ride overnight; "
+                    f"morning reconcile will sweep it.")
+            continue
+        tg_send(f"🌆 EOD-flattened {sym}.")
+
+
+def sweep_orphan_options(tc, state, dry, skip=None):
+    """Belt-and-suspenders against an UNTRACKED option leg riding into expiry.
+
+    manage_multileg / manage_options only close what's in active_multileg /
+    active_options. If a filled spread ever falls out of tracking (the 6/12
+    ADBE #2 desync: filled, dropped on a sync-lag cycle, then invisible to every
+    decision cycle while open_spreads read 'empty'), nothing closes it and a
+    0DTE leg rides into expiry → ITM assignment. This sweep is the last line of
+    defense: at/after the EOD option-close window, force-close any broker-held
+    OPTION position that is NOT in our tracking and NOT a shielded book (tail
+    hedge / earnings condor hold their own options overnight by design).
+
+    Independent of HOW the orphan happened — covers desync, a crashed mid-close,
+    a manual broker fill — so no option can silently expire on us."""
+    now = et_now()
+    hard_close = (now.hour > cfg.OPTION_EOD_CLOSE_HOUR or
+                  (now.hour == cfg.OPTION_EOD_CLOSE_HOUR and now.minute >= cfg.OPTION_EOD_CLOSE_MIN))
+    if not hard_close:
+        return
+    skip = skip or set()
+    # Every option symbol the engine legitimately tracks or a shielded book holds.
+    tracked = set(skip)
+    for m in (state.get("active_multileg") or []):
+        for l in (m.get("legs") or []):
+            if l.get("symbol"):
+                tracked.add(l["symbol"])
+    for o in (state.get("active_options") or []):
+        if o.get("symbol"):
+            tracked.add(o["symbol"])
+    try:
+        positions = tc.get_all_positions()
+    except Exception as e:
+        log(f"orphan sweep: positions fetch failed: {e}")
+        return
+    orphans = [p.symbol for p in positions
+               if "option" in str(getattr(p, "asset_class", "")).lower()
+               and p.symbol not in tracked]
+    if not orphans:
+        return
+    log(f"ORPHAN SWEEP: untracked option legs at EOD -> force-closing {orphans}")
+    if dry:
+        for sym in orphans:
+            log(f"[DRY] would orphan-sweep close {sym}")
+        return
+    flat = close_symbols(tc, orphans, dry)
+    closed = [s for s in orphans if s in flat]
+    if closed:
+        tg_send(f"🧹 EOD orphan sweep: force-closed untracked option leg(s) {closed} "
+                f"(were not in active tracking — caught before expiry).")
 
 
 # ===========================================================================
@@ -2523,6 +2622,7 @@ def run_cycle(dry: bool = False):
     manage_options(tc, odc, state, dry)
     manage_stops(tc, dry, skip=held_books)   # trail intraday bracket stops to lock in gains
     flatten_stocks_eod(tc, dry, skip=held_books)
+    sweep_orphan_options(tc, state, dry, skip=held_books)   # last-line: no untracked option rides into expiry
 
     # 2b. Daily loss halt — latches for the rest of the day and alerts once.
     # Skipped while the OVERRIDE day-flag is on (user chose to keep trading).
@@ -2939,24 +3039,25 @@ def compute_outcomes(tc=None, day=None) -> dict:
     except Exception as e:
         log(f"outcomes order fetch failed: {e}")
         orders = []
-    for o in orders:
-        if not o.filled_at or o.filled_at.astimezone(ET).date().isoformat() != day:
+    for parent in orders:
+        if not parent.filled_at or parent.filled_at.astimezone(ET).date().isoformat() != day:
             continue
-        qty = float(o.filled_qty or 0)
-        price = float(o.filled_avg_price or 0)
-        if qty <= 0 or price <= 0:
-            continue
-        side = "sell" if "SELL" in str(o.side).upper() else "buy"
-        mult = 100 if parse_occ(o.symbol) else 1               # options are ×100/contract
-        signed = qty * price * mult * (1 if side == "sell" else -1)   # sell + / buy −
-        fills.append({"symbol": o.symbol, "side": side, "qty": qty, "price": price,
-                      "type": str(getattr(o, "type", "")).lower(),
-                      "class": str(getattr(o, "order_class", "")).lower(),
-                      "filled_at": str(o.filled_at), "order_id": str(o.id)})
-        d = by_symbol.setdefault(o.symbol, {"realized_cashflow": 0.0, "fills": 0,
-                                            "bought_qty": 0.0, "sold_qty": 0.0})
-        d["realized_cashflow"] += signed
-        d["fills"] += 1
+        for o in _fill_legs(parent):       # expand a symbol-less multi-leg parent into its legs
+            qty = float(o.filled_qty or 0)
+            price = float(o.filled_avg_price or 0)
+            if not o.symbol or qty <= 0 or price <= 0:
+                continue
+            side = "sell" if "SELL" in str(o.side).upper() else "buy"
+            mult = 100 if parse_occ(o.symbol) else 1               # options are ×100/contract
+            signed = qty * price * mult * (1 if side == "sell" else -1)   # sell + / buy −
+            fills.append({"symbol": o.symbol, "side": side, "qty": qty, "price": price,
+                          "type": str(getattr(o, "type", "")).lower(),
+                          "class": str(getattr(o, "order_class", "")).lower(),
+                          "filled_at": str(o.filled_at), "order_id": str(o.id)})
+            d = by_symbol.setdefault(o.symbol, {"realized_cashflow": 0.0, "fills": 0,
+                                                "bought_qty": 0.0, "sold_qty": 0.0})
+            d["realized_cashflow"] += signed
+            d["fills"] += 1
         d["sold_qty" if side == "sell" else "bought_qty"] += qty
     equity = None
     try:

@@ -151,6 +151,8 @@ OPTION_EOD_CLOSE_MIN   = 45        # ...15:45 ET (and any 0DTE before expiry)
 STOCK_EOD_CLOSE_MIN    = 50        # flatten stocks at 15:50 ET (DAY brackets die at the close,
                                    # so don't leave a stock unprotected overnight)
 MULTILEG_FILL_TIMEOUT_MIN = 15     # cancel a multi-leg entry that hasn't filled in N min
+EOD_FLATTEN_RETRIES    = 3         # verify-and-retry the EOD stock close (a partial fill must
+                                   # not leave a remnant riding overnight unprotected)
 
 # ---- dynamic universe (screener) -------------------------------------------
 # Each cycle the universe = core indices + a base watchlist + live screener
