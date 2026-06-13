@@ -1221,6 +1221,7 @@ _LAST_API_ALERT_AT = None   # throttle for the "engine down" Telegram alert
 _LAST_TAPE_ALERT_AT = None  # throttle for the "fighting the tape" self-diagnostic alert
 _ANTHROPIC_CLIENT = None
 _PRIMARY_MODEL_DOWN = False  # process-scoped: preferred model 404'd this run -> route to fallback
+_LAST_MODEL_USED = None      # the model a _create_message call actually landed on (for restore alerts)
 
 # Strict JSON schema for structured outputs — the API CONSTRAINS the model to emit
 # exactly this shape, so a malformed / prose / truncated-into-garbage response is
@@ -1279,19 +1280,23 @@ def _create_message(**kwargs):
     govt suspension). The down-state is process-scoped: each new cycle re-probes the
     preferred model, so the bot returns to it AUTOMATICALLY the moment access is restored.
     A non-model error (auth/rate-limit/billing) is re-raised unchanged."""
-    global _PRIMARY_MODEL_DOWN
+    global _PRIMARY_MODEL_DOWN, _LAST_MODEL_USED
     client = _anthropic_client()
     primary, fb = cfg.CLAUDE_MODEL, (cfg.CLAUDE_FALLBACK_MODEL or cfg.CLAUDE_MODEL)
     if not _PRIMARY_MODEL_DOWN and primary != fb:
         try:
-            return client.messages.create(model=primary, **kwargs)
+            r = client.messages.create(model=primary, **kwargs)
+            _LAST_MODEL_USED = primary
+            return r
         except Exception as e:
             if not _model_unavailable(e):
                 raise
             _PRIMARY_MODEL_DOWN = True
             log(f"preferred model {primary} unavailable — falling back to {fb} "
                 f"(this run): {str(e)[:90]}")
-    return client.messages.create(model=fb, **kwargs)
+    r = client.messages.create(model=fb, **kwargs)
+    _LAST_MODEL_USED = fb
+    return r
 
 
 def call_claude(context: dict) -> dict:
@@ -3059,6 +3064,21 @@ def run_cycle(dry: bool = False):
     decision = call_claude(context)
     log(f"decision: {decision.get('action')} {decision.get('symbol') or ''} "
         f"conv={decision.get('conviction')} :: {decision.get('reasoning','')[:140]}")
+
+    # 4b. Model-restore watch. _create_message records which model the call actually
+    # landed on. If we transition from the fallback back to the PREFERRED model, the
+    # preferred model's access was restored (e.g. fable-5's govt suspension lifted) —
+    # alert once. Tracked in state so it survives the per-cycle process restart.
+    if _LAST_MODEL_USED:
+        prev_model = state.get("last_model_used")
+        if (_LAST_MODEL_USED == cfg.CLAUDE_MODEL
+                and prev_model and prev_model != cfg.CLAUDE_MODEL):
+            log(f"MODEL RESTORED: preferred {cfg.CLAUDE_MODEL} available again "
+                f"(was running on {prev_model})")
+            tg_send(f"✅ {cfg.CLAUDE_MODEL} is available again — engine is back on the "
+                    f"preferred model (was on {prev_model}).")
+        if _LAST_MODEL_USED != prev_model:
+            state["last_model_used"] = _LAST_MODEL_USED
 
     # 5. Execute (guardrails first). `result` records how the decision resolved so
     # the snapshot can later be joined to outcomes. Single exit: write once at end.
