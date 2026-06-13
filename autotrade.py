@@ -1220,6 +1220,7 @@ def _parse_model_json(text: str):
 _LAST_API_ALERT_AT = None   # throttle for the "engine down" Telegram alert
 _LAST_TAPE_ALERT_AT = None  # throttle for the "fighting the tape" self-diagnostic alert
 _ANTHROPIC_CLIENT = None
+_PRIMARY_MODEL_DOWN = False  # process-scoped: preferred model 404'd this run -> route to fallback
 
 # Strict JSON schema for structured outputs — the API CONSTRAINS the model to emit
 # exactly this shape, so a malformed / prose / truncated-into-garbage response is
@@ -1263,6 +1264,36 @@ def _anthropic_client():
     return _ANTHROPIC_CLIENT
 
 
+def _model_unavailable(e) -> bool:
+    """True if an exception is the API saying the requested MODEL is unavailable
+    (404 not_found naming the model / 'not available'), vs. any other API error. fable-5
+    + mythos-5 were govt-suspended for all users 2026-06-12 and return exactly this."""
+    s = str(e).lower()
+    return ("not_found" in s or "404" in s) and ("model" in s or "not available" in s)
+
+
+def _create_message(**kwargs):
+    """messages.create with automatic PREFERRED -> FALLBACK model selection. Caller omits
+    `model`; we use cfg.CLAUDE_MODEL (preferred) and transparently fall back to
+    cfg.CLAUDE_FALLBACK_MODEL when the preferred model is unavailable (e.g. fable-5's
+    govt suspension). The down-state is process-scoped: each new cycle re-probes the
+    preferred model, so the bot returns to it AUTOMATICALLY the moment access is restored.
+    A non-model error (auth/rate-limit/billing) is re-raised unchanged."""
+    global _PRIMARY_MODEL_DOWN
+    client = _anthropic_client()
+    primary, fb = cfg.CLAUDE_MODEL, (cfg.CLAUDE_FALLBACK_MODEL or cfg.CLAUDE_MODEL)
+    if not _PRIMARY_MODEL_DOWN and primary != fb:
+        try:
+            return client.messages.create(model=primary, **kwargs)
+        except Exception as e:
+            if not _model_unavailable(e):
+                raise
+            _PRIMARY_MODEL_DOWN = True
+            log(f"preferred model {primary} unavailable — falling back to {fb} "
+                f"(this run): {str(e)[:90]}")
+    return client.messages.create(model=fb, **kwargs)
+
+
 def call_claude(context: dict) -> dict:
     system_prompt = Path(__file__).with_name("alpaca_system_prompt.txt").read_text()
     user_msg = (
@@ -1273,8 +1304,8 @@ def call_claude(context: dict) -> dict:
     last_err = None
     for attempt in range(2):  # one retry — a wake-up timeout shouldn't force a hold
         try:
-            r = _anthropic_client().messages.create(
-                model=cfg.CLAUDE_MODEL, max_tokens=cfg.CLAUDE_MAX_TOKENS,
+            r = _create_message(
+                max_tokens=cfg.CLAUDE_MAX_TOKENS,
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_msg}],
                 # Structured outputs: the response text is GUARANTEED to be JSON
@@ -3336,8 +3367,8 @@ def _learning_pass(day, stats, snapshots, existing, snap_cap=60):
         "contradiction policy above and return the full updated rulebook."
     )
     try:
-        r = _anthropic_client().messages.create(
-            model=cfg.CLAUDE_MODEL, max_tokens=cfg.CLAUDE_MAX_TOKENS,
+        r = _create_message(
+            max_tokens=cfg.CLAUDE_MAX_TOKENS,
             system=_learnings_system_prompt(),
             messages=[{"role": "user", "content": user}],
             output_config={"format": {"type": "json_schema", "schema": _LEARNINGS_SCHEMA}},

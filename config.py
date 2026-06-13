@@ -50,7 +50,14 @@ _env = _load_env()
 ALPACA_API_KEY    = _env.get("ALPACA_API_KEY", "")
 ALPACA_SECRET_KEY = _env.get("ALPACA_SECRET_KEY", "")
 ANTHROPIC_API_KEY = _env.get("ANTHROPIC_API_KEY", "")
-CLAUDE_MODEL      = _env.get("CLAUDE_MODEL", "claude-opus-4-8")
+# PREFERRED model. fable-5 is the most capable here when available; the call path
+# (autotrade._create_message) auto-falls back to CLAUDE_FALLBACK_MODEL when the preferred
+# model is unavailable (fable-5 + mythos-5 were govt-suspended for ALL users 2026-06-12 —
+# no timeline). Keeping fable preferred means the bot returns to it AUTOMATICALLY the
+# instant Anthropic restores access, with zero intervention; until then every qualifying
+# call gets one fast (unbilled) 404 then runs on the fallback.
+CLAUDE_MODEL      = _env.get("CLAUDE_MODEL", "claude-fable-5")
+CLAUDE_FALLBACK_MODEL = _env.get("CLAUDE_FALLBACK_MODEL", "claude-opus-4-8")
 # fable-5 is an extended-THINKING model: it spends output tokens reasoning BEFORE it
 # writes the JSON answer. With a big trading context that thinking can run ~800-1500
 # tokens, so the budget must comfortably fit thinking + the ~600-token JSON or the
