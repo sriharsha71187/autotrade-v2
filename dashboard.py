@@ -143,6 +143,36 @@ def _equity_curve(live_equity):
     return {"daily": daily, "intraday": intraday}
 
 
+def _pnl_history(n=30):
+    """Per-day realized P&L history + summary stats, from the outcome files the engine
+    already writes. `day_realized_pl` is the honest matched-round-trip number; days where
+    it's absent (older files before that field existed) are skipped, not counted as flat."""
+    rows = []
+    for fp in sorted(glob.glob(str(cfg.OUTCOMES_DIR / "*.json"))):
+        try:
+            o = json.loads(Path(fp).read_text())
+        except Exception:
+            continue
+        pnl = o.get("day_realized_pl")
+        if pnl is None:
+            continue
+        rows.append({"day": o.get("day"), "pnl": round(float(pnl), 2)})
+    vals = [r["pnl"] for r in rows]
+    green = sum(1 for v in vals if v > 0)
+    red = sum(1 for v in vals if v < 0)
+    flat = sum(1 for v in vals if v == 0)
+    active = green + red  # days that actually closed a round-trip (exclude no-trade days)
+    summary = {
+        "days": len(vals), "green": green, "red": red, "flat": flat,
+        "best": round(max(vals), 2) if vals else None,
+        "worst": round(min(vals), 2) if vals else None,
+        "avg": round(sum(vals) / len(vals), 2) if vals else None,
+        "total": round(sum(vals), 2) if vals else None,
+        "win_rate": round(green / active * 100) if active else None,
+    }
+    return {"rows": rows[-n:], "summary": summary}
+
+
 @app.route("/api/state")
 def api_state():
     state = at.load_state()
@@ -176,6 +206,7 @@ def api_state():
         "scan": (records[-1].get("scan") if records else []) or [],
         "learnings": at.active_learnings_for_context(),
         "equity_curve": _equity_curve(eq),
+        "pnl_history": _pnl_history(),
         "last_cycle_at": state.get("last_cycle_at"),
     })
 
