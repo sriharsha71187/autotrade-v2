@@ -119,7 +119,11 @@ def default_state() -> dict:
         "tail_hedge": {},           # tail-hedge book (long OTM-put holding, multi-day)
         "earnings": {},             # earnings IV-crush book (overnight condor holding)
         "gap_fade": {},             # gap-fade book (intraday; once-per-day latch)
-        "realized_ledger": {},      # {YYYY-MM-DD: {strategy_label: realized_pl}} for code-closed books
+        "realized_ledger": {},      # {YYYY-MM-DD: {strategy_label: realized_pl}} — SOURCE OF TRUTH (cross-day)
+        "open_lots": {},            # sym -> {qty, avg_cost, mult, strategy, opened_day} — cross-day lot accounting
+        "processed_fills": [],      # applied fill ids (cap ~800) — idempotency guard for update_pnl_ledger
+        "closed_trades": [],        # per-close records {sym,day,strategy,realized,qty} (cap ~500) for expectancy
+        "book_symbols": [],         # durable set of symbols owned by the self-reporting books (double-count guard)
     }
 
 
@@ -153,6 +157,13 @@ def load_state() -> dict:
         fresh["tail_hedge"] = s.get("tail_hedge", {}) or {}
         fresh["earnings"] = s.get("earnings", {}) or {}
         fresh["realized_ledger"] = s.get("realized_ledger", {}) or {}
+        # The cross-day P&L ledger is multi-day by design — carry the open lots, the
+        # idempotency log, the per-close records and the book-symbol guard across the
+        # daily reset (a lot opened yesterday closes today and must book correctly).
+        fresh["open_lots"] = s.get("open_lots", {}) or {}
+        fresh["processed_fills"] = s.get("processed_fills", []) or []
+        fresh["closed_trades"] = s.get("closed_trades", []) or []
+        fresh["book_symbols"] = s.get("book_symbols", []) or []
         # Migrate any legacy single-condor field into the multileg list.
         legacy = s.get("active_condor")
         if legacy:
@@ -1063,6 +1074,215 @@ def _fill_legs(o):
             yield leg
 
 
+def _strategy_for_open(sym: str, opened_day: str, signed: float) -> str:
+    """Strategy label to stamp on a freshly opened lot. Prefer the day's submitted-
+    decision map (correct even when the close lands on a later day); fall back to a
+    symbol-shape inference only when the map has nothing for the symbol."""
+    label = _strategy_map_for_day(opened_day).get(sym)
+    if label:
+        return label
+    if parse_occ(sym):
+        return "long_option"          # a bare long option leg with no mapped decision
+    return "stock_long" if signed > 0 else "stock_short"
+
+
+# Strategy labels recorded by the code-closed books (they self-report cross-day via
+# record_strategy_realized). The cross-day ledger must NEVER also book these — that
+# would double-count. Used only as a belt-and-suspenders check; the real guard is the
+# book-owned SYMBOL set (state['book_symbols']).
+_BOOK_STRATEGY_LABELS = {"overnight_drift", "tail_hedge", "earnings_crush", "growth_sleeve"}
+
+
+def _closed_orders_since(tc, since_day: str, max_pages: int = 12, page: int = 500):
+    """All CLOSED orders with filled_at on/after since_day ('YYYY-MM-DD'), paginated.
+    Alpaca returns newest-first; we page backwards with `until` = oldest submitted_at
+    seen, until we cross the cutoff or run out. nested=True so a multi-leg parent
+    carries its legs (so _fill_legs can expand it)."""
+    cutoff = datetime.strptime(since_day, "%Y-%m-%d").date()
+    out, until = [], None
+    seen_ids = set()
+    for _ in range(max_pages):
+        req = GetOrdersRequest(status=QueryOrderStatus.CLOSED, limit=page,
+                               nested=True, direction="desc", until=until)
+        try:
+            batch = tc.get_orders(filter=req)
+        except Exception as e:
+            log(f"ledger order fetch failed: {e}")
+            break
+        if not batch:
+            break
+        oldest_sub = None
+        for o in batch:
+            oid = str(getattr(o, "id", "") or "")
+            if oid and oid in seen_ids:
+                continue
+            if oid:
+                seen_ids.add(oid)
+            out.append(o)
+            sub = getattr(o, "submitted_at", None) or getattr(o, "created_at", None)
+            if sub and (oldest_sub is None or sub < oldest_sub):
+                oldest_sub = sub
+        # Stop once the whole oldest page is before the cutoff (all its fills are old).
+        page_oldest_fill = min(
+            (o.filled_at.astimezone(ET).date() for o in batch if o.filled_at),
+            default=None)
+        if len(batch) < page:
+            break
+        if page_oldest_fill is not None and page_oldest_fill < cutoff:
+            break
+        if oldest_sub is None:
+            break
+        until = oldest_sub          # page strictly older than this on the next request
+    return out
+
+
+def update_pnl_ledger(tc, state: dict, since_day: str | None = None) -> dict:
+    """Cross-day realized-P&L ledger (AUDIT_ROADMAP #5). Walks CLOSED broker fills,
+    maintains avg-cost open lots per symbol (sign-aware: long AND short), and books
+    realized P&L into state['realized_ledger'][fill_day][strategy] as each lot is
+    reduced/closed — even when the open and the close are on DIFFERENT days. This is
+    the previously-invisible accounting for the model-driven books (long_option,
+    debit_spread, credit_spread, momentum stock_long/stock_short): same-day matching
+    saw a Monday-open/Wednesday-close round-trip as two unrelated $0 legs.
+
+    Idempotent: every applied fill id is recorded in state['processed_fills']; a fill
+    already applied is skipped, so running this twice over the same history does not
+    double-count. The code-closed books (growth/overnight/tail/earnings) self-report
+    their own realized via record_strategy_realized, so their SYMBOLS are skipped here
+    (state['book_symbols'] — accumulated from held_books each cycle)."""
+    open_lots = state.setdefault("open_lots", {})
+    processed = state.setdefault("processed_fills", [])
+    processed_set = set(processed)
+    book_syms = set(state.get("book_symbols") or [])
+    closed_trades = state.setdefault("closed_trades", [])
+
+    if since_day is None:
+        # Default lookback that comfortably covers the daily reset cadence.
+        since_day = (et_now().date() - timedelta(days=10)).strftime("%Y-%m-%d")
+    orders = _closed_orders_since(tc, since_day)
+
+    # Process strictly oldest-first so lots open before they close.
+    def _fkey(o):
+        return getattr(o, "filled_at", None) or getattr(o, "submitted_at", None)
+    parents = sorted(orders, key=lambda o: (_fkey(o) is None, _fkey(o)))
+
+    n_applied = 0
+    for parent in parents:
+        if not parent.filled_at:
+            continue
+        for o in _fill_legs(parent):
+            sym = getattr(o, "symbol", None)
+            qty = float(getattr(o, "filled_qty", 0) or 0)
+            price = float(getattr(o, "filled_avg_price", 0) or 0)
+            if not sym or qty <= 0 or price <= 0:
+                continue
+            # DOUBLE-COUNT GUARD: a self-reporting book owns this symbol — its realized
+            # is already in the ledger via record_strategy_realized. Skip entirely.
+            if sym in book_syms:
+                continue
+            filled_at = getattr(o, "filled_at", None) or parent.filled_at
+            fill_day = filled_at.astimezone(ET).date().strftime("%Y-%m-%d")
+            fid = f"{parent.id}:{sym}:{qty}:{price}"
+            if fid in processed_set:
+                continue
+            is_sell = "SELL" in str(getattr(o, "side", "")).upper()
+            signed = -qty if is_sell else qty
+            mult = 100 if parse_occ(sym) else 1
+            lot = open_lots.get(sym)
+
+            if not lot or abs(lot.get("qty", 0.0)) < 1e-9:
+                # OPEN a fresh lot.
+                open_lots[sym] = {
+                    "qty": signed, "avg_cost": price, "mult": mult,
+                    "strategy": _strategy_for_open(sym, fill_day, signed),
+                    "opened_day": fill_day,
+                }
+            elif (lot["qty"] > 0) == (signed > 0):
+                # ADD in the same direction -> weighted-average the cost.
+                old_abs = abs(lot["qty"])
+                lot["avg_cost"] = (old_abs * lot["avg_cost"] + qty * price) / (old_abs + qty)
+                lot["qty"] += signed
+            else:
+                # REDUCE / CLOSE / FLIP — opposite sign.
+                old_abs = abs(lot["qty"])
+                closing = min(qty, old_abs)
+                sign = 1.0 if lot["qty"] > 0 else -1.0
+                realized = closing * (price - lot["avg_cost"]) * mult * sign
+                record_strategy_realized_on(state, lot["strategy"], realized, fill_day)
+                closed_trades.append({
+                    "sym": sym, "day": fill_day, "strategy": lot["strategy"],
+                    "realized": round(realized, 2), "qty": round(closing, 4),
+                })
+                remainder = qty - closing                 # >0 only if the fill FLIPS the lot
+                lot["qty"] += signed
+                if remainder > 1e-9:
+                    # Flip: the leftover opens a NEW lot on the opposite side at `price`,
+                    # re-stamped with the strategy as of this (closing-side) day.
+                    open_lots[sym] = {
+                        "qty": (remainder if signed > 0 else -remainder),
+                        "avg_cost": price, "mult": mult,
+                        "strategy": _strategy_for_open(sym, fill_day, signed),
+                        "opened_day": fill_day,
+                    }
+                elif abs(lot["qty"]) < 1e-9:
+                    open_lots.pop(sym, None)
+
+            processed.append(fid)
+            processed_set.add(fid)
+            n_applied += 1
+
+    # Bound the idempotency log and the per-close record list.
+    if len(processed) > 800:
+        del processed[:-800]
+    if len(closed_trades) > 500:
+        del closed_trades[:-500]
+    return {"applied": n_applied, "open_lots": len(open_lots)}
+
+
+def record_strategy_realized_on(state: dict, label: str, amount: float, day: str):
+    """Like record_strategy_realized but for an EXPLICIT day (a cross-day close books
+    realized on the close day, which may not be today)."""
+    if not amount:
+        return
+    ledger = state.setdefault("realized_ledger", {}).setdefault(day, {})
+    ledger[label] = round(ledger.get(label, 0.0) + float(amount), 2)
+
+
+def weekly_strategy_expectancy(state: dict, lookback_days: int = 10) -> dict:
+    """Per-strategy win rate / avg win / avg loss / R (avg_win/avg_loss) over the last
+    `lookback_days` trading days, from the per-close records in state['closed_trades'].
+    Feeds the learning loop a compact edge profile per book."""
+    records = state.get("closed_trades") or []
+    if not records:
+        return {}
+    cutoff = (et_now().date() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+    agg = {}
+    for r in records:
+        if (r.get("day") or "") < cutoff:
+            continue
+        pl = float(r.get("realized") or 0.0)
+        if pl == 0.0:
+            continue
+        a = agg.setdefault(r.get("strategy") or "unknown",
+                           {"wins": [], "losses": []})
+        (a["wins"] if pl > 0 else a["losses"]).append(pl)
+    out = {}
+    for label, a in agg.items():
+        wins, losses = a["wins"], a["losses"]
+        n = len(wins) + len(losses)
+        avg_win = round(sum(wins) / len(wins), 2) if wins else 0.0
+        avg_loss = round(abs(sum(losses) / len(losses)), 2) if losses else 0.0
+        out[label] = {
+            "trades": n,
+            "win_rate": round(len(wins) / n, 3) if n else 0.0,
+            "avg_win": avg_win,
+            "avg_loss": avg_loss,
+            "R": round(avg_win / avg_loss, 2) if avg_loss else None,
+            "net": round(sum(wins) + sum(losses), 2),
+        }
+    return out
+
+
 def honest_trade_stats(tc, state=None) -> dict:
     """Realized P&L from today's fills, grouped by symbol. Counts ONLY matched
     round-trips (min of buy vs sell qty) so an OPEN position contributes ~0
@@ -1114,12 +1334,20 @@ def honest_trade_stats(tc, state=None) -> dict:
         }
         total_realized += realized
     day = et_now().strftime("%Y-%m-%d")
-    by_strategy = attribute_by_strategy(by_symbol, day, state)
-    return {"note": "realized_pl = today's MATCHED round-trips only (open_qty!=0 "
-                    "means the position is still open and NOT yet in realized_pl). "
-                    "by_strategy attributes realized P&L to the strategy that opened "
-                    "each name. Historical edge applies ONLY when the live scan agrees.",
-            "day_realized_pl": round(total_realized, 2),
+    # SOURCE OF TRUTH = the cross-day ledger. realized_ledger[today] already holds the
+    # books' self-reported realized AND (via update_pnl_ledger, run once per cycle) the
+    # model-driven books' cross-day realized booked on their CLOSE day. The same-day
+    # match is kept alongside as day_realized_pl_sameday for transition/comparison.
+    led_today = (state or {}).get("realized_ledger", {}).get(day, {}) or {}
+    by_strategy = {k: round(v, 2) for k, v in led_today.items() if v}
+    day_realized_pl = round(sum(led_today.values()), 2)
+    return {"note": "realized_pl/by_strategy = CROSS-DAY ledger (booked on the close "
+                    "day under the OPENING strategy; includes the code-closed books). "
+                    "day_realized_pl_sameday = legacy same-day matched round-trips only "
+                    "(kept for comparison). by_symbol.open_qty!=0 means still open. "
+                    "Historical edge applies ONLY when the live scan agrees.",
+            "day_realized_pl": day_realized_pl,
+            "day_realized_pl_sameday": round(total_realized, 2),
             "by_strategy": by_strategy,
             "by_symbol": by_symbol}
 
@@ -3087,6 +3315,22 @@ def run_cycle(dry: bool = False):
     held_books = (sleeve | od.held_symbols(state)
                   | th.held_symbols(state) | ec.held_symbols(state))
 
+    # Cross-day realized-P&L ledger (AUDIT_ROADMAP #5). The self-reporting books book
+    # their own realized via record_strategy_realized, so accumulate every symbol they
+    # have EVER held into a durable set — even after a book closes a position and its
+    # symbol drops out of held_books, its closing fill must stay out of the ledger to
+    # avoid double-counting. Then walk the broker history once: lots opened on a prior
+    # day get their realized booked here on the CLOSE day under the OPENING strategy
+    # (the previously-invisible long_option/debit_spread/credit_spread/momentum books).
+    bs = set(state.get("book_symbols") or []) | held_books
+    if len(bs) > 400:
+        bs = set(list(bs)[-400:])
+    state["book_symbols"] = sorted(bs)
+    try:
+        update_pnl_ledger(tc, state)
+    except Exception as e:
+        log(f"pnl ledger update failed: {e}")
+
     # Daily-loss-halt + profit gates must reflect INTRADAY P&L, not the mark drift of
     # the shielded HOLD-THROUGH books (the ~$25k growth sleeve, the tail-hedge puts,
     # the earnings condor). Those can swing the account hundreds of $ overnight or
@@ -3612,21 +3856,32 @@ def compute_outcomes(tc=None, day=None) -> dict:
         pass
     snap_file = cfg.SNAPSHOT_DIR / f"{day}.jsonl"
     n_snaps = len(snap_file.read_text().splitlines()) if snap_file.exists() else 0
-    # Honest matched realized P&L + per-strategy attribution (which strategy made/lost
-    # the day), so "how was the day" can be answered by strategy, not just by symbol.
+    # Honest realized P&L + per-strategy attribution (which strategy made/lost the day),
+    # so "how was the day" can be answered by strategy, not just by symbol. Refresh the
+    # cross-day ledger first (idempotent) so a standalone outcomes run is self-sufficient
+    # and not dependent on a cycle having run this tick.
+    expectancy = {}
     try:
-        hstats = honest_trade_stats(tc, load_state())
+        st = load_state()
+        update_pnl_ledger(tc, st)
+        save_state(st)
+        hstats = honest_trade_stats(tc, st)
+        expectancy = weekly_strategy_expectancy(st)
     except Exception as e:
         log(f"outcomes attribution failed: {e}")
         hstats = {}
     rec = {"day": day, "equity_end": equity,
            "day_realized_pl": hstats.get("day_realized_pl"),
+           "day_realized_pl_sameday": hstats.get("day_realized_pl_sameday"),
            "realized_by_strategy": hstats.get("by_strategy", {}),
+           "strategy_expectancy": expectancy,
            "fills": fills, "by_symbol": by_symbol,
            "snapshots": n_snaps,
-           "note": "day_realized_pl/realized_by_strategy = MATCHED round-trips + book "
-                   "ledger (the honest numbers). realized_cashflow below = sell+/buy− "
-                   "proxy; ≈ realized P&L only for symbols fully closed today."}
+           "note": "day_realized_pl/realized_by_strategy = CROSS-DAY ledger (booked on "
+                   "the close day under the opening strategy; includes the code-closed "
+                   "books). day_realized_pl_sameday = legacy same-day matched only. "
+                   "realized_cashflow below = sell+/buy− proxy; ≈ realized P&L only for "
+                   "symbols fully closed today."}
     cfg.OUTCOMES_DIR.mkdir(exist_ok=True)
     (cfg.OUTCOMES_DIR / f"{day}.json").write_text(json.dumps(rec, indent=2, default=str))
     log(f"OUTCOMES {day}: {len(fills)} fills across {len(by_symbol)} symbols; equity={equity}")
