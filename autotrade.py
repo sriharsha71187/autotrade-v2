@@ -31,7 +31,7 @@ import math
 import fcntl
 import traceback
 from pathlib import Path
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, date, timedelta, timezone
 
 import warnings
 warnings.filterwarnings("ignore", message=".*OpenSSL.*")
@@ -763,13 +763,123 @@ def option_chain_for(odc, underlying, spot, want_today_expiry: bool = False,
     return sorted(calls + puts, key=lambda r: (r["type"], r["strike"]))
 
 
+def conviction_chain_for(odc, underlying, spot, bullish: bool) -> list[dict]:
+    """Deep-ITM, multi-day contract set for the conviction-ITM book (see
+    CONVICTION_ITM_SPEC.md). Unlike option_chain_for (near-ATM, nearest expiry), this
+    returns the single ITM strike at the expiry whose DTE is closest to the middle of
+    [CONVICTION_ITM_DTE_MIN, CONVICTION_ITM_DTE_MAX], on the requested side only:
+      - bullish -> a CALL ~CONVICTION_ITM_DEPTH ITM  (strike ≈ spot*(1-depth))
+      - bearish -> a PUT  ~CONVICTION_ITM_DEPTH ITM  (strike ≈ spot*(1+depth))
+    Keeps the same wide-spread / illiquid reject as the default selector. Returns [] on
+    any failure or if no contract clears the liquidity floor (caller falls back to ATM)."""
+    if odc is None or not spot or spot <= 0:
+        return []
+    depth = cfg.CONVICTION_ITM_DEPTH
+    # Widen the strike scan window past the ITM target (+ a margin) so the ITM strikes
+    # are actually returned (the default ±8% would clip a 7%-ITM strike on a side).
+    pad = depth + 0.06
+    lo = round(spot * (1 - pad), 2)
+    hi = round(spot * (1 + pad), 2)
+    from alpaca.data.requests import OptionChainRequest
+    chain = None
+    for attempt in range(3):
+        try:
+            chain = odc.get_option_chain(OptionChainRequest(
+                underlying_symbol=underlying, strike_price_gte=lo, strike_price_lte=hi))
+            if chain:
+                break
+        except Exception as e:
+            if attempt == 2:
+                log(f"conviction chain fetch failed for {underlying}: {e}")
+        if attempt < 2:
+            time.sleep(0.6)
+    if not chain:
+        return []
+    today = et_now().date()
+    want_type = "call" if bullish else "put"
+    rows = []
+    for sym, snap in (chain or {}).items():
+        meta = parse_occ(sym)
+        if not meta or meta["type"] != want_type:
+            continue
+        try:
+            dte = (date.fromisoformat(meta["expiry"]) - today).days
+        except Exception:
+            continue
+        if dte < 0:
+            continue
+        q = getattr(snap, "latest_quote", None)
+        bid = float(getattr(q, "bid_price", 0) or 0) if q else 0.0
+        ask = float(getattr(q, "ask_price", 0) or 0) if q else 0.0
+        mid = (bid + ask) / 2 if (bid > 0 and ask > 0) else (ask or bid or 0.0)
+        rows.append({"symbol": sym, "type": meta["type"], "strike": meta["strike"],
+                     "expiry": meta["expiry"], "dte": dte, "bid": round(bid, 2),
+                     "ask": round(ask, 2), "mid": round(mid, 2)})
+    if not rows:
+        return []
+    # Pick the expiry whose DTE is closest to the middle of the target band.
+    dte_mid = (cfg.CONVICTION_ITM_DTE_MIN + cfg.CONVICTION_ITM_DTE_MAX) / 2.0
+    expiries = sorted({r["expiry"] for r in rows}, key=lambda e: abs(
+        (date.fromisoformat(e) - today).days - dte_mid))
+    target_exp = expiries[0]
+    exp_rows = [r for r in rows if r["expiry"] == target_exp]
+    # Target strike ~depth ITM: below spot for a call, above spot for a put.
+    target_strike = spot * (1 - depth) if bullish else spot * (1 + depth)
+    exp_rows.sort(key=lambda r: abs(r["strike"] - target_strike))
+    chosen = exp_rows[0]
+    # Same wide-spread / illiquid reject as the default path: a two-sided quote whose
+    # bid-ask is within OPTION_MAX_SPREAD_PCT of the mid. No two-sided quote -> reject.
+    if not (chosen["bid"] > 0 and chosen["ask"] > 0 and chosen["mid"] > 0):
+        return []
+    if (chosen["ask"] - chosen["bid"]) / chosen["mid"] > cfg.OPTION_MAX_SPREAD_PCT:
+        return []
+    return [chosen]
+
+
+def conviction_itm_qualifies(r: dict, event_state=None, regime=None) -> bool:
+    """Deterministic eligibility for routing a name to the conviction-ITM book INSTEAD
+    of the default ATM short-dated set (CONVICTION_ITM_SPEC §2). True when the name has
+    EITHER a confirmed hard catalyst (event-router RIDE on it, or a flagged earnings
+    drift / event_catalyst) OR a clean multi-day momentum trend:
+      STRONG_BULL/BEAR + making a new HOD/LOD + positive vwap_ext (trending, not fading)
+      + RSI not blown off (<RSI_OVERBOUGHT for bull / >RSI_OVERSOLD for bear).
+    Side is taken from the signal; returns False if the name doesn't cleanly qualify."""
+    sym = r.get("symbol")
+    sig = r.get("signal")
+    # Hard catalyst: a live event-router RIDE on this name, or a flagged catalyst row.
+    has_catalyst = bool(r.get("event_catalyst"))
+    if not has_catalyst and event_state:
+        has_catalyst = sym in ((event_state.get("ride") or {}))
+    # Clean multi-day momentum trend.
+    clean_trend = False
+    if sig in ("STRONG_BULL", "STRONG_BEAR"):
+        bullish = sig == "STRONG_BULL"
+        ext = r.get("vwap_ext")
+        rsi = r.get("rsi")
+        off_extreme = r.get("off_hod") if bullish else r.get("off_lod")
+        if ext is not None and rsi is not None and off_extreme is not None:
+            new_extreme = off_extreme <= 0.003     # within ~0.3% of HOD/LOD = making new highs/lows
+            trending = (ext > 0) if bullish else (ext < 0)   # positive vwap_ext IN the trend's direction
+            rsi_ok = (rsi < cfg.RSI_OVERBOUGHT) if bullish else (rsi > cfg.RSI_OVERSOLD)
+            clean_trend = new_extreme and trending and rsi_ok
+    return bool(has_catalyst or clean_trend)
+
+
 def build_option_chains(odc, scan, positions, vix, now,
-                        max_underlyings: int = 3) -> tuple[dict, set]:
+                        max_underlyings: int = 3,
+                        event_state=None, regime=None) -> tuple[dict, set, set]:
     """Decide which underlyings could plausibly trade options THIS cycle and fetch
-    a compact chain for each. Returns (chains_by_underlying, offered_symbol_set).
-    Mirrors setup_qualifies' option windows so we don't fetch chains we can't use."""
+    a compact chain for each. Returns
+    (chains_by_underlying, offered_symbol_set, conviction_itm_symbol_set).
+    Mirrors setup_qualifies' option windows so we don't fetch chains we can't use.
+    When CONVICTION_ITM_ENABLED, a name that qualifies (hard catalyst or clean
+    multi-day trend, §2) is offered the DEEP-ITM multi-day contract set instead of the
+    default ATM short-dated set; conviction_itm_symbol_set tags those OCC symbols so the
+    guardrail routes them to the risk-based sizing branch."""
     spot_of = {r["symbol"]: r["last"] for r in scan}
     targets = []  # (underlying, spot, want_today_expiry)
+    # conviction-ITM routing: underlying -> bullish? for names that qualified this cycle.
+    conviction_route: dict = {}
     h, m = now.hour, now.minute
 
     # Iron condor: calm core index in the 10:00–10:30 window, VIX under ceiling.
@@ -790,6 +900,17 @@ def build_option_chains(odc, scan, positions, vix, now,
                   if anti_chase_reason(r["day_pct"] > 0, r) is None]   # entry would be allowed
         for r in (pulled or movers)[:5]:
             targets.append((r["symbol"], r["last"], False))
+        # Conviction-ITM auto-routing (§2/§3): a qualifying name gets the DEEP-ITM
+        # multi-day set INSTEAD of the ATM short-dated set. Scan the FULL movers list (not
+        # just the pulled-back ones) — a name making a new HOD/LOD is exactly the clean
+        # trend this book wants and would be filtered out of `pulled` by anti-chase.
+        if cfg.CONVICTION_ITM_ENABLED:
+            for r in movers:
+                if r["symbol"] in conviction_route:
+                    continue
+                if conviction_itm_qualifies(r, event_state=event_state, regime=regime):
+                    conviction_route[r["symbol"]] = (r["signal"] == "STRONG_BULL"
+                                                     or (r.get("day_pct") or 0) > 0)
     # Any option we already hold, so the model can choose to size a close.
     for p in positions:
         if "option" in (p.get("asset_class", "") or "").lower():
@@ -798,7 +919,7 @@ def build_option_chains(odc, scan, positions, vix, now,
                 targets.append((meta["underlying"],
                                 spot_of.get(meta["underlying"]) or p.get("current"), False))
 
-    chains, offered = {}, set()
+    chains, offered, conviction_syms = {}, set(), set()
     seen, attempts = set(), 0
     for und, spot, today_exp in targets:
         # Stop at max_underlyings SUCCESSFUL chains (not attempts), but cap total
@@ -807,11 +928,21 @@ def build_option_chains(odc, scan, positions, vix, now,
             continue
         seen.add(und)
         attempts += 1
+        # Conviction-ITM routed name: offer the deep-ITM multi-day contract INSTEAD of
+        # the ATM short-dated set. Fall back to the ATM set if the ITM selector returns
+        # nothing (illiquid / no listed expiry in the band), so the chain isn't blank.
+        if cfg.CONVICTION_ITM_ENABLED and und in conviction_route:
+            irows = conviction_chain_for(odc, und, spot, bullish=conviction_route[und])
+            if irows:
+                chains[und] = irows
+                offered.update(r["symbol"] for r in irows)
+                conviction_syms.update(r["symbol"] for r in irows)
+                continue
         rows = option_chain_for(odc, und, spot, want_today_expiry=today_exp)
         if rows:
             chains[und] = rows
             offered.update(r["symbol"] for r in rows)
-    return chains, offered
+    return chains, offered, conviction_syms
 
 
 def record_strategy_realized(state: dict, label: str, amount: float):
@@ -1763,7 +1894,40 @@ def manage_options(tc, odc, state, dry):
         meta = parse_occ(sym)
         mid = _quote_mid(option_latest_quote(odc, sym))
         reason = None
-        if hard_close:
+        is_conviction = (cfg.CONVICTION_ITM_ENABLED and o.get("book") == "conviction_itm")
+        if is_conviction:
+            # Conviction-ITM multi-day hold: EXEMPT from the 15:45 EOD/0DTE force-close
+            # (it rides for several days). Re-judged each cycle on current metrics —
+            # exit on the option stop (CONVICTION_ITM_STOP_PCT), the trailing profit-lock,
+            # max_hold_days reached, or DTE under CONVICTION_ITM_MIN_DTE_EXIT (close/roll
+            # before the gamma-theta cliff). Thesis-break exits are the model's job each
+            # day (it sees the position); these are the code-enforced hard exits.
+            dte = None
+            if meta:
+                try:
+                    dte = (date.fromisoformat(meta["expiry"]) - now.date()).days
+                except Exception:
+                    dte = None
+            held_days = None
+            try:
+                held_days = (now.date() - date.fromisoformat(o["opened_day"])).days
+            except Exception:
+                held_days = None
+            if dte is not None and dte < cfg.CONVICTION_ITM_MIN_DTE_EXIT:
+                reason = f"DTE exit ({dte}d < {cfg.CONVICTION_ITM_MIN_DTE_EXIT})"
+            elif held_days is not None and held_days >= int(o.get("max_hold_days",
+                                                            cfg.CONVICTION_ITM_MAX_HOLD_DAYS)):
+                reason = f"max-hold ({held_days}d >= {o.get('max_hold_days')})"
+            elif mid is not None and o.get("entry"):
+                pl = (mid - o["entry"]) / o["entry"]
+                o["hw_pl"] = max(o.get("hw_pl", pl), pl)
+                if pl <= cfg.CONVICTION_ITM_STOP_PCT:
+                    reason = f"stop {pl:+.0%}"
+                elif o["hw_pl"] >= cfg.OPTION_TRAIL_ACTIVATE:
+                    trail = o["hw_pl"] * (1 - cfg.OPTION_TRAIL_GIVEBACK)
+                    if pl <= trail:
+                        reason = f"trail (peak {o['hw_pl']:+.0%} → {pl:+.0%})"
+        elif hard_close:
             reason = "0DTE/EOD close" if (meta and meta["expiry"] <= today) else "EOD close"
         elif mid is not None and o.get("entry"):
             pl = (mid - o["entry"]) / o["entry"]
@@ -1863,7 +2027,10 @@ def reconcile_overnight_stocks(tc, state, dry, skip=None):
     opt_keep = []
     for o in (state.get("active_options") or []):
         sym = o.get("symbol")
-        if o.get("overnight") or not _prior_day(o.get("opened", "")) or not sym:
+        # A conviction-ITM hold is a DELIBERATE multi-day position (its own stop/max-hold/
+        # DTE management lives in manage_options) — never sweep it as a stray overnight.
+        if (o.get("overnight") or o.get("book") == "conviction_itm"
+                or not _prior_day(o.get("opened", "")) or not sym):
             opt_keep.append(o)
             continue
         if dry:
@@ -2142,7 +2309,8 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
                       offered_options=None, assets=None,
                       option_spread_pct=None, scan_row=None,
                       dir_counts=None, book_symbols=None,
-                      regime=None, event_state=None, options_intel=None) -> tuple[bool, str]:
+                      regime=None, event_state=None, options_intel=None,
+                      conviction_symbols=None) -> tuple[bool, str]:
     """ref_price: current per-share price of the asset being traded — the stock
     last price for buy_stock, the option premium per share for buy_option. Used
     for the notional and total-deployed-capital caps.
@@ -2155,6 +2323,7 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
     assets = assets or {}
     dir_counts = dir_counts or {"bull": 0, "bear": 0}
     book_symbols = book_symbols or set()
+    conviction_symbols = conviction_symbols or set()
     action = decision.get("action")
     # The growth sleeve and overnight-drift book are separate, code-managed books —
     # the intraday engine may not open, short, or close their names (it would fight
@@ -2425,15 +2594,56 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
         _with_tape = (regime is not None and (
             (bullish and regime.get("tape_bias") == "risk_on")
             or (not bullish and regime.get("tape_bias") == "risk_off")))
-        cr = anti_chase_reason(bullish, scan_row, event=(_rd == _dir or _with_tape))
-        if cr:
-            return False, f"{sym or osym} {cr}"
+        # Conviction-ITM routing already gated this name on a CLEAN trend in
+        # conviction_itm_qualifies (§2): STRONG_BULL/BEAR making a NEW HOD/LOD, positive
+        # vwap_ext IN the trend's direction, RSI not blown off. That purpose-built gate
+        # REPLACES the generic anti-chase here — the book's whole thesis is to ride a
+        # name AT its highs/lows (which the "at the top" off-extreme guard would block),
+        # while still refusing a parabolic blow-off (the RSI ceiling in the §2 gate).
+        _is_conviction = cfg.CONVICTION_ITM_ENABLED and osym in conviction_symbols
+        if not _is_conviction:
+            cr = anti_chase_reason(bullish, scan_row, event=(_rd == _dir or _with_tape))
+            if cr:
+                return False, f"{sym or osym} {cr}"
         side_key = "bull" if bullish else "bear"
         if dir_counts.get(side_key, 0) >= cfg.MAX_SAME_DIRECTION_POSITIONS:
             return False, (f"correlation cap: already {dir_counts[side_key]} "
                            f"{side_key} positions (max {cfg.MAX_SAME_DIRECTION_POSITIONS})")
         # Size on the ASK we will actually pay (mid * (1 + spread/2)), not mid.
         ask_est = ref_price * (1 + option_spread_pct / 2)
+        # ---- conviction-ITM book: RISK-based sizing (NOT the $1,200 ATM cap) --------
+        # A deep-ITM premium is large but realistic risk = stop distance, not full
+        # premium. Size to CONVICTION_ITM_RISK_TARGET on the option stop, cap the total
+        # outlay at CONVICTION_ITM_NOTIONAL_CAP, and tag the position for multi-day
+        # holding/management. Gated entirely behind CONVICTION_ITM_ENABLED + the routed
+        # symbol set (off => this branch is never reached, behavior unchanged).
+        if cfg.CONVICTION_ITM_ENABLED and osym in conviction_symbols:
+            premium = ask_est                                   # per-share premium we'll pay
+            risk_per_contract = premium * 100 * abs(cfg.CONVICTION_ITM_STOP_PCT)
+            if risk_per_contract <= 0:
+                return False, "conviction-ITM: non-positive risk per contract"
+            contracts = int(cfg.CONVICTION_ITM_RISK_TARGET // risk_per_contract)
+            if contracts < 1:
+                return False, (f"conviction-ITM: too expensive — risk/contract "
+                               f"${risk_per_contract:.0f} > target ${cfg.CONVICTION_ITM_RISK_TARGET:.0f} "
+                               f"(<1 contract)")
+            outlay = premium * 100 * contracts
+            if outlay > cfg.CONVICTION_ITM_NOTIONAL_CAP:
+                # Trim contracts so the OUTLAY fits the cap (keeps the position, smaller).
+                contracts = int(cfg.CONVICTION_ITM_NOTIONAL_CAP // (premium * 100))
+                if contracts < 1:
+                    return False, (f"conviction-ITM: one contract outlay "
+                                   f"${premium*100:.0f} > cap ${cfg.CONVICTION_ITM_NOTIONAL_CAP:.0f}")
+                outlay = premium * 100 * contracts
+            if deployed + outlay > cfg.MAX_DEPLOYED_CAPITAL:
+                return False, (f"deployed {deployed:.0f}+{outlay:.0f} > "
+                               f"max deployed {cfg.MAX_DEPLOYED_CAPITAL}")
+            # Override the model's qty with the risk-sized count and tag the book so the
+            # executor records it as a shielded multi-day hold.
+            decision["qty"] = contracts
+            decision["book"] = "conviction_itm"
+            return True, (f"conviction-ITM: {contracts}x @ ${premium:.2f} "
+                          f"(risk ~${risk_per_contract*contracts:.0f}, outlay ${outlay:.0f})")
         notional = qty * ask_est * 100  # 100 shares per contract
         if notional > cfg.PER_OPTION_NOTIONAL_CAP:
             return False, f"option notional {notional:.0f} > cap {cfg.PER_OPTION_NOTIONAL_CAP}"
@@ -2819,7 +3029,14 @@ def run_cycle(dry: bool = False):
     manage_options(tc, odc, state, dry)
     manage_stops(tc, dry, skip=held_books)   # trail intraday bracket stops to lock in gains
     flatten_stocks_eod(tc, dry, skip=held_books)
-    sweep_orphan_options(tc, state, dry, skip=held_books)   # last-line: no untracked option rides into expiry
+    # Conviction-ITM holds are deliberate multi-day options (managed by manage_options:
+    # stop / max-hold / DTE exit). Shield their OCC symbols from the EOD orphan sweep so
+    # a tracking desync can't force-close them at 15:45, exactly like the tail/earnings books.
+    _orphan_skip = set(held_books)
+    if cfg.CONVICTION_ITM_ENABLED:
+        _orphan_skip |= {o["symbol"] for o in (state.get("active_options") or [])
+                         if o.get("book") == "conviction_itm" and o.get("symbol")}
+    sweep_orphan_options(tc, state, dry, skip=_orphan_skip)   # last-line: no untracked option rides into expiry
 
     # 2b. Daily loss halt — latches for the rest of the day and alerts once.
     # Skipped while the OVERRIDE day-flag is on (user chose to keep trading).
@@ -2976,7 +3193,8 @@ def run_cycle(dry: bool = False):
     # 3b. Option chains — only fetched when an options setup is plausible this cycle,
     # so the model selects REAL contracts. offered_options is the whitelist the
     # guardrail enforces; if a chain is empty the model simply can't trade it.
-    option_chains, offered_options = build_option_chains(odc, scan, positions, vix, now)
+    option_chains, offered_options, conviction_symbols = build_option_chains(
+        odc, scan, positions, vix, now, event_state=event_state, regime=regime)
 
     # Authoritative day P&L straight off the account (equity vs start-of-day),
     # plus open unrealized — the ground truth the model should trust over any
@@ -3144,7 +3362,8 @@ def run_cycle(dry: bool = False):
                                        offered_options, assets, opt_spread, scan_row,
                                        directional_counts(positions), held_books,
                                        regime=regime, event_state=event_state,
-                                       options_intel=options_intel)
+                                       options_intel=options_intel,
+                                       conviction_symbols=conviction_symbols)
         if not ok:
             log(f"guardrail blocked {action}: {reason}")
             result = {"status": "blocked", "action": action, "reason": reason}
@@ -3175,9 +3394,16 @@ def run_cycle(dry: bool = False):
                         entry = float(o.filled_avg_price) if o.filled_avg_price else opt_ask
                         log(f"OPTION buy {oqty} {osym} @lim {lim} (ask {opt_ask}) entry≈{entry} id={o.id}")
                         tg_send(f"📊 Bought {oqty}x {osym} (limit {lim}).")
-                        state.setdefault("active_options", []).append(
-                            {"symbol": osym, "qty": oqty, "entry": entry,
-                             "order_id": str(o.id), "opened": now.isoformat()})
+                        _opt_entry = {"symbol": osym, "qty": oqty, "entry": entry,
+                                      "order_id": str(o.id), "opened": now.isoformat()}
+                        # Conviction-ITM hold: tag the book + opened_day + max_hold_days so
+                        # manage_options re-judges it daily and the EOD flatten / orphan
+                        # sweep leave it alone (shielded, like the tail-hedge/earnings books).
+                        if decision.get("book") == "conviction_itm":
+                            _opt_entry["book"] = "conviction_itm"
+                            _opt_entry["opened_day"] = now.date().isoformat()
+                            _opt_entry["max_hold_days"] = cfg.CONVICTION_ITM_MAX_HOLD_DAYS
+                        state.setdefault("active_options", []).append(_opt_entry)
                     else:
                         log(f"[DRY] would buy option {oqty} {osym} @lim {lim} (ask {opt_ask})")
                     if decision.get("symbol"):

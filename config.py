@@ -393,6 +393,25 @@ EARNINGS_UNIVERSE = [         # liquid optionable names with clean earnings move
     "AAPL", "MSFT", "AMZN", "GOOGL", "META", "NVDA", "TSLA", "AMD", "NFLX", "CRM",
 ]
 
+# ---- conviction-ITM book (deep-ITM, multi-day directional options) ----------
+# See CONVICTION_ITM_SPEC.md. Near-ATM/nearest-expiry directional options bleed
+# theta and get force-closed same-day so a multi-day catalyst can't play out.
+# This book buys DEEP-ITM (~0.75 delta, mostly intrinsic) contracts at a 2-5 week
+# expiry, sizes them on RISK (stop distance) not premium, and holds them across the
+# 15:45 flatten for several days with a daily thesis re-judge. Its symbols are
+# SHIELDED from the EOD option-close + orphan sweep exactly like the tail-hedge /
+# earnings books. Routing is DETERMINISTIC (build_option_chains auto-selects ITM-vs-
+# ATM by setup type); the model never reasons about option structure. Ships OFF.
+CONVICTION_ITM_ENABLED       = False   # master flag — when False the engine is byte-for-byte unchanged
+CONVICTION_ITM_DEPTH         = 0.07    # strike ~7% ITM (~0.75 delta proxy via moneyness)
+CONVICTION_ITM_DTE_MIN       = 14      # target expiry window (days to expiry)...
+CONVICTION_ITM_DTE_MAX       = 35      # ...pick the listed expiry nearest the middle of this band
+CONVICTION_ITM_STOP_PCT      = -0.30   # option stop (basis for risk-based sizing)
+CONVICTION_ITM_RISK_TARGET   = 900.0   # max $ risk per position (stop-distance based)
+CONVICTION_ITM_NOTIONAL_CAP  = 3000.0  # max premium outlay per position (one name can't eat the book)
+CONVICTION_ITM_MAX_HOLD_DAYS = 5       # re-judge daily; hard exit after this many trading days
+CONVICTION_ITM_MIN_DTE_EXIT  = 5       # close/roll under this DTE (before the gamma-theta cliff)
+
 # ---- gap-fade strategy (9:30-10:00 ET) --------------------------------------
 # Fade an opening gap back toward the prior close on a liquid name. Stocks revert
 # gaps ~60-70% (evidence). Fills the otherwise-dead first half hour; defined stop
@@ -471,6 +490,16 @@ RUNTIME_SETTABLE = {
     "EARNINGS_MAX_RISK": float,
     "GAP_FADE_ENABLED": bool,
     "GAP_FADE_NOTIONAL": float,
+    # conviction-ITM book (deep-ITM, multi-day directional options)
+    "CONVICTION_ITM_ENABLED": bool,
+    "CONVICTION_ITM_DEPTH": float,
+    "CONVICTION_ITM_DTE_MIN": int,
+    "CONVICTION_ITM_DTE_MAX": int,
+    "CONVICTION_ITM_STOP_PCT": float,
+    "CONVICTION_ITM_RISK_TARGET": float,
+    "CONVICTION_ITM_NOTIONAL_CAP": float,
+    "CONVICTION_ITM_MAX_HOLD_DAYS": int,
+    "CONVICTION_ITM_MIN_DTE_EXIT": int,
 }
 
 
