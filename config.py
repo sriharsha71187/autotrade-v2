@@ -81,9 +81,11 @@ DAILY_LOSS_HALT  = -300.0
 DAILY_PROFIT_TARGET  = 200.0
 DAILY_PROFIT_STRETCH = 400.0
 PER_TRADE_NOTIONAL_CAP = 5_000.0   # cap on a single stock entry (qty * price)
-PER_OPTION_NOTIONAL_CAP = 1_200.0  # HARD ceiling on one option structure's max-loss
-                                   # (kept under the daily loss halt so a single
-                                   #  condor can never trip the whole-day stop alone)
+PER_OPTION_NOTIONAL_CAP = 600.0    # HARD ceiling on ONE option structure's max-loss.
+                                   # At the live −$1,500 daily floor this is ~0.4x, so a
+                                   # single structure can't blow most of the day's loss
+                                   # budget. (The conviction-ITM book is exempt — it uses
+                                   #  its own CONVICTION_ITM_NOTIONAL_CAP.)
 OPTION_RISK_TARGET     = 900.0     # TARGET max-loss to SIZE each defined-risk options
                                    # trade toward (wider wings / more contracts) — stops
                                    # the model trading teaspoon-sized $50-risk condors
@@ -96,6 +98,14 @@ CONDOR_WING_WIDTH      = 5.0       # $ width of condor wings, for max-loss sizin
 # buy_option) which pin into the close. MOMENTUM DEBIT spreads are multi-day and
 # don't have that risk, so they get a later entry cutoff — lets the bot catch an
 # afternoon single-name breakout instead of going dark at 14:00.
+MOMENTUM_OPTION_MIN_DTE = 5        # DIRECTIONAL momentum options must be at least this
+                                   # many days to expiry. The default chain selector used
+                                   # to grab the NEAREST expiry, which on a Friday is a pure
+                                   # 0DTE and most days is 0-4 DTE — all theta, force-closed
+                                   # same day before a multi-day thesis can play out (the
+                                   # 0DTE-Friday RKLB loss). A name with no expiry >= this is
+                                   # SKIPPED (never silently fall back to 0DTE). The 0DTE INDEX
+                                   # CONDOR path is unaffected (it asks for today's expiry).
 MOMENTUM_OPTION_CUTOFF_HOUR = 15
 MOMENTUM_OPTION_CUTOFF_MIN  = 0    # momentum debit spreads enterable 10:00–15:00 ET
                                    # (spreads are force-closed 15:45, so this leaves
@@ -459,6 +469,7 @@ RUNTIME_SETTABLE = {
     "OPTION_RISK_TARGET": float,
     "MAX_SAME_DIRECTION_POSITIONS": int,
     "MAX_SPREADS_PER_NAME_PER_DAY": int,
+    "MOMENTUM_OPTION_MIN_DTE": int,
     "CREDIT_SPREAD_INDEX_ONLY": bool,
     "EVENT_ROUTER_ENABLED": bool,
     "EVENT_PRE_MIN": int,

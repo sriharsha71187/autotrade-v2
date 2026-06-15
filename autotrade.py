@@ -754,7 +754,20 @@ def option_chain_for(odc, underlying, spot, want_today_expiry: bool = False,
     expiries = sorted({r["expiry"] for r in rows if r["expiry"] >= today})
     if not expiries:
         return []
-    target = today if (want_today_expiry and today in expiries) else expiries[0]
+    if want_today_expiry:
+        # 0DTE / same-day INDEX CONDOR path — unchanged: today's expiry if listed,
+        # else the nearest upcoming.
+        target = today if today in expiries else expiries[0]
+    else:
+        # DIRECTIONAL momentum path: never the 0-4 DTE / 0DTE-Friday contract. Pick the
+        # NEAREST expiry whose DTE >= MOMENTUM_OPTION_MIN_DTE; if none qualifies, return []
+        # (caller skips the name — intended) rather than silently falling back to 0DTE.
+        today_d = date.fromisoformat(today)
+        qualifying = [e for e in expiries
+                      if (date.fromisoformat(e) - today_d).days >= cfg.MOMENTUM_OPTION_MIN_DTE]
+        if not qualifying:
+            return []
+        target = qualifying[0]
     rows = [r for r in rows if r["expiry"] == target]
     calls = sorted([r for r in rows if r["type"] == "call"],
                    key=lambda r: abs(r["strike"] - spot))[:max_per_side]
@@ -2161,6 +2174,76 @@ def sweep_orphan_options(tc, state, dry, skip=None):
                 f"(were not in active tracking — caught before expiry).")
 
 
+def assert_no_naked_short(tc, state, dry, skip=None):
+    """Belt-and-suspenders against an UNCAPPED short option (defined-risk-only invariant).
+
+    A SHORT option (negative qty) is defined-risk only if a LONG option of the SAME
+    underlying AND type (call/put) is held in at least equal quantity. ANY long call caps a
+    short call's tail (and any long put caps a short put's) regardless of relative strike —
+    as S->inf a long call's +1 delta offsets the short's -1, so the loss is bounded to the
+    strike gap; that is exactly what the protective wing of a vertical / condor provides
+    (the wing is often at a LOWER strike than the short, e.g. a bull-call debit spread, so a
+    strike-relationship test would wrongly flag a healthy spread). If the short quantity in
+    an (underlying, type) bucket EXCEEDS the long quantity, the excess is NAKED and uncapped
+    — exactly the 6/10 SMCI leg ($0.53->$4.50 = -$2,382 after the long leg was sold
+    standalone). Force-close it immediately (wash-safe via close_symbols) and alert.
+
+    Does NOT touch legitimate one-sided LONGS (the tail-hedge long puts are qty>0, so they
+    can never trip this). A healthy condor/vertical short leg IS covered by its long wing
+    on the same underlying, so it is left alone. `skip` shields book symbols by name."""
+    skip = skip or set()
+    try:
+        positions = tc.get_all_positions()
+    except Exception as e:
+        log(f"naked-short check: positions fetch failed: {e}")
+        return
+    opt_pos = []
+    for p in positions:
+        if "option" not in str(getattr(p, "asset_class", "")).lower():
+            continue
+        if p.symbol in skip:
+            continue
+        meta = parse_occ(p.symbol)
+        if not meta:
+            continue
+        try:
+            qty = float(p.qty)
+        except Exception:
+            continue
+        opt_pos.append((p.symbol, meta, qty))
+    if not opt_pos:
+        return
+    # Aggregate qty by (underlying, type): a short is covered iff long qty of the SAME
+    # underlying+type is at least equal (any strike caps the tail). Balanced verticals/
+    # condors net to covered; a legged-out lone short (long qty 0 < short qty) is naked.
+    long_qty: dict = {}
+    short_qty: dict = {}
+    short_syms: dict = {}
+    for sym, meta, qty in opt_pos:
+        key = (meta["underlying"], meta["type"])
+        if qty > 0:
+            long_qty[key] = long_qty.get(key, 0.0) + qty
+        elif qty < 0:
+            short_qty[key] = short_qty.get(key, 0.0) + (-qty)
+            short_syms.setdefault(key, []).append(sym)
+    naked = []
+    for key, sqty in short_qty.items():
+        if long_qty.get(key, 0.0) + 1e-9 < sqty:   # short qty exceeds covering long qty
+            naked.extend(short_syms[key])
+    if not naked:
+        return
+    log(f"NAKED-SHORT ASSERTION: uncovered short option(s) {naked} — force-closing (uncapped risk)")
+    if dry:
+        for sym in naked:
+            log(f"[DRY] would force-close naked short {sym}")
+        return
+    flat = close_symbols(tc, naked, dry)
+    closed = [s for s in naked if s in flat]
+    if closed:
+        tg_send(f"⚠️ NAKED SHORT force-closed: {closed} — an uncovered short option (no "
+                f"protective long on the same underlying) was riding uncapped. Flattened.")
+
+
 # ===========================================================================
 # Active stock management — trail bracket stops to lock in gains (every cycle)
 # ===========================================================================
@@ -3037,6 +3120,10 @@ def run_cycle(dry: bool = False):
         _orphan_skip |= {o["symbol"] for o in (state.get("active_options") or [])
                          if o.get("book") == "conviction_itm" and o.get("symbol")}
     sweep_orphan_options(tc, state, dry, skip=_orphan_skip)   # last-line: no untracked option rides into expiry
+    # Defined-risk-only invariant: no uncovered SHORT option may ride (a legged-out
+    # vertical leaves the short leg naked/uncapped — the 6/10 SMCI −$2,382). Runs every
+    # cycle, not just at EOD. Shielded books (tail-hedge LONG puts, etc.) are skipped.
+    assert_no_naked_short(tc, state, dry, skip=_orphan_skip)
 
     # 2b. Daily loss halt — latches for the rest of the day and alerts once.
     # Skipped while the OVERRIDE day-flag is on (user chose to keep trading).
@@ -3310,6 +3397,24 @@ def run_cycle(dry: bool = False):
     if action == "close" and decision.get("symbol") and decision["symbol"] not in close_targets:
         close_targets.append(decision["symbol"])
     if close_targets:
+        # SPREAD ATOMICITY: a tracked vertical/condor must be closed as a UNIT. If the
+        # model names only SOME of a tracked multileg's legs, expand the close to ALL legs
+        # of that structure — selling one leg of a debit spread leaves the other (short)
+        # leg standalone and NAKED/uncapped (the 6/10 SMCI short 33500 leg, $0.53→$4.50 =
+        # −$2,382). A subset that is the WHOLE structure already is left unchanged.
+        _ct_set = set(close_targets)
+        for _pos in (state.get("active_multileg") or []):
+            _legs = {l.get("symbol") for l in (_pos.get("legs") or []) if l.get("symbol")}
+            if not _legs:
+                continue
+            _named = _ct_set & _legs
+            if _named and _named != _legs:   # strict subset of this structure's legs
+                _add = [s for s in _legs if s not in _ct_set]
+                close_targets.extend(_add)
+                _ct_set |= _legs
+                log(f"SPREAD ATOMICITY: close named {sorted(_named)} of tracked multileg "
+                    f"{sorted(_legs)} — expanding to the whole structure (adding {sorted(_add)}) "
+                    f"so no leg is left naked.")
         # Bracketed stocks exit only via their stop/target — skip the futile close.
         # Book names (growth sleeve / overnight drift) are off-limits to the engine.
         skip = [s for s in close_targets if s in bracketed or s in held_books]
