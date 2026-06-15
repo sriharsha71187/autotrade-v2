@@ -409,7 +409,18 @@ GAP_FADE_UNIVERSE = ["SPY", "QQQ", "IWM", "AAPL", "MSFT", "NVDA", "AMZN", "META"
 BLACKLIST: list[str] = []
 
 ECON_BLACKOUT_DATES: list[str] = [
+    # Hard blackout: whole-day FLAT, no new entries at all. For catalysts you'd rather
+    # RIDE (sell no premium, but stay free to trade direction), use EVENT_CATALYST_DATES.
     # "2026-06-17",  # example: FOMC decision day
+]
+
+# Catalyst days: a known scheduled binary is today (FOMC, CPI, jobs). NOT a full
+# blackout — short premium (iron condor / credit spread) is disabled so the bot never
+# sells INTO the event, but the directional books (debit spread / long option / stock)
+# stay open so a real pre- or post-event move can still be ridden.
+EVENT_CATALYST_DATES: list[str] = [
+    "2026-06-17",  # FOMC decision (2pm ET) + May retail sales (8:30am) — Warsh's first
+                   # meeting as chair. Don't sell premium into it; ride a move if it comes.
 ]
 
 # ---- runtime settings changeable from Telegram (SET <KEY> <VALUE>) ----------

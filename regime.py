@@ -85,8 +85,17 @@ def _trend_band(move) -> str:
     return "RANGE"
 
 
-def classify(scan, vix, now=None, event_day: bool = False) -> dict:
-    """Return the regime dict for this cycle. Pure function of (scan, vix, event_day).
+def classify(scan, vix, now=None, event_day: bool = False,
+             catalyst_day: bool = False) -> dict:
+    """Return the regime dict for this cycle. Pure function of (scan, vix, event_day,
+    catalyst_day).
+
+    event_day    -> whole-day FLAT (hard blackout; no new entries at all).
+    catalyst_day -> NOT flat: a known binary (e.g. FOMC) is today, so SHORT-PREMIUM
+                    (iron_condor / credit_spread) is disabled (don't sell into it), but
+                    the DIRECTIONAL books (debit_spread / long_option / stock) stay open
+                    so the bot can still RIDE a move pre- or post-event. event_day wins
+                    if both are set.
 
     Keys:
       trend, vol .... band labels (see above)
@@ -167,6 +176,18 @@ def classify(scan, vix, now=None, event_day: bool = False) -> dict:
         sl = "stock_long" if direction == "long" else "stock_short"
         if sl not in allowed:
             allowed = allowed + [sl]
+
+    # Catalyst day (e.g. FOMC): don't sell premium INTO the binary, but keep the
+    # directional books open so a real move — pre- or post-event — can still be ridden.
+    if catalyst_day and not event_day and not flat:
+        SHORT_PREMIUM = ("iron_condor", "credit_spread")
+        stripped = [s for s in allowed if s in SHORT_PREMIUM]
+        allowed = [s for s in allowed if s not in SHORT_PREMIUM]
+        if stripped:
+            reason += (" | CATALYST day (scheduled binary, e.g. FOMC): short premium "
+                       "disabled — directional rides only (don't sell into the event)")
+        else:
+            reason += " | CATALYST day: directional rides only into the binary"
 
     return {
         "trend": trend, "vol": vol, "index": idx, "index_move": move, "vix": vix,

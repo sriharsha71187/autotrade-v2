@@ -2933,8 +2933,11 @@ def run_cycle(dry: bool = False):
     regime = None
     if cfg.REGIME_ENGINE_ENABLED:
         import regime as regime_mod
-        event_day = now.strftime("%Y-%m-%d") in cfg.ECON_BLACKOUT_DATES
-        regime = regime_mod.classify(scan, vix, now, event_day=event_day)
+        _today = now.strftime("%Y-%m-%d")
+        event_day = _today in cfg.ECON_BLACKOUT_DATES
+        catalyst_day = _today in getattr(cfg, "EVENT_CATALYST_DATES", [])
+        regime = regime_mod.classify(scan, vix, now, event_day=event_day,
+                                     catalyst_day=catalyst_day)
         log(f"regime: {regime['trend']}/{regime['vol']} flat={regime['flat']} "
             f"allowed={regime['allowed']} :: {regime['reason']}")
         state["last_regime"] = regime_mod.summary(regime)   # for STATUS visibility
