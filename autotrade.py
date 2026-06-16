@@ -314,6 +314,7 @@ def account_snapshot(tc) -> dict:
     a = tc.get_account()
     return {
         "equity": float(a.equity),
+        "last_equity": float(getattr(a, "last_equity", a.equity) or a.equity),
         "cash": float(a.cash),
         "buying_power": float(a.buying_power),
         "positions_value": float(a.long_market_value or 0) + float(a.short_market_value or 0),
@@ -4231,10 +4232,17 @@ def run_cycle(dry: bool = False):
     # 2b. Daily loss halt — latches for the rest of the day and alerts once.
     # Skipped while the OVERRIDE day-flag is on (user chose to keep trading).
     daily_pl = acct["equity"] - state["start_equity"] - book_drift   # INTRADAY P&L (book drift netted out)
-    if daily_pl > cfg.DAILY_LOSS_HALT:
+    # SANITY GATE: never latch unless the broker's authoritative total day P&L
+    # (equity - last_equity) is ALSO below the limit. Protects against a book-mark glitch
+    # in the intraday daily_pl — e.g. the growth sleeve double-counting a pairs leg that
+    # shares a symbol (6/16 LRCX collision read a phantom -$3,585 while real day P&L was
+    # +$2). If the account isn't actually down, there is nothing to cap.
+    _broker_day_pl = acct["equity"] - acct.get("last_equity", acct["equity"])
+    _breach = (daily_pl <= cfg.DAILY_LOSS_HALT) and (_broker_day_pl <= cfg.DAILY_LOSS_HALT)
+    if not _breach:
         state["halt_breach_count"] = 0
     _do_latch = False
-    if daily_pl <= cfg.DAILY_LOSS_HALT and not state.get("halted") and not state.get("loss_override"):
+    if _breach and not state.get("halted") and not state.get("loss_override"):
         # DEBOUNCE a transient equity glitch before latching: a just-filled SHORT's market
         # value can momentarily hit equity before its cash proceeds reconcile (6/16: the pairs
         # KLAC short read a phantom -$3,484 while real day P&L was +$2, latching the halt for the
