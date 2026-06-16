@@ -816,6 +816,24 @@ def option_price(odc, symbol) -> float | None:
     return _quote_mid(option_latest_quote(odc, symbol), allow_one_sided=True)
 
 
+def stock_latest_price(symbol) -> float | None:
+    """Latest trade price for an equity underlying. Used by the fade stop in the manage
+    path, which runs BEFORE the per-cycle scan exists, so it can't read scan['last'].
+    Returns None on any failure — a None means 'no fade signal this cycle', never an exit."""
+    if not _ALPACA_OK or not symbol:
+        return None
+    try:
+        from alpaca.data.requests import StockLatestTradeRequest
+        t = stock_data_client().get_stock_latest_trade(
+            StockLatestTradeRequest(symbol_or_symbols=[symbol]))
+        rec = t.get(symbol) if isinstance(t, dict) else t
+        px = getattr(rec, "price", None)
+        return float(px) if px else None
+    except Exception as e:
+        log(f"stock latest price fetch failed for {symbol}: {e}")
+        return None
+
+
 def option_quote(odc, symbol):
     """(bid, ask, mid) for an option, or (None, None, None). Used to size a
     marketable-limit entry and to reject wide-spread (illiquid) contracts."""
@@ -2719,6 +2737,55 @@ def _option_exit_reason(pl: float, hw_pl: float, stop_pct: float = None) -> str 
     return None
 
 
+def fade_break_reason(direction, u_entry, u_now, sector_pct):
+    """Deterministic SECTOR-CONFLUENCE fade / thesis-break stop for a directional position.
+    Complements the −50% premium stop and the breakeven/chandelier ladder (which only watch
+    the POSITION's number): none of those cut when the REASON for the trade dies — the name
+    was working/flat and then rolled over WITH its sector (the 6/16 semis fade).
+
+    Cuts ONLY on confluence — the name AND its sector both confirming the fade — because a
+    price-only version (name's own dip alone) backtested as negative-EV (whipsawed 26-46% of
+    recover days). Two conditions, both required:
+      1. NAME adverse: signed favorable move fav = direction × (u_now − u_entry)/u_entry is
+         <= FADE_STOP_NAME_ADVERSE_PCT (e.g. the long is >= 0.6% underwater off entry).
+      2. SECTOR risk-off: the name's sector day_pct (regime.sector_trends, % vs prior close)
+         is rolling AGAINST the position — <= FADE_STOP_SECTOR_RISKOFF_PCT for a long,
+         >= +|threshold| for a short/put.
+    A strong/green name never trips this (condition 1 fails) — respects 'never fade a strong
+    single-name move'. With no sector reading (sector_pct is None) it never fires (fail-safe).
+
+    `direction` : +1 LONG/CALL (bullish), −1 SHORT/PUT (bearish).
+    `u_entry`/`u_now` : underlying spot at entry / now.
+    `sector_pct`: the name's sector day_pct in PERCENT (None if no reading).
+    Returns a reason string to close, or None to hold. Inert when FADE_STOP_ENABLED is off."""
+    if not cfg.FADE_STOP_ENABLED:
+        return None
+    if not u_entry or u_entry <= 0 or u_now is None or u_now <= 0 or not direction:
+        return None
+    if sector_pct is None:
+        return None
+    fav = direction * (u_now - u_entry) / u_entry
+    if fav > cfg.FADE_STOP_NAME_ADVERSE_PCT:                       # name not adverse enough
+        return None
+    sro = cfg.FADE_STOP_SECTOR_RISKOFF_PCT                         # negative, e.g. −1.5
+    sector_against = (sector_pct <= sro) if direction > 0 else (sector_pct >= -sro)
+    if not sector_against:
+        return None
+    return (f"fade: {fav:+.2%} off entry & sector {sector_pct:+.1f}% "
+            f"({'risk-off' if direction > 0 else 'risk-on'} — thesis broke)")
+
+
+def _fade_sector_pct(state, underlying):
+    """The name's sector day_pct (percent) from the LAST cycle's stored regime.sector_trends,
+    or None if unavailable/stale. The fade stop runs in the early manage path (before classify
+    recomputes the regime), so it reads the prior cycle's value; cleared daily, so a stale
+    map from a prior day never fires a cut."""
+    st = (state or {}).get("sector_trends") or {}
+    if st.get("day") != et_now().strftime("%Y-%m-%d"):
+        return None
+    return (st.get("trends") or {}).get(sector_for(underlying))
+
+
 def manage_options(tc, odc, state, dry):
     """Long single-leg options have no bracket, so manage them in code like the
     condor: stop at OPTION_STOP_PCT, target at OPTION_TARGET_PCT, and a hard
@@ -2832,7 +2899,19 @@ def manage_options(tc, odc, state, dry):
             pl = (mid - o["entry"]) / o["entry"]
             o["hw_pl"] = max(o.get("hw_pl", pl), pl)      # high-water profit
             o["pl"] = pl                                  # current % of entry (for #16 context)
-            reason = _option_exit_reason(pl, o["hw_pl"])
+            # FADE / thesis-break stop FIRST (cuts earlier than the −50% premium stop when
+            # the UNDERLYING rolls over). Plain intraday longs only — conviction/book holds
+            # took the branches above and never reach here. Inert when the flag is off.
+            if cfg.FADE_STOP_ENABLED and cfg.FADE_STOP_APPLY_OPTIONS and o.get("u_entry"):
+                _und = (meta or {}).get("underlying")
+                _dir = 1 if (meta and meta.get("type") == "call") else -1
+                _u_now = stock_latest_price(_und)
+                _fade = fade_break_reason(_dir, o.get("u_entry"), _u_now,
+                                          _fade_sector_pct(state, _und))
+                if _fade:
+                    reason = _fade
+            if not reason:
+                reason = _option_exit_reason(pl, o["hw_pl"])
         if reason:
             _is_kill = reason.startswith("MAX-LOSS KILL")
             # SAFETY paths force pure MARKET (#15): the max-loss kill and the EOD/0DTE
@@ -2958,6 +3037,37 @@ def reconcile_overnight_stocks(tc, state, dry, skip=None):
         state["overnight_reconciled"] = today
 
 
+def flatten_one_stock(tc, sym, tag="flatten") -> bool:
+    """Cancel a stock symbol's resting bracket/stop orders, then market-close it with
+    VERIFY-AND-RETRY. close_position can PARTIALLY fill (6/12 MSTR: 40 -> 9 shares, the 9
+    then rode overnight unprotected once its DAY bracket expired), so re-fetch and retry
+    until the position is actually flat. Returns True if confirmed flat, False if a remnant
+    survived all attempts. Caller handles dry-run and book-exclusion; this always acts."""
+    for attempt in range(cfg.EOD_FLATTEN_RETRIES):
+        try:
+            for o in tc.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN, limit=100)):
+                if o.symbol == sym and not parse_occ(o.symbol):
+                    tc.cancel_order_by_id(o.id)
+            time.sleep(0.5)
+            tc.close_position(sym)
+            log(f"{tag} stock {sym}" + (f" (retry {attempt})" if attempt else ""))
+        except Exception as e:
+            es = str(e)
+            if "position not found" in es or "40410000" in es:
+                return True                      # already flat
+            log(f"{tag} {sym} failed: {e}")
+        time.sleep(1.0)
+        try:
+            still = next((q for q in tc.get_all_positions() if q.symbol == sym), None)
+        except Exception:
+            still = None
+        if still is None or abs(float(getattr(still, "qty", 0) or 0)) < 1e-9:
+            return True                          # confirmed flat
+        log(f"{tag} {sym}: {still.qty} still open after attempt {attempt} — retrying")
+    log(f"{tag} {sym}: STILL OPEN after {cfg.EOD_FLATTEN_RETRIES} attempts")
+    return False
+
+
 def flatten_stocks_eod(tc, dry, skip=None):
     """At/after 15:50 ET, flatten any open STOCK position (cancel its bracket
     orders, then market-close). DAY bracket legs die at the close, so a stock left
@@ -2984,37 +3094,11 @@ def flatten_stocks_eod(tc, dry, skip=None):
         if dry:
             log(f"[DRY] would EOD-flatten stock {sym}")
             continue
-        # Verify-and-retry: close_position submits a market order that can PARTIALLY
-        # fill (6/12 MSTR: 40 -> 9 shares, the 9 then rode overnight unprotected once
-        # its DAY bracket expired). Trusting one close() call leaves a remnant. Re-fetch
-        # the position and retry until it's actually flat (or attempts exhausted).
-        for attempt in range(cfg.EOD_FLATTEN_RETRIES):
-            try:
-                for o in tc.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN, limit=100)):
-                    if o.symbol == sym and not parse_occ(o.symbol):
-                        tc.cancel_order_by_id(o.id)
-                time.sleep(0.5)
-                tc.close_position(sym)
-                log(f"EOD FLATTEN stock {sym}" + (f" (retry {attempt})" if attempt else ""))
-            except Exception as e:
-                es = str(e)
-                if "position not found" in es or "40410000" in es:
-                    break                       # already flat
-                log(f"eod flatten {sym} failed: {e}")
-            time.sleep(1.0)
-            try:
-                still = next((q for q in tc.get_all_positions() if q.symbol == sym), None)
-            except Exception:
-                still = None
-            if still is None or abs(float(getattr(still, "qty", 0) or 0)) < 1e-9:
-                break                            # confirmed flat
-            log(f"eod flatten {sym}: {still.qty} still open after attempt {attempt} — retrying")
+        if flatten_one_stock(tc, sym, tag="EOD FLATTEN"):
+            tg_send(f"🌆 EOD-flattened {sym}.")
         else:
-            log(f"eod flatten {sym}: STILL OPEN after {cfg.EOD_FLATTEN_RETRIES} attempts")
             tg_send(f"⚠️ EOD flatten could not fully close {sym} — may ride overnight; "
                     f"morning reconcile will sweep it.")
-            continue
-        tg_send(f"🌆 EOD-flattened {sym}.")
 
 
 def sweep_orphan_options(tc, state, dry, skip=None):
@@ -3141,11 +3225,14 @@ def assert_no_naked_short(tc, state, dry, skip=None):
 # ===========================================================================
 # Active stock management — trail bracket stops to lock in gains (every cycle)
 # ===========================================================================
-def manage_stops(tc, dry, skip=None):
+def manage_stops(tc, dry, skip=None, state=None):
     """Scan stock positions every cycle and TRAIL each bracket's stop as the trade
     works (lock breakeven, then ratchet behind price). Modifies the held bracket
     stop leg IN PLACE (replace), so the OCO stays intact. Only ever tightens — the
     original stop remains the floor on protection, never loosened.
+    Also (when FADE_STOP_ENABLED) applies the deterministic FADE / thesis-break stop:
+    cut a position whose UNDERLYING (here, its own price) rolled over or ran straight
+    against entry — earlier than the bracket's fixed stop level.
     `skip`: symbols to leave alone (growth-sleeve holds use their own wider
     chandelier stop, not these tight intraday trails)."""
     skip = skip or set()
@@ -3158,6 +3245,34 @@ def manage_stops(tc, dry, skip=None):
         return
     if not positions:
         return
+    # Sector-confluence fade/thesis-break stop runs on EVERY non-book stock position (incl.
+    # losers the trail never touches), so do it before the trail logic. Stateless: cuts when
+    # the name is adverse off entry AND its sector (last cycle's regime.sector_trends) is
+    # rolling against the position.
+    fade_on = (cfg.FADE_STOP_ENABLED and cfg.FADE_STOP_APPLY_STOCKS and state is not None)
+    if fade_on:
+        _faded = set()
+        for p in positions:
+            entry, cur = float(p.avg_entry_price), float(p.current_price or 0)
+            if entry <= 0 or cur <= 0:
+                continue
+            _dir = -1 if "short" in str(p.side).lower() else 1
+            _reason = fade_break_reason(_dir, entry, cur, _fade_sector_pct(state, p.symbol))
+            if not _reason:
+                continue
+            if dry:
+                log(f"[DRY] would FADE-CUT stock {p.symbol}: {_reason}")
+                _faded.add(p.symbol)
+                continue
+            log(f"FADE CUT stock {p.symbol}: {_reason}")
+            tg_send(f"📉 Fade-cut {p.symbol} ({_reason}).")
+            if flatten_one_stock(tc, p.symbol, tag="FADE CUT"):
+                _lock_name_today(state, p.symbol, "faded out")
+                _faded.add(p.symbol)
+        # Don't also trail a position we just closed (or would close in dry-run).
+        positions = [p for p in positions if p.symbol not in _faded]
+        if not positions:
+            return
     try:
         orders = tc.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.ALL, limit=200))
     except Exception as e:
@@ -4399,7 +4514,7 @@ def run_cycle(dry: bool = False):
     #    Book symbols are excluded — they ride overnight by design.
     manage_multileg(tc, odc, state, dry)
     manage_options(tc, odc, state, dry)
-    manage_stops(tc, dry, skip=held_books)   # trail intraday bracket stops to lock in gains
+    manage_stops(tc, dry, skip=held_books, state=state)   # trail bracket stops + fade/thesis-break cut
     flatten_stocks_eod(tc, dry, skip=held_books)
     # Conviction-ITM holds are deliberate multi-day options (managed by manage_options:
     # stop / max-hold / DTE exit). Shield their OCC symbols from the EOD orphan sweep so
@@ -4612,6 +4727,11 @@ def run_cycle(dry: bool = False):
         log(f"regime: {regime['trend']}/{regime['vol']} flat={regime['flat']} "
             f"allowed={regime['allowed']} :: {regime['reason']}")
         state["last_regime"] = regime_mod.summary(regime)   # for STATUS visibility
+        # Persist this cycle's per-sector trend so the EARLY manage path (manage_options /
+        # manage_stops run before classify) can read it next cycle for the fade/thesis-break
+        # stop. At most ~1 cycle stale; cleared daily so a fade can't fire on yesterday's map.
+        state["sector_trends"] = {"day": _today,
+                                  "trends": dict(regime.get("sector_trends") or {})}
         # Self-diagnostic: if the open intraday book is net AGAINST a clearly directional
         # tape (e.g. mostly short while the market is risk-on), say so — proactively,
         # without being asked. This is the 6/12 failure made visible.
@@ -4939,6 +5059,13 @@ def run_cycle(dry: bool = False):
                         tg_send(f"📊 Bought {oqty}x {osym} (limit {lim}).")
                         _opt_entry = {"symbol": osym, "qty": oqty, "entry": entry,
                                       "order_id": str(o.id), "opened": now.isoformat()}
+                        # Fade/thesis-break stop: snapshot the UNDERLYING spot at entry so
+                        # manage_options can measure how far the name has gone adverse off
+                        # entry (paired with its sector trend). Harmless when the flag is off
+                        # (just an unused field).
+                        _u_spot = stock_latest_price(decision.get("symbol"))
+                        if _u_spot:
+                            _opt_entry["u_entry"] = _u_spot
                         # Conviction-ITM hold: tag the book + opened_day + max_hold_days so
                         # manage_options re-judges it daily and the EOD flatten / orphan
                         # sweep leave it alone (shielded, like the tail-hedge/earnings books).

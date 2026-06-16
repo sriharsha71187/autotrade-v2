@@ -256,6 +256,34 @@ OPTION_TRAIL_GIVEBACK  = 0.25      # (legacy multiplicative give-back — kept f
 # loss-halt flatten) stay PURE MARKET — certainty of exit over a few cents of slippage.
 OPTION_EXIT_SLIP       = 0.02      # marketable-limit slip off bid/ask on discretionary exits
 OPTION_EXIT_FILL_WAIT_SEC = 8      # wait this long for the marketable limit, then market-fallback
+# ---- fade / thesis-break stop (SECTOR-CONFLUENCE, deterministic, flag-OFF until soaked) ---
+# The existing exits stop on the POSITION's number (−50% premium, breakeven, chandelier).
+# None of them cut when the REASON for the trade dies — i.e. the name was working (or flat)
+# and then rolls over. That's the 6/16 semis fade: a momentum long bled all day, the −50%
+# premium stop is far too loose to catch it, and the breakeven/trail rungs never armed
+# because it never went green.
+# A price-ONLY version (cut when the name's OWN price rolls over / goes hard-adverse) was
+# built and BACKTESTED — and REJECTED: against 55d of real 5-min bars it falsely cut 26-46%
+# of green-recovery days (surrendering ~2.4% upside each) while catching <half of true fades
+# → negative EV. The name's own intraday dip is too noisy to tell a fade from a wobble.
+# The discriminator that WORKS is SECTOR CONFLUENCE: cut a long only when the NAME is adverse
+# off entry AND the NAME'S SECTOR is also rolling over (regime.sector_trends, the mean member
+# day_pct vs prior close — the 'with the tape by sector not SPY' signal). Recalibrated against
+# that exact engine metric (see /tmp/bt_fade_sector_recal.py): name <= −0.6% off entry AND
+# sector <= −1.5% day_pct → green false-cut 12.6% (vs 26-46% price-only), fade coverage 73%,
+# +1.2% loss avoided per fade. Respects 'never fade a STRONG single name' — a green/strong
+# name never trips it even if its sector is soft.
+# Applies ONLY to plain intraday directional positions — shielded/multi-day books (sleeve,
+# conviction-ITM, pairs, tail, earnings) keep their own wider exit logic and are EXCLUDED.
+# DEPENDENCY: reads regime.sector_trends (stamped into state each cycle), so it needs
+# REGIME_ENGINE_ENABLED on (it is, live, via override). It is INDEPENDENT of
+# SECTOR_TREND_ENABLED — that flag only governs the ENTRY-side tape bias, not this exit.
+# With no sector reading (regime off, or first cycle of the day) the stop is inert/fail-safe.
+FADE_STOP_ENABLED        = False    # master flag (staged OFF; enable via override after soak)
+FADE_STOP_NAME_ADVERSE_PCT = -0.006 # name must be <= −0.6% off entry (fraction; dir-signed)
+FADE_STOP_SECTOR_RISKOFF_PCT = -1.5 # AND the name's sector day_pct must be <= −1.5% (percent)
+FADE_STOP_APPLY_OPTIONS  = True     # apply to plain intraday long single-leg options
+FADE_STOP_APPLY_STOCKS   = True     # apply to non-book intraday stock positions
 # IV-rank ceiling for BUYING single-name premium (AUDIT_ROADMAP #11). A long/debit
 # single-name option whose ATM IV-rank is above this is buying RICH vol on a capped
 # payoff — block it. Premium SELLING (index condors) and unknown iv_rank (None) are exempt.
@@ -665,6 +693,11 @@ RUNTIME_SETTABLE = {
     "OPTION_TRAIL_GIVEBACK_BAND": float,
     "OPTION_EXIT_SLIP": float,             # #15 marketable-limit exit slip
     "OPTION_EXIT_FILL_WAIT_SEC": float,    # #15 fill wait before market fallback
+    "FADE_STOP_ENABLED": bool,             # sector-confluence fade/thesis-break stop master flag
+    "FADE_STOP_NAME_ADVERSE_PCT": float,
+    "FADE_STOP_SECTOR_RISKOFF_PCT": float,
+    "FADE_STOP_APPLY_OPTIONS": bool,
+    "FADE_STOP_APPLY_STOCKS": bool,
     "OPTION_MAX_IV_RANK": float,           # #11 single-name premium-buying IV-rank ceiling
     "CYCLE_ACTIVE_INTERVAL_MIN": float,
     "CYCLE_NORMAL_INTERVAL_MIN": float,
