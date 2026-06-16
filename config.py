@@ -89,6 +89,12 @@ PER_OPTION_NOTIONAL_CAP = 600.0    # HARD ceiling on ONE option structure's max-
 OPTION_RISK_TARGET     = 900.0     # TARGET max-loss to SIZE each defined-risk options
                                    # trade toward (wider wings / more contracts) — stops
                                    # the model trading teaspoon-sized $50-risk condors
+# Stock sizing is a RISK budget, not a notional cap (AUDIT_ROADMAP #6). The model
+# emits a qty + stop; we re-size in code so $-at-risk (qty * |entry-stop|) is the
+# constant — not the dollars deployed. A wide-stop trade gets fewer shares, a tight-
+# stop trade more, so both risk ~the same. PER_TRADE_NOTIONAL_CAP then CLAMPS it.
+STOCK_RISK_PER_TRADE   = 250.0     # base $ risk per stock trade (medium conviction)
+STOCK_RISK_CONV        = {"low": 0.6, "medium": 1.0, "high": 1.6}  # → ~$150/$250/$400
 OPTION_MAX_SPREAD_PCT  = 0.15      # skip options whose bid-ask spread exceeds this (illiquid)
 MAX_DEPLOYED_CAPITAL   = 40_000.0  # cap on total exposure across all open trades
 MAX_SAME_DIRECTION_POSITIONS = 10  # correlation cap: don't put the whole book on one
@@ -161,8 +167,15 @@ OPTION_TARGET_PCT      = 1.00      # (legacy fixed target — superseded by the 
 # Trailing profit-lock for long options + DEBIT spreads: once a winner, let it run and
 # bank gains a give-back below the peak (replaces the old hard +100% cap so runners
 # aren't force-sold at 2x). Credit spreads/condors are capped at their credit -> no trail.
-OPTION_TRAIL_ACTIVATE  = 0.40      # start trailing once profit reaches +40%
-OPTION_TRAIL_GIVEBACK  = 0.25      # exit when profit falls to 75% of its peak
+OPTION_TRAIL_ACTIVATE  = 0.25      # arm the chandelier trail once profit reaches +25%
+OPTION_BREAKEVEN_AT    = 0.15      # once peak >= +15%, the stop floor becomes breakeven —
+                                   # a winner that good is never allowed back to red
+OPTION_TRAIL_GIVEBACK_BAND = 0.20  # FIXED give-back in profit-POINTS below the peak once
+                                   # the trail is armed (chandelier). Replaces the old
+                                   # multiplicative hw*(1-giveback), whose band widened with
+                                   # the peak and let big winners round-trip too far.
+OPTION_TRAIL_GIVEBACK  = 0.25      # (legacy multiplicative give-back — kept for back-compat;
+                                   # no longer used by the exit ladder)
 OPTION_EOD_CLOSE_HOUR  = 15        # force-close long options + spreads at/after this ET time
 OPTION_EOD_CLOSE_MIN   = 45        # ...15:45 ET (and any 0DTE before expiry)
 STOCK_EOD_CLOSE_MIN    = 50        # flatten stocks at 15:50 ET (DAY brackets die at the close,
@@ -467,6 +480,7 @@ RUNTIME_SETTABLE = {
     "PER_TRADE_NOTIONAL_CAP": float,
     "PER_OPTION_NOTIONAL_CAP": float,
     "OPTION_RISK_TARGET": float,
+    "STOCK_RISK_PER_TRADE": float,     # STOCK_RISK_CONV is a dict — not cast-mappable (scalars only)
     "MAX_SAME_DIRECTION_POSITIONS": int,
     "MAX_SPREADS_PER_NAME_PER_DAY": int,
     "MOMENTUM_OPTION_MIN_DTE": int,
@@ -483,6 +497,8 @@ RUNTIME_SETTABLE = {
     "STOPPED_COOLDOWN_MIN": int,
     "OPTION_TRAIL_ACTIVATE": float,
     "OPTION_TRAIL_GIVEBACK": float,
+    "OPTION_BREAKEVEN_AT": float,
+    "OPTION_TRAIL_GIVEBACK_BAND": float,
     "CYCLE_ACTIVE_INTERVAL_MIN": float,
     "CYCLE_NORMAL_INTERVAL_MIN": float,
     "OVERNIGHT_MOMENTUM_ENABLED": bool,

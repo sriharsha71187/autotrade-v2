@@ -1231,12 +1231,67 @@ def update_pnl_ledger(tc, state: dict, since_day: str | None = None) -> dict:
             processed_set.add(fid)
             n_applied += 1
 
+    # Anchor the lot book to BROKER TRUTH for any position that opened before the
+    # ledger's lookback (cold-start / pre-history). Fills alone can't build a lot for
+    # such a position, so its later close would realize against a missing/zero basis.
+    _reconcile_lots_to_broker(tc, state)
+
     # Bound the idempotency log and the per-close record list.
     if len(processed) > 800:
         del processed[:-800]
     if len(closed_trades) > 500:
         del closed_trades[:-500]
     return {"applied": n_applied, "open_lots": len(open_lots)}
+
+
+def _reconcile_lots_to_broker(tc, state: dict) -> int:
+    """Seed/replace open_lots from BROKER TRUTH for any held option/stock position that
+    fill-processing couldn't anchor (opened before the ledger's lookback). For each
+    live broker position NOT owned by a self-reporting book: if open_lots has no lot
+    for it, OR the lot's qty sign disagrees with the broker's, SEED/REPLACE the lot
+    from the broker's signed qty + avg_entry_price. We never DROP a lot for a symbol
+    the broker still holds — fill-processing already removes fully-closed lots; this
+    only adds the missing basis so a later close realizes against reality. Returns the
+    number of lots seeded/replaced."""
+    open_lots = state.setdefault("open_lots", {})
+    book_syms = set(state.get("book_symbols") or [])
+    today = et_now().date().strftime("%Y-%m-%d")
+    try:
+        positions = tc.get_all_positions()
+    except Exception as e:
+        log(f"ledger reconcile: positions fetch failed: {e}")
+        return 0
+    n = 0
+    for p in positions:
+        sym = getattr(p, "symbol", None)
+        if not sym or sym in book_syms:
+            continue            # self-reporting book owns this — its realized is booked elsewhere
+        is_opt = parse_occ(sym) is not None
+        is_stock = "option" not in str(getattr(p, "asset_class", "")).lower() and not is_opt
+        if not (is_opt or is_stock):
+            continue
+        try:
+            broker_qty = float(getattr(p, "qty", 0) or 0)        # signed: negative if short
+            avg_cost = abs(float(getattr(p, "avg_entry_price", 0) or 0))
+        except Exception:
+            continue
+        if abs(broker_qty) < 1e-9 or avg_cost <= 0:
+            continue
+        lot = open_lots.get(sym)
+        sign_mismatch = lot is not None and (lot.get("qty", 0.0) > 0) != (broker_qty > 0)
+        if lot is None or sign_mismatch:
+            open_lots[sym] = {
+                "qty": broker_qty,
+                "avg_cost": avg_cost,
+                "mult": 100 if is_opt else 1,
+                "strategy": (lot or {}).get("strategy")
+                            or _strategy_for_open(sym, (lot or {}).get("opened_day", today), broker_qty),
+                "opened_day": (lot or {}).get("opened_day", today),
+            }
+            n += 1
+    if n:
+        log(f"ledger reconcile: seeded/replaced {n} lot(s) from broker truth")
+    return n
 
 
 def record_strategy_realized_on(state: dict, label: str, amount: float, day: str):
@@ -2008,13 +2063,12 @@ def manage_multileg(tc, odc, state, dry):
                 debit = abs(entry_net)
                 pf = pl / debit                          # profit as a fraction of the debit
                 pos["hw_pf"] = max(pos.get("hw_pf", pf), pf)   # high-water profit fraction
-                if pl <= -0.5 * debit:
-                    reason = f"stop (P&L ${pl:.0f} on ${debit:.0f} debit)"
-                elif pos["hw_pf"] >= cfg.OPTION_TRAIL_ACTIVATE:
-                    # Trailing profit-lock (replaces the old hard +100%-of-debit cap):
-                    # bank gains a give-back below the peak so a runner isn't sold at 2x.
-                    if pf <= pos["hw_pf"] * (1 - cfg.OPTION_TRAIL_GIVEBACK):
-                        reason = f"trail (peak {pos['hw_pf']:+.0%} → {pf:+.0%} of debit)"
+                # Same breakeven/chandelier ladder as long single-leg options: hard stop at
+                # −50% of debit (OPTION_STOP_PCT), armed FIXED-band trail once peak >= +25%,
+                # else a breakeven lock once peak >= +15% (no round-trip to red).
+                reason = _option_exit_reason(pf, pos["hw_pf"])
+                if reason:
+                    reason = f"{reason} of debit (P&L ${pl:.0f} on ${debit:.0f})"
             if reason:
                 log(f"MULTILEG EXIT {symbols}: {reason}")
                 tg_send(f"🧩 Closing spread: {reason}.")
@@ -2071,8 +2125,10 @@ def open_spreads_for_context(state) -> list:
                                          and pos.get("hw_pf") is not None else None),
             "overnight": bool(pos.get("overnight")),
             "managed_by_code": (f"stop/target auto-enforced ({plan}); "
-                                + ("debit winners TRAIL the peak (give-back "
-                                   f"{int(cfg.OPTION_TRAIL_GIVEBACK*100)}%); " if kind == "debit" else "")
+                                + ("debit winners breakeven-lock at "
+                                   f"+{int(cfg.OPTION_BREAKEVEN_AT*100)}% then TRAIL the peak "
+                                   f"(fixed give-back band {int(cfg.OPTION_TRAIL_GIVEBACK_BAND*100)} pts); "
+                                   if kind == "debit" else "")
                                 + "EOD-closed 15:45 unless overnight"),
             "opened": pos.get("opened"),
         })
@@ -2082,6 +2138,29 @@ def open_spreads_for_context(state) -> list:
 # ===========================================================================
 # Single-leg option management (code-enforced stop/target/EOD, every cycle)
 # ===========================================================================
+def _option_exit_reason(pl: float, hw_pl: float, stop_pct: float = None) -> str | None:
+    """Code-enforced exit ladder for a LONG option / DEBIT structure, given current
+    P&L `pl` and high-water `hw_pl` (both as fractions of the entry premium/debit; e.g.
+    +0.30 = +30%). Priority (AUDIT_ROADMAP #3/#4):
+      1. hard stop      — pl <= stop_pct (default OPTION_STOP_PCT, −50%).
+      2. armed trail    — once hw_pl >= OPTION_TRAIL_ACTIVATE, exit if pl falls a FIXED
+                          OPTION_TRAIL_GIVEBACK_BAND below the peak (chandelier; the band
+                          is constant profit-POINTS, not a fraction of the peak).
+      3. breakeven lock — elif hw_pl >= OPTION_BREAKEVEN_AT, exit if pl <= 0 (a +15%
+                          winner is never allowed back to red).
+    Returns a reason string to close, or None to keep holding."""
+    stop_pct = cfg.OPTION_STOP_PCT if stop_pct is None else stop_pct
+    if pl <= stop_pct:
+        return f"stop {pl:+.0%}"
+    if hw_pl >= cfg.OPTION_TRAIL_ACTIVATE:
+        if pl <= hw_pl - cfg.OPTION_TRAIL_GIVEBACK_BAND:
+            return f"trail (peak {hw_pl:+.0%} → {pl:+.0%}, band {cfg.OPTION_TRAIL_GIVEBACK_BAND:.0%})"
+    elif hw_pl >= cfg.OPTION_BREAKEVEN_AT:
+        if pl <= 0.0:
+            return f"breakeven (peaked {hw_pl:+.0%}, back to {pl:+.0%} — no round-trip to red)"
+    return None
+
+
 def manage_options(tc, odc, state, dry):
     """Long single-leg options have no bracket, so manage them in code like the
     condor: stop at OPTION_STOP_PCT, target at OPTION_TARGET_PCT, and a hard
@@ -2162,26 +2241,15 @@ def manage_options(tc, odc, state, dry):
             elif mid is not None and o.get("entry"):
                 pl = (mid - o["entry"]) / o["entry"]
                 o["hw_pl"] = max(o.get("hw_pl", pl), pl)
-                if pl <= cfg.CONVICTION_ITM_STOP_PCT:
-                    reason = f"stop {pl:+.0%}"
-                elif o["hw_pl"] >= cfg.OPTION_TRAIL_ACTIVATE:
-                    trail = o["hw_pl"] * (1 - cfg.OPTION_TRAIL_GIVEBACK)
-                    if pl <= trail:
-                        reason = f"trail (peak {o['hw_pl']:+.0%} → {pl:+.0%})"
+                # Same breakeven/chandelier ladder as single-leg longs, but the conviction
+                # book keeps its OWN (wider) hard stop, CONVICTION_ITM_STOP_PCT.
+                reason = _option_exit_reason(pl, o["hw_pl"], stop_pct=cfg.CONVICTION_ITM_STOP_PCT)
         elif hard_close:
             reason = "0DTE/EOD close" if (meta and meta["expiry"] <= today) else "EOD close"
         elif mid is not None and o.get("entry"):
             pl = (mid - o["entry"]) / o["entry"]
             o["hw_pl"] = max(o.get("hw_pl", pl), pl)      # high-water profit
-            if pl <= cfg.OPTION_STOP_PCT:
-                reason = f"stop {pl:+.0%}"
-            elif o["hw_pl"] >= cfg.OPTION_TRAIL_ACTIVATE:
-                # Trailing profit-lock: once a winner, let it run and bank gains a set
-                # give-back below the peak (replaces the old hard +100% cap so a runner
-                # isn't force-sold at 2x). The model can still take profit earlier.
-                trail = o["hw_pl"] * (1 - cfg.OPTION_TRAIL_GIVEBACK)
-                if pl <= trail:
-                    reason = f"trail (peak {o['hw_pl']:+.0%} → {pl:+.0%})"
+            reason = _option_exit_reason(pl, o["hw_pl"])
         if reason:
             log(f"OPTION EXIT {sym}: {reason}")
             tg_send(f"📊 Exiting {sym} ({reason}).")
@@ -2872,6 +2940,27 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
         if dir_counts.get(side_key, 0) >= cfg.MAX_SAME_DIRECTION_POSITIONS:
             return False, (f"correlation cap: already {dir_counts[side_key]} "
                            f"{side_key} positions (max {cfg.MAX_SAME_DIRECTION_POSITIONS})")
+        # RISK-based sizing (AUDIT_ROADMAP #6): size on $-at-risk, not notional. The
+        # model's stop (stop_price, validated above) defines the per-share risk; we
+        # solve qty so qty*|entry-stop| ~= the conviction-scaled budget, then CLAMP to
+        # the notional + deployed caps. With a usable stop this REPLACES the model's qty;
+        # with no usable stop we keep the model's qty and only enforce the notional clamp.
+        if abs(ref_price - stop) > 0:
+            conv = (decision.get("conviction") or "medium").lower()
+            budget = cfg.STOCK_RISK_PER_TRADE * cfg.STOCK_RISK_CONV.get(conv, 1.0)
+            sized = max(1, int(budget / abs(ref_price - stop)))
+            # Clamp so the position fits the per-trade notional cap and total deployed cap.
+            sized = min(sized, int(cfg.PER_TRADE_NOTIONAL_CAP // ref_price))
+            room = cfg.MAX_DEPLOYED_CAPITAL - deployed
+            if room > 0:
+                sized = min(sized, int(room // ref_price))
+            if sized < 1:
+                return False, (f"one share notional {ref_price:.0f} exceeds caps "
+                               f"(per-trade {cfg.PER_TRADE_NOTIONAL_CAP:.0f} / room {room:.0f})")
+            decision["qty"] = qty = sized
+            log(f"RISK-SIZE {sym}: {qty}x @ {ref_price:.2f} stop {stop:.2f} "
+                f"(risk/sh {abs(ref_price-stop):.2f}, budget ${budget:.0f}, "
+                f"$risk ~${qty*abs(ref_price-stop):.0f}, conv {conv})")
         notional = qty * ref_price
         if notional > cfg.PER_TRADE_NOTIONAL_CAP:
             return False, f"notional {notional:.0f} > per-trade cap {cfg.PER_TRADE_NOTIONAL_CAP}"
@@ -2955,12 +3044,29 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
             decision["book"] = "conviction_itm"
             return True, (f"conviction-ITM: {contracts}x @ ${premium:.2f} "
                           f"(risk ~${risk_per_contract*contracts:.0f}, outlay ${outlay:.0f})")
+        # RISK-based sizing for the NON-conviction long-option path (AUDIT_ROADMAP #6):
+        # enforce OPTION_RISK_TARGET in code (was advisory). Risk per contract is the
+        # premium times the option stop %; size toward the target, then REDUCE until the
+        # outlay fits PER_OPTION_NOTIONAL_CAP and total deployed. If even 1 contract busts
+        # the notional cap, reject (existing behavior). Overrides the model's qty.
+        risk_per_contract = ask_est * 100 * abs(cfg.OPTION_STOP_PCT)
+        if risk_per_contract > 0:
+            qty = max(1, int(cfg.OPTION_RISK_TARGET / risk_per_contract))
+        while qty > 1 and qty * ask_est * 100 > cfg.PER_OPTION_NOTIONAL_CAP:
+            qty -= 1
+        room = cfg.MAX_DEPLOYED_CAPITAL - deployed
+        while qty > 1 and deployed + qty * ask_est * 100 > cfg.MAX_DEPLOYED_CAPITAL:
+            qty -= 1
+        decision["qty"] = qty
         notional = qty * ask_est * 100  # 100 shares per contract
         if notional > cfg.PER_OPTION_NOTIONAL_CAP:
             return False, f"option notional {notional:.0f} > cap {cfg.PER_OPTION_NOTIONAL_CAP}"
         if deployed + notional > cfg.MAX_DEPLOYED_CAPITAL:
             return False, (f"deployed {deployed:.0f}+{notional:.0f} > "
                            f"max deployed {cfg.MAX_DEPLOYED_CAPITAL}")
+        log(f"OPTION RISK-SIZE {osym}: {qty}x @ ${ask_est:.2f} "
+            f"(risk/ct ${risk_per_contract:.0f}, target ${cfg.OPTION_RISK_TARGET:.0f}, "
+            f"notional ${notional:.0f})")
 
     elif action in ("multi_leg", "iron_condor"):
         # iron_condor is the legacy 4-leg form (positive net_credit); multi_leg is
