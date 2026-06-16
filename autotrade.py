@@ -4088,6 +4088,147 @@ def _throttle_skip(state, now) -> bool:
 
 
 # ===========================================================================
+# INVARIANTS — per-cycle state-vs-truth reconciliation (ALERT ONLY)
+# ===========================================================================
+def check_invariants(state, acct, positions, book_holdings, daily_pl,
+                     bracketed=None) -> list:
+    """Reconcile the bot's INTERNAL state against broker ground truth and return a list
+    of (key, message) violations. The point is to turn SILENT state corruption into a
+    LOUD alert — the class of bug that produces no traceback/halt (the 6/16 sleeve<->pairs
+    LRCX collision that corrupted day P&L and made the bot trade scared, only a human
+    noticed). This function is STRICTLY READ-ONLY: it NEVER mutates state, places, or
+    cancels orders — the caller logs + (rate-limited) Telegram-alerts each violation.
+
+      state         : the loaded state dict (active_options/active_multileg/open_lots/
+                      processed_fills/closed_trades/halted/start_equity, ...)
+      acct          : account_snapshot(tc) -> equity/last_equity/cash/...
+      positions     : open_positions(tc) -> [{symbol, ...}] — the FULL broker position
+                      list (NOT pre-filtered by held_books).
+      book_holdings : {book_name: set(symbols)} for growth/tail/earnings/overnight/pairs.
+      daily_pl      : the cycle's INTRADAY day P&L (post glitch-guard).
+      bracketed     : set of stock symbols tied up in open bracket orders (optional;
+                      used only to NOT flag a bracketed intraday stock as an orphan).
+
+    Each invariant is cheap + deterministic. Conservative by design: POSITION_TRACKED
+    only flags a position it is SURE is untracked (false alarms are worse than a miss).
+    """
+    violations = []
+    bracketed = bracketed or set()
+    book_holdings = book_holdings or {}
+
+    # --- 1. DAY_PL_RECONCILE: intraday day_pl vs the broker's authoritative day P&L.
+    # The auto-correct already lives in run_cycle; this just makes the glitch VISIBLE.
+    broker_day_pl = acct["equity"] - acct.get("last_equity", acct["equity"])
+    tol = float(getattr(cfg, "INVARIANT_DAY_PL_TOL", 1000.0))
+    if abs(daily_pl - broker_day_pl) > tol:
+        violations.append(("DAY_PL_RECONCILE",
+            f"intraday day_pl ${daily_pl:+,.0f} diverges from broker day P&L "
+            f"${broker_day_pl:+,.0f} by >${tol:,.0f} (book-mark glitch)"))
+
+    # --- 2. SINGLE_BOOK_OWNERSHIP (the LRCX collision detector): no symbol may be held
+    # by two or more books at once. A collision double-counts its mark and corrupts the
+    # book_drift -> day_pl chain (exactly the 6/16 bug).
+    owners = {}   # symbol -> [book names]
+    for book, syms in book_holdings.items():
+        for s in (syms or set()):
+            owners.setdefault(s, []).append(book)
+    for sym, books in owners.items():
+        if len(books) >= 2:
+            violations.append(("SINGLE_BOOK_OWNERSHIP",
+                f"{sym} owned by {len(books)} books at once: {', '.join(sorted(books))} "
+                f"(double-counts its mark — corrupts day P&L)"))
+
+    # --- 3. POSITION_TRACKED: every broker position must be accounted for. CONSERVATIVE:
+    # only flag a position that is in NO book, NOT in active_options/active_multileg legs,
+    # and (for stocks) has NO open bracket order. If unsure, do NOT flag (a miss beats a
+    # false alarm). Build the "tracked" universe first.
+    book_syms = set()
+    for syms in book_holdings.values():
+        book_syms |= (syms or set())
+    tracked_opts = set()
+    for o in (state.get("active_options") or []):
+        if o.get("symbol"):
+            tracked_opts.add(o["symbol"])
+    for m in (state.get("active_multileg") or []):
+        for l in (m.get("legs") or []):
+            if l.get("symbol"):
+                tracked_opts.add(l["symbol"])
+    untracked = []
+    for p in (positions or []):
+        sym = p.get("symbol")
+        if not sym:
+            continue
+        if sym in book_syms or sym in tracked_opts:
+            continue
+        is_option = parse_occ(sym) is not None
+        if is_option:
+            # An option in no book and not in active_options/active_multileg is an orphan.
+            untracked.append(sym)
+        else:
+            # A stock is tracked if it has an open bracket order. If we don't KNOW its
+            # bracket status (bracketed is empty/unknown) be conservative and skip it.
+            if bracketed and sym not in bracketed:
+                untracked.append(sym)
+            # else: no bracket info -> do NOT flag (avoid false positives).
+    if untracked:
+        violations.append(("POSITION_TRACKED",
+            f"broker positions in no book / active_options / active_multileg "
+            f"(and unbracketed): {', '.join(sorted(untracked))} — untracked orphan(s)"))
+
+    # --- 4. LEDGER_BOUNDS: runaway / bad-data guard on the cross-day ledger structures.
+    n_lots = len(state.get("open_lots") or {})
+    n_fills = len(state.get("processed_fills") or [])
+    n_closed = len(state.get("closed_trades") or [])
+    bad = []
+    if n_lots > 200:
+        bad.append(f"open_lots={n_lots} (>200)")
+    if n_fills > 1500:
+        bad.append(f"processed_fills={n_fills} (>1500)")
+    if n_closed > 800:
+        bad.append(f"closed_trades={n_closed} (>800)")
+    if acct["equity"] <= 0:
+        bad.append(f"equity=${acct['equity']:,.0f} (<=0)")
+    if bad:
+        violations.append(("LEDGER_BOUNDS",
+            "runaway/bad-data guard tripped: " + "; ".join(bad)))
+
+    # --- 5. HALT_SANITY: halted, yet the broker's authoritative day P&L is ABOVE the loss
+    # limit. Possibly a stale/bogus halt from an earlier glitch. ALERT ONLY — do NOT
+    # auto-unhalt (a legit post-recovery halt must stay).
+    if state.get("halted") and broker_day_pl > cfg.DAILY_LOSS_HALT:
+        violations.append(("HALT_SANITY",
+            f"HALTED but broker day P&L ${broker_day_pl:+,.0f} is above the limit "
+            f"(${cfg.DAILY_LOSS_HALT:,.0f}) — possibly a stale/bogus halt, review"))
+
+    return violations
+
+
+def run_invariant_checks(state, acct, positions, book_holdings, daily_pl, now,
+                         bracketed=None):
+    """Run check_invariants and, per violation, log every cycle but Telegram-alert at most
+    once per (key, day). Wrapped so an invariant bug can NEVER kill the cycle. ALERT ONLY."""
+    try:
+        violations = check_invariants(state, acct, positions, book_holdings, daily_pl,
+                                      bracketed=bracketed)
+        if not violations:
+            return
+        today = now.strftime("%Y-%m-%d")
+        latch = state.get("invariant_alerted") or {}
+        if not isinstance(latch, dict) or today not in latch:
+            latch = {today: []}           # reset daily (drop prior days)
+        alerted_today = latch[today]
+        for key, msg in violations:
+            log(f"INVARIANT VIOLATION [{key}]: {msg}")
+            if key not in alerted_today:
+                tg_send(f"⚠️ INVARIANT [{key}]: {msg}")
+                alerted_today.append(key)
+        latch[today] = alerted_today
+        state["invariant_alerted"] = latch
+    except Exception as e:
+        log(f"check_invariants failed (non-fatal): {e}")
+
+
+# ===========================================================================
 # CYCLE
 # ===========================================================================
 def run_cycle(dry: bool = False):
@@ -4252,6 +4393,29 @@ def run_cycle(dry: bool = False):
         log(f"day_pl glitch guard: intraday {daily_pl:+.0f} diverges from broker day P&L "
             f"{_broker_day_pl:+.0f} by >$1000 (book-mark collision) — using broker value")
         daily_pl = _broker_day_pl
+
+    # 2a-i. INVARIANT SELF-CHECK (ALERT ONLY) — reconcile internal state vs broker truth
+    # and turn SILENT corruption into a LOUD alert. Runs here, where held_books / positions
+    # / daily_pl are all known (and BEFORE the halted early-return below so HALT_SANITY can
+    # fire on a stale halt). Never mutates state or places/cancels orders; wrapped so an
+    # invariant bug can't kill the cycle. book_holdings is built per-book so the collision
+    # detector can name which books share a symbol.
+    if cfg.INVARIANT_CHECKS_ENABLED:
+        try:
+            _book_holdings = {
+                "growth": gs.held_symbols(state),
+                "tail": th.held_symbols(state),
+                "earnings": ec.held_symbols(state),
+                "overnight": od.held_symbols(state),
+                "pairs": sp.held_symbols(state),
+            }
+            _all_positions = open_positions(tc)   # FULL broker list (not held_books-filtered)
+            _bracketed_inv = bracketed_symbols(tc) if _all_positions else set()
+            run_invariant_checks(state, acct, _all_positions, _book_holdings, daily_pl,
+                                 now, bracketed=_bracketed_inv)
+        except Exception as e:
+            log(f"invariant check wrapper failed (non-fatal): {e}")
+
     # SANITY GATE: never latch unless the broker's authoritative total day P&L
     # (equity - last_equity) is ALSO below the limit. Protects against a book-mark glitch
     # in the intraday daily_pl — e.g. the growth sleeve double-counting a pairs leg that

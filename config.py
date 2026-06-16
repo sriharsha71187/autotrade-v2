@@ -80,6 +80,17 @@ DAILY_HALT_CONFIRM_CYCLES = 2   # require the loss-halt breach to PERSIST this m
                                 #  before its cash proceeds reconcile; 6/16 pairs KLAC short read
                                 #  a phantom -$3,484 while real day P&L was +$2 and latched the halt)
 
+# ---- per-cycle invariant self-check (silent-corruption -> loud alert) -------
+# Each cycle the bot reconciles its INTERNAL state against broker ground truth and
+# turns SILENT state corruption into a LOUD Telegram alert — catching the class of bug
+# that produces no traceback/halt (the 6/16 sleeve<->pairs LRCX collision that corrupted
+# day P&L and made the bot trade scared, only a human noticed). ALERT-ONLY: never mutates
+# state or places/cancels orders. DAY_PL_TOL is the $ divergence between the intraday
+# day_pl and the broker's authoritative day P&L (equity-last_equity) that counts as a
+# book-mark glitch — set wide enough that normal mark noise never trips it.
+INVARIANT_CHECKS_ENABLED = True
+INVARIANT_DAY_PL_TOL     = 1000.0
+
 # ---- account-level drawdown floor + red-day de-risking (AUDIT_ROADMAP #13) --
 # The per-DAY loss halt (DAILY_LOSS_HALT) resets every morning, so it does nothing to
 # stop a slow multi-day bleed — the stated −$1,500 ruin guardrail was never a CUMULATIVE
@@ -604,6 +615,8 @@ EVENT_CATALYST_DATES: list[str] = [
 # secrets, file paths, or universes.
 OVERRIDES_FILE = HOME / "autotrade_overrides.json"
 RUNTIME_SETTABLE = {
+    "INVARIANT_CHECKS_ENABLED": bool,
+    "INVARIANT_DAY_PL_TOL": float,
     "DAILY_LOSS_HALT": float,
     "DAILY_HALT_CONFIRM_CYCLES": int,
     "DAILY_PROFIT_TARGET": float,
