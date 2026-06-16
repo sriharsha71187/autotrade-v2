@@ -1150,12 +1150,16 @@ def build_option_chains(odc, scan, positions, vix, now,
             if r["symbol"] in cfg.CORE_UNIVERSE and abs(r["day_pct"]) < 0.5:
                 targets.append((r["symbol"], r["last"], True))
                 break
-    # Momentum options: strong movers during 10:00–14:00. PREFER movers that have
-    # pulled back (so the anti-chase would actually ALLOW a directional option on
-    # them — a put on a name at its lows, or a call at its highs, gets blocked), and
-    # offer several candidates so a non-optionable name doesn't starve the rest. Fall
-    # back to the biggest movers so the chain is never blank when a tape is moving.
-    if 10 <= h < 14:
+    # Momentum options: strong movers during 10:00 until the MOMENTUM debit-spread cutoff
+    # (15:00). This MUST match the entry window in passes_guardrails — fetching only until
+    # 14:00 while entries are allowed until 15:00 left a dead hour (14:00-15:00) where the
+    # model was allowed to trade momentum debits but got an EMPTY option_chains and could
+    # build nothing (6/16). PREFER movers that have pulled back (so the anti-chase would
+    # actually ALLOW a directional option on them), offer several candidates so a
+    # non-optionable name doesn't starve the rest, and fall back to the biggest movers so
+    # the chain is never blank when a tape is moving.
+    if (10 * 60) <= (h * 60 + m) < (cfg.MOMENTUM_OPTION_CUTOFF_HOUR * 60
+                                    + cfg.MOMENTUM_OPTION_CUTOFF_MIN):
         movers = [r for r in scan
                   if abs(r["day_pct"]) >= 2.0 and r["symbol"] not in cfg.BLACKLIST]
         pulled = [r for r in movers
