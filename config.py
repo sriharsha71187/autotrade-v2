@@ -21,6 +21,10 @@ ENV_FILE = HOME / ".autotrade.env"
 STATE_FILE      = HOME / "autotrade_state.json"
 SNAPSHOT_DIR    = HOME / "autotrade_snapshots"      # per-cycle decision + result records
 OUTCOMES_DIR    = HOME / "autotrade_outcomes"       # daily realized-P&L / fills capture
+# Cross-day P&L ledger: when stamping a strategy label on an opened lot, search the
+# submitted-decision map back this many days so a long opened on day X but CLOSED on a later
+# day still attributes to its original entry (stock_long), not a sign-inferred 'stock_short'.
+LEDGER_STRATEGY_LOOKBACK_DAYS = 5
 LEARNINGS_FILE  = HOME / "autotrade_learnings.json"
 COMMAND_FILE    = HOME / "autotrade_command.txt"
 LOG_FILE        = HOME / "autotrade.log"
@@ -90,6 +94,16 @@ DAILY_HALT_CONFIRM_CYCLES = 2   # require the loss-halt breach to PERSIST this m
 # book-mark glitch — set wide enough that normal mark noise never trips it.
 INVARIANT_CHECKS_ENABLED = True
 INVARIANT_DAY_PL_TOL     = 1000.0
+
+# Behavioral tripwire (ALERT-ONLY; never changes trading). The invariant layer catches state
+# CORRUPTION; this catches a silent BEHAVIORAL failure — the bot seeing setups but not acting
+# (6/16: spooked by a phantom day P&L, it kept hitting the same block and never entered).
+# Tallied per day at the cycle's single exit (a setup qualified + the model was called):
+#   A) >= NOTRADE_CYCLES qualifying cycles with ZERO entries all day -> alert once.
+#   B) the SAME guardrail block reason fired >= REPEAT_BLOCKS times -> alert once per reason.
+BEHAVIORAL_TRIPWIRE_ENABLED = False   # staged OFF; enable via override
+TRIPWIRE_NOTRADE_CYCLES     = 10      # qualifying cycles w/ no entry before the no-trade alert
+TRIPWIRE_REPEAT_BLOCKS      = 6       # same block reason this many times before the stuck alert
 
 # ---- account-level drawdown floor + red-day de-risking (AUDIT_ROADMAP #13) --
 # The per-DAY loss halt (DAILY_LOSS_HALT) resets every morning, so it does nothing to
@@ -655,6 +669,9 @@ OVERRIDES_FILE = HOME / "autotrade_overrides.json"
 RUNTIME_SETTABLE = {
     "INVARIANT_CHECKS_ENABLED": bool,
     "INVARIANT_DAY_PL_TOL": float,
+    "BEHAVIORAL_TRIPWIRE_ENABLED": bool,
+    "TRIPWIRE_NOTRADE_CYCLES": int,
+    "TRIPWIRE_REPEAT_BLOCKS": int,
     "DAILY_LOSS_HALT": float,
     "DAILY_HALT_CONFIRM_CYCLES": int,
     "DAILY_PROFIT_TARGET": float,
@@ -687,6 +704,7 @@ RUNTIME_SETTABLE = {
     "OPTIONS_SKEW_THRESHOLD": float,
     "OPTION_MAX_ATM_IV": float,
     "STOPPED_COOLDOWN_MIN": int,
+    "LEDGER_STRATEGY_LOOKBACK_DAYS": int,
     "OPTION_TRAIL_ACTIVATE": float,
     "OPTION_TRAIL_GIVEBACK": float,
     "OPTION_BREAKEVEN_AT": float,

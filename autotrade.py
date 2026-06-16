@@ -1390,11 +1390,30 @@ def _fill_legs(o):
             yield leg
 
 
+def _strategy_recent_label(sym: str, opened_day: str) -> "str | None":
+    """The symbol's submitted-decision strategy label, searched from `opened_day` BACK up
+    to LEDGER_STRATEGY_LOOKBACK_DAYS days (nearest day wins). This is the cross-day fix: a
+    long opened on day X but CLOSED on day Y>X (or a lot the ledger re-created from the
+    closing fill, stamped with the close day) would otherwise miss X's decision map and get
+    mis-inferred from the closing SELL as 'stock_short'. Scanning back recovers the real
+    opening decision (stock_long)."""
+    try:
+        d0 = datetime.strptime(opened_day, "%Y-%m-%d").date()
+    except Exception:
+        return _strategy_map_for_day(opened_day).get(sym)
+    for back in range(int(getattr(cfg, "LEDGER_STRATEGY_LOOKBACK_DAYS", 5)) + 1):
+        lab = _strategy_map_for_day((d0 - timedelta(days=back)).isoformat()).get(sym)
+        if lab:
+            return lab
+    return None
+
+
 def _strategy_for_open(sym: str, opened_day: str, signed: float) -> str:
-    """Strategy label to stamp on a freshly opened lot. Prefer the day's submitted-
-    decision map (correct even when the close lands on a later day); fall back to a
-    symbol-shape inference only when the map has nothing for the symbol."""
-    label = _strategy_map_for_day(opened_day).get(sym)
+    """Strategy label to stamp on a freshly opened lot. Prefer the submitted-decision map
+    (searched from opened_day back over recent days, so a cross-day close still finds the
+    original entry's strategy); fall back to symbol-shape/sign inference only when no
+    decision is found for the symbol in that window."""
+    label = _strategy_recent_label(sym, opened_day)
     if label:
         return label
     if parse_occ(sym):
@@ -4379,6 +4398,63 @@ def run_invariant_checks(state, acct, positions, book_holdings, daily_pl, now,
         log(f"check_invariants failed (non-fatal): {e}")
 
 
+def _top_blocks(blocks: dict, n: int = 3) -> str:
+    """Format the top-N block reasons by count, e.g. 'anti-chase ×5, IV-rank ×3'."""
+    if not blocks:
+        return "(none — model chose to hold)"
+    top = sorted(blocks.items(), key=lambda kv: kv[1], reverse=True)[:n]
+    return ", ".join(f"{k} ×{c}" for k, c in top)
+
+
+def behavioral_tripwire(state, result, now):
+    """ALERT-ONLY behavioral self-check (never changes trading). Reaching the call site means
+    a setup QUALIFIED and the model was called this cycle. Tracks, per day: qualifying cycles,
+    actual entries, and a tally of recurring guardrail BLOCK reasons. Two tripwires, each
+    Telegram-alerted at most ONCE per day, surface the silent failure mode that 'no errors'
+    hides (6/16: the model traded gun-shy / kept hitting the same block, never entering):
+      A) SETUPS-BUT-NO-TRADES — >= TRIPWIRE_NOTRADE_CYCLES qualifying cycles with ZERO entries
+         all day (the bot is seeing setups but not acting).
+      B) STUCK-BLOCK — the same guardrail reason has blocked entries >= TRIPWIRE_REPEAT_BLOCKS
+         times (the model keeps proposing what the guardrails keep refusing)."""
+    if not getattr(cfg, "BEHAVIORAL_TRIPWIRE_ENABLED", False):
+        return
+    try:
+        today = now.strftime("%Y-%m-%d")
+        bt = state.get("behavior_track")
+        if not isinstance(bt, dict) or bt.get("day") != today:
+            bt = {"day": today, "qualified": 0, "entries": 0, "blocks": {}, "alerted": []}
+        bt["qualified"] += 1
+        status = (result or {}).get("status")
+        if status in ("submitted", "dry_run"):
+            bt["entries"] += 1
+        elif status == "blocked":
+            # Collapse the reason to its RULE (strip the variable tail after ':' or '(') so
+            # the same guardrail tallies together regardless of the specific symbol/number.
+            reason = str((result or {}).get("reason") or "?")
+            key = (reason.split(":")[0].split("(")[0].strip()[:48]) or "?"
+            bt["blocks"][key] = bt["blocks"].get(key, 0) + 1
+        # A) setups but no trades all day
+        if ("notrade" not in bt["alerted"]
+                and bt["qualified"] >= cfg.TRIPWIRE_NOTRADE_CYCLES and bt["entries"] == 0):
+            bt["alerted"].append("notrade")
+            msg = (f"🚨 Behavioral tripwire: {bt['qualified']} cycles with a qualifying setup "
+                   f"today but ZERO entries — the bot is seeing setups and not acting. "
+                   f"Blocks so far: {_top_blocks(bt['blocks'])}")
+            log(msg); tg_send(msg)
+        # B) the same block reason keeps firing
+        for key, cnt in bt["blocks"].items():
+            akey = f"block:{key}"
+            if akey not in bt["alerted"] and cnt >= cfg.TRIPWIRE_REPEAT_BLOCKS:
+                bt["alerted"].append(akey)
+                msg = (f"🚨 Behavioral tripwire: guardrail '{key}' has blocked entries "
+                       f"{cnt}× today — recurring rejection (model keeps proposing what the "
+                       f"guardrails keep refusing). Worth a look.")
+                log(msg); tg_send(msg)
+        state["behavior_track"] = bt
+    except Exception as e:
+        log(f"behavioral_tripwire failed (non-fatal): {e}")
+
+
 # ===========================================================================
 # CYCLE
 # ===========================================================================
@@ -5151,6 +5227,9 @@ def run_cycle(dry: bool = False):
         state["last_action"] = f"order failed: {result['error']}"
     else:
         state["last_action"] = f"{action} {decision.get('symbol') or ''}".strip()
+    # Reaching here = a setup qualified and the model was called this cycle. Alert-only
+    # behavioral self-check (setups-but-no-trades / stuck-block); never changes trading.
+    behavioral_tripwire(state, result, now)
     save_state(state)
 
 
