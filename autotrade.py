@@ -4231,10 +4231,24 @@ def run_cycle(dry: bool = False):
     # 2b. Daily loss halt — latches for the rest of the day and alerts once.
     # Skipped while the OVERRIDE day-flag is on (user chose to keep trading).
     daily_pl = acct["equity"] - state["start_equity"] - book_drift   # INTRADAY P&L (book drift netted out)
+    if daily_pl > cfg.DAILY_LOSS_HALT:
+        state["halt_breach_count"] = 0
+    _do_latch = False
     if daily_pl <= cfg.DAILY_LOSS_HALT and not state.get("halted") and not state.get("loss_override"):
-        # Standard daily-loss-limit behavior: hard stop — FLATTEN the INTRADAY book
-        # and halt, so the day's loss is actually capped. The growth sleeve is a
-        # separate long-term book with its own stops and is NOT liquidated here.
+        # DEBOUNCE a transient equity glitch before latching: a just-filled SHORT's market
+        # value can momentarily hit equity before its cash proceeds reconcile (6/16: the pairs
+        # KLAC short read a phantom -$3,484 while real day P&L was +$2, latching the halt for the
+        # whole day). Require the breach to PERSIST DAILY_HALT_CONFIRM_CYCLES consecutive cycles.
+        state["halt_breach_count"] = int(state.get("halt_breach_count", 0)) + 1
+        if state["halt_breach_count"] >= cfg.DAILY_HALT_CONFIRM_CYCLES:
+            _do_latch = True
+        else:
+            log(f"daily-loss-halt PENDING: day P&L {daily_pl:+.0f} <= {cfg.DAILY_LOSS_HALT} "
+                f"(breach {state['halt_breach_count']}/{cfg.DAILY_HALT_CONFIRM_CYCLES}; guarding a "
+                f"transient equity glitch — not latching yet)")
+    if _do_latch:
+        # Hard stop — FLATTEN the INTRADAY book and halt so the day's loss is capped. The
+        # growth sleeve is a separate long-term book with its own stops, NOT liquidated here.
         state["halted"] = True
         log(f"DAILY LOSS HALT latched: day P&L {daily_pl:+.0f} <= {cfg.DAILY_LOSS_HALT} — flattening intraday positions (sleeve kept)")
         try:

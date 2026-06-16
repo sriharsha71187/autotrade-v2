@@ -74,6 +74,11 @@ FMP_API_KEY       = _env.get("FMP_API_KEY", "")
 PAPER            = True
 ACCOUNT_BASELINE = 100_000.0
 DAILY_LOSS_HALT  = -300.0
+DAILY_HALT_CONFIRM_CYCLES = 2   # require the loss-halt breach to PERSIST this many consecutive
+                                # cycles before latching — debounces a transient equity glitch
+                                # (a just-filled SHORT's market value can momentarily hit equity
+                                #  before its cash proceeds reconcile; 6/16 pairs KLAC short read
+                                #  a phantom -$3,484 while real day P&L was +$2 and latched the halt)
 
 # ---- account-level drawdown floor + red-day de-risking (AUDIT_ROADMAP #13) --
 # The per-DAY loss halt (DAILY_LOSS_HALT) resets every morning, so it does nothing to
@@ -600,6 +605,7 @@ EVENT_CATALYST_DATES: list[str] = [
 OVERRIDES_FILE = HOME / "autotrade_overrides.json"
 RUNTIME_SETTABLE = {
     "DAILY_LOSS_HALT": float,
+    "DAILY_HALT_CONFIRM_CYCLES": int,
     "DAILY_PROFIT_TARGET": float,
     "DAILY_PROFIT_STRETCH": float,
     "MAX_DEPLOYED_CAPITAL": float,
