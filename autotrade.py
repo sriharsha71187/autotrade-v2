@@ -3440,8 +3440,13 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
     # Prefer the INTRADAY P&L the cycle computed (shielded-book drift already netted
     # out); fall back to the raw equity delta only if it isn't present.
     daily_pl = acct["day_pl"] if "day_pl" in acct else (acct["equity"] - start_eq)
-    if (daily_pl <= cfg.DAILY_LOSS_HALT and action not in ("hold", "close")
-            and not state.get("loss_override")):
+    # Same broker-authoritative sanity gate as the run_cycle latch: only enforce the halt
+    # when the account's REAL day P&L (equity - last_equity) is ALSO below the limit, so a
+    # book-mark glitch in daily_pl (6/16 sleeve<->pairs LRCX double-count read a phantom
+    # -$3,585 while real day P&L was +$18) can't block every entry.
+    _broker_day_pl = acct["equity"] - acct.get("last_equity", acct["equity"])
+    if (daily_pl <= cfg.DAILY_LOSS_HALT and _broker_day_pl <= cfg.DAILY_LOSS_HALT
+            and action not in ("hold", "close") and not state.get("loss_override")):
         return False, f"daily loss halt hit ({daily_pl:.0f})"
     # Account-level drawdown circuit breaker (#13): when equity has fallen
     # ACCOUNT_DRAWDOWN_HALT below its trailing high-water, run_cycle latches drawdown_halted
