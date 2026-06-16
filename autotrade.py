@@ -3535,14 +3535,17 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
         if iv is not None and iv > cfg.OPTION_MAX_ATM_IV:
             return False, (f"{und}: ATM IV {iv:.0f}% > {cfg.OPTION_MAX_ATM_IV:.0f}% ceiling — "
                            f"extreme-IV lottery ticket (overpriced/noisy/squeezy), skip")
-        # IV-RANK gate (AUDIT_ROADMAP #11): block BUYING single-name premium at the top of
-        # its own IV range — a long/debit pays rich vol for a capped payoff. Applies only to
-        # premium-BUYING (buy_option long, buy_stock directional, debit_spread); index condors
-        # (premium SELLING on SPY/QQQ/IWM/DIA) are exempt, handled by the action set above
-        # (iron_condor never reaches here) and the index-underlying carve-out below. Fail OPEN
-        # on iv_rank None (not yet computed / <20 obs) — don't block on missing data.
+        # IV-RANK gate (AUDIT_ROADMAP #11): block BUYING single-name OPTION premium at the top
+        # of its own IV range — a long/debit pays rich vol for a capped payoff. Applies ONLY to
+        # premium-BUYING options (buy_option long, debit_spread). A buy_STOCK pays NO option
+        # premium, so it is EXEMPT — and the #21 vehicle router routes high-IV names TO stock,
+        # so gating the stock here would lock the bot out of the name entirely (6/16: MU
+        # IV-rank 98 -> router said 'stock', then this gate blocked the stock too). Index
+        # condors (premium SELLING) are exempt via the action set + index carve-out. Fail OPEN
+        # on iv_rank None (missing data).
         ivr = oi.get("iv_rank") if oi else None
         if (ivr is not None and ivr > cfg.OPTION_MAX_IV_RANK
+                and action != "buy_stock"
                 and und not in cfg.PREMIUM_INDEX_UNDERLYINGS):
             return False, (f"{und}: ATM IV-rank {ivr:.0f} > {cfg.OPTION_MAX_IV_RANK:.0f} ceiling — "
                            f"buying RICH vol on a capped payoff (top of its IV range), skip")
