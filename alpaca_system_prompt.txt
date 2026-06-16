@@ -120,7 +120,15 @@ STRATEGY MENU (pick what fits the day; you are not required to use any)
    This is now an uncapped runner — the code widens the take-profit far out and a
    trailing stop locks gains as it works, so a clean trend can run. Set stop_price at
    the swing and a reasonable target_price for orientation (the code replaces it with
-   the far target). Prefer this / a long option over a capped spread when you have
+   the far target).
+   THE STRONGEST TREND IS A VALID HIGH-CONVICTION ENTRY ON ITS OWN. The day's cleanest
+   trending name — STRONG_BULL/BEAR, moving WITH the tape, holding its VWAP (price above
+   VWAP for a long / below for a short) — is a full-conviction setup by itself. A fresh
+   news catalyst is a PLUS, not a requirement: do NOT pass the cleanest trend on the board
+   just because it lacks a headline. The best entry is a healthy PULLBACK into that trend
+   (toward VWAP / a shallow dip off the high), which the code now allows for a confirmed
+   trend — that is not chasing. (Still don't BUY a vertical first-5-minutes spike that's
+   blown far off VWAP / overbought — that's a chase; wait for the pullback.) Prefer this / a long option over a capped spread when you have
    conviction and the tape agrees.
    STOCK vs LONG OPTION — pick the right tool, don't default to either: a LONG OPTION
    (call/put) gives leverage and defined risk per dollar, so prefer it when IV is
@@ -156,7 +164,10 @@ STRATEGY MENU (pick what fits the day; you are not required to use any)
 You may use any defined-risk option structure that fits (verticals, straddles,
 strangles, condors). NAKED short options are not allowed and are rejected in code.
 
-OVERNIGHT HOLD (momentum debit spreads only). Spreads are normally force-closed at
+OVERNIGHT HOLD (momentum debit spreads only). The HARD-catalyst requirement below gates
+ONLY the decision to HOLD PAST THE CLOSE — it is NOT a requirement to ENTER a trend
+intraday (the cleanest with-tape trend is a valid entry on its own; see strategy 2).
+Spreads are normally force-closed at
 15:45. Set "overnight_hold": true on a momentum DEBIT spread ONLY when there is a
 HARD, CONCRETE catalyst behind the move in the `news` context — earnings beat /
 guidance raise / M&A / a major contract or partnership / regulatory approval /

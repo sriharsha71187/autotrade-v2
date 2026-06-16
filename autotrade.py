@@ -860,32 +860,85 @@ def conviction_chain_for(odc, underlying, spot, bullish: bool) -> list[dict]:
     return [chosen]
 
 
+def established_trend(r: dict, regime=None) -> bool:
+    """Deterministic STRUCTURE check for a confirmed trend (AUDIT_ROADMAP #7/#20). True
+    when a name is a real, on-thesis trend (so a SHALLOW pullback into it is a valid
+    entry, not a chase) — independent of whether it's AT the high right now:
+      * STRONG_BULL / STRONG_BEAR signal,
+      * day_pct beyond the strong threshold (>= +2% bull / <= -2% bear),
+      * in-trend vs VWAP: price ON the trend side (vwap_ext > 0 for a long, < 0 for a short),
+      * RSI in-band (< RSI_OVERBOUGHT bull / > RSI_OVERSOLD bear) — and a MISSING rsi PASSES
+        (None for the first ~75 min; never fail a trend closed just because RSI isn't warm yet),
+      * WITH the tape: the direction matches regime.tape_bias, or the tape is neutral / unknown
+        (never demand a green tape — only refuse a long on a clearly risk_off tape and vice versa).
+    This is the carve-out's gate: it requires the trend to be STRUCTURALLY confirmed, NOT just
+    "it's up a lot", so a vertical opening spike (vwap_ext blown out) or blown-off RSI never
+    qualifies — those are filtered by the vwap_ext / RSI ceilings still applied downstream."""
+    sig = r.get("signal")
+    if sig not in ("STRONG_BULL", "STRONG_BEAR"):
+        return False
+    bullish = sig == "STRONG_BULL"
+    day_pct = r.get("day_pct")
+    if day_pct is None:
+        return False
+    if bullish and day_pct < 2.0:
+        return False
+    if (not bullish) and day_pct > -2.0:
+        return False
+    ext = r.get("vwap_ext")
+    if ext is None:
+        return False                                   # can't confirm trend side w/o VWAP
+    # On the trend side of VWAP, but NOT blown vertically off it: a first-bar spike sits
+    # far above/below VWAP and is a chase, not a trend to pull back into. Reuse the
+    # anti-chase VWAP ceiling so "established trend" and "not extended" agree.
+    if bullish and not (0 < ext <= cfg.ANTI_CHASE_MAX_VWAP_EXT):
+        return False
+    if (not bullish) and not (-cfg.ANTI_CHASE_MAX_VWAP_EXT <= ext < 0):
+        return False
+    rsi_v = r.get("rsi")
+    if rsi_v is not None:                              # MISSING rsi PASSES (don't fail closed)
+        if bullish and rsi_v >= cfg.RSI_OVERBOUGHT:
+            return False
+        if (not bullish) and rsi_v <= cfg.RSI_OVERSOLD:
+            return False
+    tape = (regime or {}).get("tape_bias") if regime else None
+    if tape in ("risk_on", "risk_off"):               # neutral / None = no tape constraint
+        if bullish and tape != "risk_on":
+            return False
+        if (not bullish) and tape != "risk_off":
+            return False
+    return True
+
+
 def conviction_itm_qualifies(r: dict, event_state=None, regime=None) -> bool:
     """Deterministic eligibility for routing a name to the conviction-ITM book INSTEAD
     of the default ATM short-dated set (CONVICTION_ITM_SPEC §2). True when the name has
     EITHER a confirmed hard catalyst (event-router RIDE on it, or a flagged earnings
-    drift / event_catalyst) OR a clean multi-day momentum trend:
-      STRONG_BULL/BEAR + making a new HOD/LOD + positive vwap_ext (trending, not fading)
-      + RSI not blown off (<RSI_OVERBOUGHT for bull / >RSI_OVERSOLD for bear).
+    drift / event_catalyst) OR a clean multi-day momentum trend.
+
+    The clean-trend path qualifies on STRUCTURE, not on being at a new HOD/LOD
+    (AUDIT_ROADMAP #7): a healthy SHALLOW pullback in a confirmed trend is the BEST entry,
+    and previously qualified for NEITHER this book (which demanded a new HOD) NOR the
+    default path (anti-chase blocks <1% off the high). So we now require
+      established_trend(...)  (STRONG_BULL/BEAR + with the tape + in-trend vs VWAP + RSI
+                               in-band-or-unknown + day_pct beyond the strong threshold)
+    and ALLOW off_hod / off_lod up to CONVICTION_TREND_MAX_OFF_HOD (~2%) — i.e. a shallow
+    dip, NOT a requirement to be making a new high. The vwap_ext / RSI ceilings inside
+    established_trend still reject a vertical first-bar spike or a blown-off move, so this
+    widens the pullback window WITHOUT loosening into chasing. A MISSING RSI PASSES.
     Side is taken from the signal; returns False if the name doesn't cleanly qualify."""
     sym = r.get("symbol")
-    sig = r.get("signal")
     # Hard catalyst: a live event-router RIDE on this name, or a flagged catalyst row.
     has_catalyst = bool(r.get("event_catalyst"))
     if not has_catalyst and event_state:
         has_catalyst = sym in ((event_state.get("ride") or {}))
-    # Clean multi-day momentum trend.
+    # Clean trend: confirmed STRUCTURE + a shallow (or zero) pullback off the extreme.
     clean_trend = False
-    if sig in ("STRONG_BULL", "STRONG_BEAR"):
-        bullish = sig == "STRONG_BULL"
-        ext = r.get("vwap_ext")
-        rsi = r.get("rsi")
+    if established_trend(r, regime=regime):
+        bullish = r.get("signal") == "STRONG_BULL"
         off_extreme = r.get("off_hod") if bullish else r.get("off_lod")
-        if ext is not None and rsi is not None and off_extreme is not None:
-            new_extreme = off_extreme <= 0.003     # within ~0.3% of HOD/LOD = making new highs/lows
-            trending = (ext > 0) if bullish else (ext < 0)   # positive vwap_ext IN the trend's direction
-            rsi_ok = (rsi < cfg.RSI_OVERBOUGHT) if bullish else (rsi > cfg.RSI_OVERSOLD)
-            clean_trend = new_extreme and trending and rsi_ok
+        if off_extreme is not None:
+            clean_trend = off_extreme <= cfg.CONVICTION_TREND_MAX_OFF_HOD
     return bool(has_catalyst or clean_trend)
 
 
@@ -2605,7 +2658,7 @@ def manage_stops(tc, dry, skip=None):
 # ===========================================================================
 # Guardrails applied to a model decision before execution
 # ===========================================================================
-def anti_chase_reason(bullish, row, event=False):
+def anti_chase_reason(bullish, row, event=False, regime=None):
     """A reason to BLOCK an extended momentum entry (buying the top / selling the
     bottom), or None. bullish=True for long/call, False for short/put. Indicators
     that are missing are skipped (can't assess -> don't block).
@@ -2613,13 +2666,37 @@ def anti_chase_reason(bullish, row, event=False):
     event=True widens the bounds for a fresh-CATALYST name (the event router's RIDE
     posture): a hard catalyst drives a continuation, so we allow a more-extended
     entry WITH the move — still bounded (a continuation, not a blow-off chase), and
-    still a defined-risk structure."""
+    still a defined-risk structure.
+
+    ESTABLISHED-TREND carve-out (AUDIT_ROADMAP #7/#20): when this name is a
+    structurally-confirmed trend (established_trend: STRONG_BULL/BEAR + on the trend side
+    of VWAP + RSI in-band-or-unknown + with the tape) we widen ONLY the off-extreme
+    tolerance to CONVICTION_TREND_MAX_OFF_HOD (~2%), so a SHALLOW pullback in a real trend
+    isn't treated like a vertical opening spike. The vwap_ext and RSI ceilings are
+    DELIBERATELY left unchanged — a name far above VWAP or with a blown-off RSI fails
+    established_trend (and the ext/RSI guards) and is still blocked. A name that is NOT a
+    confirmed trend keeps the stricter (~1%) off-extreme bound. The carve-out never lowers
+    a bound below the event bound already in force."""
     if not row:
         return None
     max_ext = cfg.ANTI_CHASE_MAX_VWAP_EXT_EVENT if event else cfg.ANTI_CHASE_MAX_VWAP_EXT
     min_off = cfg.ANTI_CHASE_MIN_OFF_EXTREME_EVENT if event else cfg.ANTI_CHASE_MIN_OFF_EXTREME
     ob = cfg.RSI_OVERBOUGHT_EVENT if event else cfg.RSI_OVERBOUGHT
     os_ = cfg.RSI_OVERSOLD_EVENT if event else cfg.RSI_OVERSOLD
+    # Established-trend carve-out: relax ONLY the off-extreme bound, and only when the
+    # structure confirms a real trend in THIS direction. The off-extreme guard exists to
+    # stop a blind buy "at the top" of a name with no trend structure; for a CONFIRMED
+    # trend the right entry runs from making a new high all the way down to a ~2% pullback,
+    # so we drop the off-extreme floor to 0 across that band (a shallow pullback OR a new
+    # high both pass). We do NOT touch max_ext / the RSI ceiling — a vertical first-bar
+    # spike is far above VWAP (fails established_trend AND the ext guard) and a blown-off
+    # RSI trips the RSI guard, so those are still blocked. Off_extreme BEYOND the ~2% band
+    # is no longer a "chase" (it's a deeper pullback) so we don't re-block on it here.
+    trend_carveout = (
+        (bullish == (row.get("signal") == "STRONG_BULL"))
+        and established_trend(row, regime=regime))
+    if trend_carveout:
+        min_off = 0.0   # allow entry anywhere from a new HOD/LOD down to the pullback band
     ext, rsi_v = row.get("vwap_ext"), row.get("rsi")
     if bullish:
         if ext is not None and ext > max_ext:
@@ -2932,7 +3009,8 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
         _with_tape = (regime is not None and (
             (direction == "long" and regime.get("tape_bias") == "risk_on")
             or (direction == "short" and regime.get("tape_bias") == "risk_off")))
-        cr = anti_chase_reason(direction == "long", scan_row, event=(_rd == direction or _with_tape))
+        cr = anti_chase_reason(direction == "long", scan_row,
+                               event=(_rd == direction or _with_tape), regime=regime)
         if cr:
             return False, f"{sym} {cr}"
         # Correlation cap: don't put the whole book on one directional bet.
@@ -3002,7 +3080,8 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
         # while still refusing a parabolic blow-off (the RSI ceiling in the §2 gate).
         _is_conviction = cfg.CONVICTION_ITM_ENABLED and osym in conviction_symbols
         if not _is_conviction:
-            cr = anti_chase_reason(bullish, scan_row, event=(_rd == _dir or _with_tape))
+            cr = anti_chase_reason(bullish, scan_row,
+                                   event=(_rd == _dir or _with_tape), regime=regime)
             if cr:
                 return False, f"{sym or osym} {cr}"
         side_key = "bull" if bullish else "bear"

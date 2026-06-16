@@ -225,6 +225,14 @@ ANTI_CHASE_MAX_VWAP_EXT = 0.04   # block long if >4% above VWAP (short if >4% be
 ANTI_CHASE_MIN_OFF_EXTREME = 0.01  # block if within 1% of the day's high (long) / low (short)
 RSI_OVERBOUGHT = 80.0            # block longs when intraday RSI above this
 RSI_OVERSOLD   = 20.0            # block shorts when intraday RSI below this
+# Established-trend carve-out (AUDIT_ROADMAP #7/#20). A confirmed trend — STRONG_BULL/BEAR,
+# on the trend side of VWAP, RSI in-band (or unknown), with the tape — is a VALID entry on a
+# SHALLOW pullback, not a chase. For such a name we widen the off-extreme tolerance to this
+# (a ~2% dip in a real uptrend is the BEST entry, not "at the top"). The vwap_ext / RSI
+# ceilings are UNCHANGED, so a vertical first-bar spike (far above VWAP) or a blown-off RSI
+# is still blocked — this only stops treating a healthy pullback like an opening spike.
+CONVICTION_TREND_MAX_OFF_HOD = 0.02  # allow entry up to ~2% off the high (long) / low (short)
+                                     #  ONLY for a structurally-confirmed trend (see above)
 
 # ---- event router (two-sided: macro/news is RISK and OPPORTUNITY) -----------
 # A fresh hard catalyst that creates a directional move is exactly what the momentum
@@ -527,6 +535,8 @@ RUNTIME_SETTABLE = {
     "CONVICTION_ITM_NOTIONAL_CAP": float,
     "CONVICTION_ITM_MAX_HOLD_DAYS": int,
     "CONVICTION_ITM_MIN_DTE_EXIT": int,
+    # established-trend pullback tolerance (anti-chase carve-out + conviction-ITM trend gate)
+    "CONVICTION_TREND_MAX_OFF_HOD": float,
 }
 
 
