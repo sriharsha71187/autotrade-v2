@@ -4240,6 +4240,18 @@ def run_cycle(dry: bool = False):
     # 2b. Daily loss halt — latches for the rest of the day and alerts once.
     # Skipped while the OVERRIDE day-flag is on (user chose to keep trading).
     daily_pl = acct["equity"] - state["start_equity"] - book_drift   # INTRADAY P&L (book drift netted out)
+    # Guard the day P&L against a book-mark glitch: the 6/16 sleeve<->pairs LRCX double-count
+    # made book_drift over-count ~$3.5k, so daily_pl read a phantom -$3,710 while the real day
+    # P&L was -$234 — which the MODEL saw and used to trade scared ("deep in the hole, be
+    # selective"), passing real setups. Intraday P&L should never diverge wildly from the
+    # broker's authoritative total day P&L (equity-last_equity); if it does, the book
+    # accounting is glitched — fall back to the real number. This feeds the model context,
+    # the halt checks, and the profit gates uniformly.
+    _broker_day_pl = acct["equity"] - acct.get("last_equity", acct["equity"])
+    if abs(daily_pl - _broker_day_pl) > 1000:
+        log(f"day_pl glitch guard: intraday {daily_pl:+.0f} diverges from broker day P&L "
+            f"{_broker_day_pl:+.0f} by >$1000 (book-mark collision) — using broker value")
+        daily_pl = _broker_day_pl
     # SANITY GATE: never latch unless the broker's authoritative total day P&L
     # (equity - last_equity) is ALSO below the limit. Protects against a book-mark glitch
     # in the intraday daily_pl — e.g. the growth sleeve double-counting a pairs leg that
