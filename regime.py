@@ -59,6 +59,61 @@ def _tape(scan) -> tuple[float | None, str]:
     return tape, "neutral"
 
 
+_INDEX_ETFS = ("SPY", "QQQ", "IWM", "DIA")
+
+
+def _sector_trends(scan) -> dict:
+    """Per-sector trend = mean day_pct of the IN-SCAN members of each sector
+    (cfg.SECTOR_MAP), only for sectors with >= cfg.SECTOR_TREND_MIN_MEMBERS members
+    present. The 'with the tape' fix: SPY-first can read RANGE while the book's actual
+    sector (semis) is crashing. Fully defensive — a bad scan can't crash classify.
+    Excludes the index_etf bucket (that's the broad tape, not a tradeable sector)."""
+    out: dict = {}
+    try:
+        sector_map = getattr(cfg, "SECTOR_MAP", {}) or {}
+        min_members = int(getattr(cfg, "SECTOR_TREND_MIN_MEMBERS", 2) or 2)
+        # symbol -> day_pct for everything present in the scan (uppercased keys)
+        present: dict = {}
+        for r in (scan or []):
+            try:
+                sym = r.get("symbol")
+                dp = r.get("day_pct")
+                if sym is None or dp is None:
+                    continue
+                present[str(sym).upper()] = float(dp)
+            except (TypeError, ValueError, AttributeError):
+                continue
+        for sect, syms in sector_map.items():
+            if sect == "index_etf":
+                continue
+            vals = [present[str(s).upper()] for s in (syms or [])
+                    if str(s).upper() in present]
+            if len(vals) >= min_members:
+                out[sect] = sum(vals) / len(vals)
+    except Exception:
+        return {}
+    return out
+
+
+def sector_trend_bias(sector_trends: dict, sector: str, threshold: float) -> "str | None":
+    """Bias of a SECTOR's own trend, mirroring _tape's thresholds. Returns
+    'risk_on' / 'risk_off' / 'neutral', or None if the sector has no reading
+    (caller falls back to the broad tape_bias)."""
+    if not sector_trends or sector is None:
+        return None
+    val = sector_trends.get(sector)
+    if val is None:
+        return None
+    try:
+        if val >= threshold:
+            return "risk_on"
+        if val <= -threshold:
+            return "risk_off"
+    except TypeError:
+        return None
+    return "neutral"
+
+
 def _vol_band(vix) -> str:
     if vix is None:
         return "UNKNOWN"
@@ -109,6 +164,7 @@ def classify(scan, vix, now=None, event_day: bool = False,
     vol = _vol_band(vix)
     trend = _trend_band(move)
     tape, tape_bias = _tape(scan)
+    sector_trends = _sector_trends(scan)
     allowed: list[str] = []
     flat = False
     direction = None
@@ -192,6 +248,7 @@ def classify(scan, vix, now=None, event_day: bool = False,
     return {
         "trend": trend, "vol": vol, "index": idx, "index_move": move, "vix": vix,
         "tape": tape, "tape_bias": tape_bias,
+        "sector_trends": sector_trends,
         "allowed": allowed, "flat": flat, "direction": direction, "reason": reason,
     }
 
@@ -215,6 +272,7 @@ def summary(regime: dict) -> dict:
         "trend": regime.get("trend"), "vol": regime.get("vol"),
         "index_move_pct": regime.get("index_move"),
         "tape_pct": regime.get("tape"), "tape_bias": regime.get("tape_bias"),
+        "sector_trends": regime.get("sector_trends"),
         "allowed_strategies": regime.get("allowed"),
         "flat": regime.get("flat"),
         "direction": regime.get("direction"),

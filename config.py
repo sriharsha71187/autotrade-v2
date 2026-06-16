@@ -489,6 +489,16 @@ REGIME_TREND_PCT  = 1.0   # |move| >= this -> trending; else range-bound
 REGIME_STRONG_PCT = 2.0   # |move| >= this -> STRONG trend (momentum debit spreads)
 REGIME_TAPE_PCT   = 0.30  # mean index-ETF move >= this -> risk_on/risk_off tape (don't fight it)
 
+# Sector-relative trend (regime change 2026-06-16). The broad-tape "with the tape"
+# check reads mean(SPY,QQQ,IWM,DIA); on 6/16 that read RANGE/mild (-0.7%) while SEMIS
+# (the book's actual sector) was down 5-10% — the Dow's +0.6% masked a Nasdaq/semis
+# crash, so the bot bought MU/MRVL longs into the falling sector. When ENABLED, the
+# directional "with the tape" judgment uses the SECTOR's own trend (mean in-scan
+# member move) for the traded symbol, falling back to the broad tape when the sector
+# has no reading. Default OFF (staged for review) => byte-identical to today.
+SECTOR_TREND_ENABLED     = False
+SECTOR_TREND_MIN_MEMBERS = 2     # min in-scan sector members to trust a sector reading
+
 # Uncapped stock trend trades: place the bracket's take-profit FAR away so the win isn't
 # capped — the trailing chandelier stop (manage_stops) becomes the real exit and a runner
 # can run. (Alpaca brackets require a TP leg; "far" = effectively no cap intraday.)
@@ -703,6 +713,9 @@ RUNTIME_SETTABLE = {
     "CONVICTION_ITM_MIN_DTE_EXIT": int,
     # established-trend pullback tolerance (anti-chase carve-out + conviction-ITM trend gate)
     "CONVICTION_TREND_MAX_OFF_HOD": float,
+    # sector-relative trend ("with the tape" judged per-SECTOR, not broad index)
+    "SECTOR_TREND_ENABLED": bool,
+    "SECTOR_TREND_MIN_MEMBERS": int,
 }
 
 

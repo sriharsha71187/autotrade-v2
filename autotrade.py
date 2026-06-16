@@ -367,6 +367,28 @@ def sector_for(symbol: str) -> str:
     return _SECTOR_LOOKUP.get(str(und).upper(), "other")
 
 
+def effective_tape_bias(symbol, regime) -> "str | None":
+    """The directional "with the tape" bias to judge a trade against (regime change
+    2026-06-16). When cfg.SECTOR_TREND_ENABLED and the symbol's SECTOR has its own
+    in-scan reading, return that SECTOR's bias (so a semis long is judged against the
+    semis trend, not the broad SPY-first index that masked a semis crash on 6/16).
+    Otherwise — flag OFF, or no sector reading — fall back to the broad regime.tape_bias,
+    i.e. the EXACT current behavior. The single switch point for every directional
+    consumer."""
+    if regime is None:
+        return None
+    broad = regime.get("tape_bias")
+    if not getattr(cfg, "SECTOR_TREND_ENABLED", False):
+        return broad
+    sector_trends = regime.get("sector_trends") or {}
+    if not sector_trends:
+        return broad
+    import regime as _regime_mod
+    sect = sector_for(symbol)
+    sb = _regime_mod.sector_trend_bias(sector_trends, sect, cfg.REGIME_TAPE_PCT)
+    return sb if sb is not None else broad
+
+
 def _position_direction(p) -> "str | None":
     """'bull'/'bear' for an open position dict (long stock / long call = bull; short
     stock / long put = bear), else None (a short option leg of a spread nets out)."""
@@ -1014,7 +1036,10 @@ def established_trend(r: dict, regime=None) -> bool:
             return False
         if (not bullish) and rsi_v <= cfg.RSI_OVERSOLD:
             return False
-    tape = (regime or {}).get("tape_bias") if regime else None
+    # WITH the tape — judged SECTOR-relative when SECTOR_TREND_ENABLED (the 6/16 fix:
+    # a semis long is checked against the semis trend, not the broad index). Flag OFF
+    # => effective_tape_bias returns the broad regime.tape_bias (identical to before).
+    tape = effective_tape_bias(r.get("symbol"), regime) if regime else None
     if tape in ("risk_on", "risk_off"):               # neutral / None = no tape constraint
         if bullish and tape != "risk_on":
             return False
@@ -1171,10 +1196,10 @@ def build_option_chains(odc, scan, positions, vix, now,
         # a short on a risk_off tape — the trend the bot most wants to ride), then by raw
         # move size. Offer a few more than the calm-day cap so the scaled max_underlyings
         # governs how many actually get fetched.
-        _tape = (regime or {}).get("tape_bias") if regime else None
-
         def _trend_rank(r):
             up = (r.get("day_pct") or 0) > 0
+            # per-symbol SECTOR-relative bias when enabled; broad tape_bias when OFF
+            _tape = effective_tape_bias(r.get("symbol"), regime) if regime else None
             with_tape = ((up and _tape == "risk_on") or ((not up) and _tape == "risk_off"))
             return (0 if with_tape else 1, -abs(r.get("day_pct") or 0))
         for r in sorted(cand, key=_trend_rank)[:cfg.MAX_OPTION_UNDERLYINGS_BUSY]:
@@ -3490,18 +3515,23 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
     # entry that opposes a clearly-directional broad market UNLESS the name itself is a
     # strong dislocation (|move| >= STRONG) — a real catalyst can fight the tape, a weak
     # signal can't.
-    if regime is not None and regime.get("tape_bias") in ("risk_on", "risk_off") \
+    # Bias judged SECTOR-relative when SECTOR_TREND_ENABLED (block a bearish bet into a
+    # risk-OFF sector even if the broad index is flat — the 6/16 miss); flag OFF =>
+    # effective_tape_bias is the broad regime.tape_bias (identical to before).
+    _eff_tape = effective_tape_bias(_decision_underlying(decision) or sym, regime) \
+        if regime is not None else None
+    if _eff_tape in ("risk_on", "risk_off") \
             and action in ("buy_stock", "buy_option", "multi_leg"):
         tb = _trade_bias(decision)
         dp = abs((scan_row or {}).get("day_pct") or 0.0)
         tape = regime.get("tape")
-        if tb == "bearish" and regime["tape_bias"] == "risk_on" and dp < cfg.REGIME_STRONG_PCT:
-            return False, (f"counter-tape: bearish bet while the market is risk-on "
-                           f"(tape {tape:+.2f}%) and {sym or ''} only {dp:.1f}% — don't fade "
+        if tb == "bearish" and _eff_tape == "risk_on" and dp < cfg.REGIME_STRONG_PCT:
+            return False, (f"counter-tape: bearish bet while the tape is risk-on "
+                           f"(broad {tape:+.2f}%) and {sym or ''} only {dp:.1f}% — don't fade "
                            f"a green tape on a weak signal (trade WITH it)")
-        if tb == "bullish" and regime["tape_bias"] == "risk_off" and dp < cfg.REGIME_STRONG_PCT:
-            return False, (f"counter-tape: bullish bet while the market is risk-off "
-                           f"(tape {tape:+.2f}%) and {sym or ''} only {dp:.1f}% — don't fight "
+        if tb == "bullish" and _eff_tape == "risk_off" and dp < cfg.REGIME_STRONG_PCT:
+            return False, (f"counter-tape: bullish bet while the tape is risk-off "
+                           f"(broad {tape:+.2f}%) and {sym or ''} only {dp:.1f}% — don't fight "
                            f"a red tape on a weak signal (trade WITH it)")
     # Index-only premium selling. The VRP edge a credit spread/condor harvests is
     # reliably negative only at the INDEX level (priced correlation risk); single-name
@@ -3631,9 +3661,10 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
         # a green tape / short on a red tape), in which case the bounds widen so we stop
         # filtering out the bullish breakouts and only catching bearish pullback-shorts.
         _rd = ((event_state or {}).get("ride", {}) or {}).get(sym, {}).get("dir")
-        _with_tape = (regime is not None and (
-            (direction == "long" and regime.get("tape_bias") == "risk_on")
-            or (direction == "short" and regime.get("tape_bias") == "risk_off")))
+        # SECTOR-relative bias when enabled; broad tape_bias when OFF (identical to before)
+        _et = effective_tape_bias(sym, regime) if regime is not None else None
+        _with_tape = ((direction == "long" and _et == "risk_on")
+                      or (direction == "short" and _et == "risk_off"))
         cr = anti_chase_reason(direction == "long", scan_row,
                                event=(_rd == direction or _with_tape), regime=regime)
         if cr:
@@ -3701,9 +3732,10 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
         _und = _decision_underlying(decision)
         _rd = ((event_state or {}).get("ride", {}) or {}).get(_und, {}).get("dir")
         _dir = "long" if bullish else "short"
-        _with_tape = (regime is not None and (
-            (bullish and regime.get("tape_bias") == "risk_on")
-            or (not bullish and regime.get("tape_bias") == "risk_off")))
+        # SECTOR-relative bias of the UNDERLYING when enabled; broad tape_bias when OFF
+        _et = effective_tape_bias(_und or osym, regime) if regime is not None else None
+        _with_tape = ((bullish and _et == "risk_on")
+                      or (not bullish and _et == "risk_off"))
         # Conviction-ITM routing already gated this name on a CLEAN trend in
         # conviction_itm_qualifies (§2): STRONG_BULL/BEAR making a NEW HOD/LOD, positive
         # vwap_ext IN the trend's direction, RSI not blown off. That purpose-built gate
@@ -4585,17 +4617,52 @@ def run_cycle(dry: bool = False):
         # without being asked. This is the 6/12 failure made visible.
         _dc = directional_counts(positions)
         _tb = regime.get("tape_bias")
-        _fighting = ((_tb == "risk_on" and _dc.get("bear", 0) - _dc.get("bull", 0) >= 2)
-                     or (_tb == "risk_off" and _dc.get("bull", 0) - _dc.get("bear", 0) >= 2))
-        if _fighting:
-            global _LAST_TAPE_ALERT_AT
-            if (_LAST_TAPE_ALERT_AT is None
-                    or (now - _LAST_TAPE_ALERT_AT).total_seconds() > 1800):
-                tg_send(f"⚠️ FIGHTING THE TAPE: book is {_dc.get('bull',0)} long / "
-                        f"{_dc.get('bear',0)} short while the market is {_tb} "
-                        f"(tape {regime.get('tape'):+.2f}%). Trades should lean WITH it.")
-                log(f"self-diagnostic: fighting the tape ({_dc} vs {_tb})")
-                _LAST_TAPE_ALERT_AT = now
+        global _LAST_TAPE_ALERT_AT
+        if getattr(cfg, "SECTOR_TREND_ENABLED", False):
+            # Per-SECTOR: flag when the book is net-long a sector whose own trend is
+            # risk_off (or net-short a risk_on sector) — the 6/16 miss (long semis into
+            # a semis crash) that the broad tape hid.
+            _sect_dir: dict = {}
+            for p in positions:
+                _ps = p.get("symbol", "")
+                _meta = parse_occ(_ps)
+                if _meta:
+                    _is_bull = _meta["type"] == "call"
+                elif "SHORT" in str(p.get("side", "")).upper():
+                    _is_bull = False
+                else:
+                    _is_bull = True
+                _sect = sector_for(_ps)
+                d = _sect_dir.setdefault(_sect, {"bull": 0, "bear": 0})
+                d["bull" if _is_bull else "bear"] += 1
+            _st = regime.get("sector_trends") or {}
+            _flags = []
+            for _sect, d in _sect_dir.items():
+                _sb = regime_mod.sector_trend_bias(_st, _sect, cfg.REGIME_TAPE_PCT)
+                if _sb == "risk_off" and d["bull"] - d["bear"] >= 2:
+                    _flags.append(f"{d['bull']}L/{d['bear']}S {_sect} (sector "
+                                  f"{_st.get(_sect):+.1f}% risk_off)")
+                elif _sb == "risk_on" and d["bear"] - d["bull"] >= 2:
+                    _flags.append(f"{d['bull']}L/{d['bear']}S {_sect} (sector "
+                                  f"{_st.get(_sect):+.1f}% risk_on)")
+            if _flags:
+                if (_LAST_TAPE_ALERT_AT is None
+                        or (now - _LAST_TAPE_ALERT_AT).total_seconds() > 1800):
+                    tg_send("⚠️ FIGHTING THE SECTOR: " + "; ".join(_flags)
+                            + ". Trades should lean WITH the sector trend.")
+                    log(f"self-diagnostic: fighting the sector ({_flags})")
+                    _LAST_TAPE_ALERT_AT = now
+        else:
+            _fighting = ((_tb == "risk_on" and _dc.get("bear", 0) - _dc.get("bull", 0) >= 2)
+                         or (_tb == "risk_off" and _dc.get("bull", 0) - _dc.get("bear", 0) >= 2))
+            if _fighting:
+                if (_LAST_TAPE_ALERT_AT is None
+                        or (now - _LAST_TAPE_ALERT_AT).total_seconds() > 1800):
+                    tg_send(f"⚠️ FIGHTING THE TAPE: book is {_dc.get('bull',0)} long / "
+                            f"{_dc.get('bear',0)} short while the market is {_tb} "
+                            f"(tape {regime.get('tape'):+.2f}%). Trades should lean WITH it.")
+                    log(f"self-diagnostic: fighting the tape ({_dc} vs {_tb})")
+                    _LAST_TAPE_ALERT_AT = now
         nothing_open = (not positions and not state.get("active_multileg")
                         and not state.get("active_options"))
         if regime["flat"] and nothing_open:
@@ -4722,11 +4789,21 @@ def run_cycle(dry: bool = False):
     # so it produces a compliant decision instead of one the code will reject.
     if regime is not None:
         context["regime"] = regime_mod.summary(regime)
+        _st = regime.get("sector_trends") or {}
+        _sector_note = ""
+        if _st:
+            _top = sorted(_st.items(), key=lambda kv: kv[1])[:4]
+            _sector_note = (
+                " regime.sector_trends gives each sector's OWN trend (mean of its in-scan "
+                "members) — e.g. " + ", ".join(f"{s} {v:+.1f}%" for s, v in _top)
+                + "; the broad index can mask a sector crash, so trade WITH the SECTOR'S "
+                "trend, not just SPY (advisory).")
         context["guardrails"]["regime_gate"] = (
             "A deterministic regime classifier governs this cycle. Open ONLY the "
             "strategies in regime.allowed_strategies; if regime.flat is true, open "
             "nothing new (manage/exit existing only). For a momentum debit spread, "
-            "trade in regime.direction. Entries outside this are rejected in code.")
+            "trade in regime.direction. Entries outside this are rejected in code."
+            + _sector_note)
 
     # 4. Decide
     decision = call_claude(context)
