@@ -564,6 +564,15 @@ GAP_FADE_STOP_PCT = 0.010  # stop ~1% beyond entry (past the gap extreme)
 GAP_FADE_WINDOW_END_MIN = 0   # no new gap-fade once it's 10:00 ET (h==10, m>=this)
 GAP_FADE_UNIVERSE = ["SPY", "QQQ", "IWM", "AAPL", "MSFT", "NVDA", "AMZN", "META", "TSLA", "AMD"]
 
+# ---- newly-registered code books (wired but dark by default) -----------------
+# Master flags for three already-built strategy modules. Engine is byte-for-byte
+# unchanged while these are False. orb + mean_reversion are INTRADAY (normal bracket
+# + EOD-flatten path); sector_pairs is a MULTI-DAY, market-neutral book whose short
+# stock legs are SHIELDED from the intraday machinery (see held_books in run_cycle).
+ORB_ENABLED     = False   # opening-range-breakout (intraday)
+MEANREV_ENABLED = False   # intraday mean-reversion (chop-day book)
+PAIRS_ENABLED   = False   # sector pairs / stat-arb (multi-day, shielded; enable via override file)
+
 
 BLACKLIST: list[str] = []
 
@@ -659,6 +668,10 @@ RUNTIME_SETTABLE = {
     "VEHICLE_ROUTER_HIGH_IVR": float,
     "GAP_FADE_ENABLED": bool,
     "GAP_FADE_NOTIONAL": float,
+    # newly-registered code books (orb/meanrev intraday; sector_pairs multi-day shielded)
+    "ORB_ENABLED": bool,
+    "MEANREV_ENABLED": bool,
+    "PAIRS_ENABLED": bool,
     # conviction-ITM book (deep-ITM, multi-day directional options)
     "CONVICTION_ITM_ENABLED": bool,
     "CONVICTION_ITM_DEPTH": float,

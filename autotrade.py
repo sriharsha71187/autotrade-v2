@@ -4133,16 +4133,46 @@ def run_cycle(dry: bool = False):
     import tail_hedge as th
     import earnings_crush as ec
     import gap_fade as gf
+    import orb
+    import mean_reversion as mr
+    import sector_pairs as sp
+    # The cfg flag is authoritative; mirror it onto each module's own master gate so the
+    # in-module early-return agrees with the call-site gate (modules read their own flag).
+    orb.ORB_ENABLED = cfg.ORB_ENABLED
+    mr.MEANREV_ENABLED = cfg.MEANREV_ENABLED
+    sp.PAIRS_ENABLED = cfg.PAIRS_ENABLED
     gs.run(tc, state, dry)
     od.run(tc, state, dry)               # sell at open / buy near close (regime-gated)
     th.run(tc, state, dry)              # always-on crash hedge (flag-gated, OFF by default)
     ec.run(tc, state, dry)             # earnings IV-crush condor (flag-gated, OFF by default)
     gf.run(tc, state, dry)             # opening-gap fade 9:30-10:00 (flag-gated; intraday, not shielded)
+    # Newly-registered independent books. Each is gated on its cfg flag and wrapped in a
+    # try/except so a single book's failure can't kill the cycle (matching the contract the
+    # other books rely on — they also swallow internally, this is belt-and-suspenders).
+    if cfg.ORB_ENABLED:
+        try:
+            orb.run(tc, state, dry)            # opening-range-breakout (intraday; not shielded)
+        except Exception as e:
+            log(f"orb: run failed: {e}")
+    if cfg.MEANREV_ENABLED:
+        try:
+            mr.run(tc, state, dry)             # intraday mean-reversion (intraday; not shielded)
+        except Exception as e:
+            log(f"mean_reversion: run failed: {e}")
+    if cfg.PAIRS_ENABLED:
+        try:
+            sp.run(tc, state, dry)             # sector pairs stat-arb (MULTI-DAY; SHIELDED below)
+        except Exception as e:
+            log(f"sector_pairs: run failed: {e}")
     sleeve = gs.held_symbols(state)
-    # Shielded books the intraday engine must leave alone. (gap_fade is intraday and
-    # managed by the normal bracket machinery, so it is intentionally NOT here.)
+    # Shielded books the intraday engine must leave alone. (gap_fade/orb/mean_reversion are
+    # intraday and managed by the normal bracket machinery, so they are intentionally NOT
+    # here. sector_pairs is multi-day and holds SHORT stock legs — its legs MUST be shielded
+    # from the cross-day ledger, the EOD stock flatten, and the orphan/forced sweep, exactly
+    # like overnight/tail/earnings; its own run() records P&L via record_strategy_realized.)
     held_books = (sleeve | od.held_symbols(state)
-                  | th.held_symbols(state) | ec.held_symbols(state))
+                  | th.held_symbols(state) | ec.held_symbols(state)
+                  | sp.held_symbols(state))
 
     # Cross-day realized-P&L ledger (AUDIT_ROADMAP #5). The self-reporting books book
     # their own realized via record_strategy_realized, so accumulate every symbol they
@@ -4414,6 +4444,9 @@ def run_cycle(dry: bool = False):
         "tail_hedge": th.summary(state),
         "earnings": ec.summary(state),
         "gap_fade": gf.summary(state),
+        "orb": orb.summary(state),
+        "mean_reversion": mr.summary(state),
+        "sector_pairs": sp.summary(state),
         "bracket_managed": sorted(bracketed),
         "signal_scan": scan[:20],
         "option_chains": option_chains,
