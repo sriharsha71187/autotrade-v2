@@ -239,6 +239,18 @@ def run(tc, state, dry: bool):
         if len(sp["open"]) >= PAIRS_MAX_CONCURRENT:
             return
         held = held_symbols(state)
+        # Cross-book exclusion: never trade a leg another STOCK book already owns. They share
+        # the same broker position, so a shared symbol (6/16: LRCX was in BOTH the growth
+        # sleeve and 3 deploy pairs) makes the sleeve's market-value double-count the pairs
+        # shares (phantom -$3.5k day P&L) AND risks one book selling the other's stock on
+        # close. Skip any pair whose leg collides with another book's current holding.
+        other_syms = set()
+        for _modname in ("growth_sleeve", "overnight_drift"):
+            try:
+                _m = __import__(_modname)
+                other_syms |= set(_m.held_symbols(state))
+            except Exception:
+                pass
         for a, b, sector in PAIRS_DEPLOY:
             if len(sp["open"]) >= PAIRS_MAX_CONCURRENT:
                 break
@@ -246,6 +258,10 @@ def run(tc, state, dry: bool):
             if key in sp["open"]:
                 continue
             if a in held or b in held:                 # don't double-book a leg
+                continue
+            if a in other_syms or b in other_syms:     # collides with another book's holding
+                at.log(f"sector_pairs: {key} skipped — leg held by another book "
+                       f"({'/'.join(s for s in (a, b) if s in other_syms)})")
                 continue
             if a in cfg.BLACKLIST or b in cfg.BLACKLIST:
                 continue
