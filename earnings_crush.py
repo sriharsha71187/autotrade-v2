@@ -33,11 +33,24 @@ except Exception:
     _YF_OK = False
 
 
+def _holdings(state: dict) -> list:
+    """Open earnings condors as a list (AUDIT_ROADMAP #23 broadened the book from a single
+    nightly condor to up to EARNINGS_MAX_CONCURRENT). Reads the new 'holdings' list and
+    transparently lifts a legacy single 'holding' dict into the list so an in-flight
+    position from the old single-condor format is never orphaned."""
+    e = state.get("earnings") or {}
+    out = list(e.get("holdings") or [])
+    legacy = e.get("holding")
+    if legacy:
+        out.append(legacy)
+    return out
+
+
 def held_symbols(state: dict) -> set:
-    h = (state.get("earnings") or {}).get("holding")
-    if not h:
-        return set()
-    return {l["symbol"] for l in h.get("legs", [])}
+    syms = set()
+    for h in _holdings(state):
+        syms.update(l["symbol"] for l in h.get("legs", []))
+    return syms
 
 
 def held_value(tc, state) -> float:
@@ -82,14 +95,34 @@ def _earnings_today(sym, today):
     return False
 
 
-def _next_earnings_name(today):
-    """First universe name reporting today, or None."""
+def _earnings_names_tonight(today, exclude=None):
+    """ALL universe names reporting AMC tonight (AUDIT_ROADMAP #23), excluding blacklisted
+    names and any already in `exclude` (names we already hold a condor on). Order follows
+    EARNINGS_UNIVERSE. Replaces the old _next_earnings_name (which stopped at the first)."""
+    exclude = exclude or set()
+    out = []
     for sym in cfg.EARNINGS_UNIVERSE:
-        if sym in cfg.BLACKLIST:
+        if sym in cfg.BLACKLIST or sym in exclude:
             continue
         if _earnings_today(sym, today):
-            return sym
-    return None
+            out.append(sym)
+    return out
+
+
+def _legs_tight(legs, rows_by_sym):
+    """True if EVERY leg quotes a TIGHT two-sided market (AUDIT_ROADMAP #23): bid/ask within
+    EARNINGS_MAX_LEG_SPREAD_PCT of mid. A wide condor donates the spread on all four legs at
+    entry AND exit, so reject the name rather than sell into a thin market."""
+    for l in legs:
+        r = rows_by_sym.get(l["symbol"])
+        if not r:
+            return False
+        bid, ask, mid = r.get("bid") or 0.0, r.get("ask") or 0.0, r.get("mid") or 0.0
+        if bid <= 0 or ask <= 0 or mid <= 0:
+            return False
+        if (ask - bid) / mid > cfg.EARNINGS_MAX_LEG_SPREAD_PCT:
+            return False
+    return True
 
 
 def _front_chain(odc, sym, spot, today):
@@ -164,6 +197,13 @@ def _build_condor(odc, sym, spot, today):
         {"symbol": short_put["symbol"], "side": "sell"},
         {"symbol": long_put["symbol"], "side": "buy"},
     ]
+    # Tight-market eligibility (#23): all four legs must quote a tight two-sided market,
+    # else the condor donates the spread four times over at entry and exit.
+    rows_by_sym = {r["symbol"]: r for r in rows}
+    if not _legs_tight(legs, rows_by_sym):
+        import autotrade as at
+        at.log(f"earnings: {sym} condor legs too wide (> {cfg.EARNINGS_MAX_LEG_SPREAD_PCT:.0%}) — skip")
+        return None, 0.0, None
     # Net credit per share = sold mids − bought mids.
     net_credit = (short_call["mid"] + short_put["mid"]
                   - long_call["mid"] - long_put["mid"])
@@ -174,13 +214,58 @@ def _build_condor(odc, sym, spot, today):
     return legs, round(net_credit, 2), risk
 
 
+def eligible_tonight(odc, state, today, vix):
+    """Deterministic eligibility (AUDIT_ROADMAP #23), broken out so it is unit-testable
+    without placing orders. Returns the list of {underlying, legs, net_credit, risk} for
+    every name reporting tonight that:
+      * isn't already held / blacklisted,
+      * builds a defined-risk, TIGHT-spread condor (per _build_condor),
+      * is within EARNINGS_MAX_RISK individually, AND
+      * still fits the shared EARNINGS_NIGHT_RISK_BUDGET alongside open + already-chosen
+        condors, capped at EARNINGS_MAX_CONCURRENT total open.
+    VIX-band + afternoon gating is applied by the caller (_enter); pass vix=None to skip
+    the band here (the test exercises eligibility directly)."""
+    import autotrade as at
+    held = _holdings(state)
+    if len(held) >= cfg.EARNINGS_MAX_CONCURRENT:
+        return []
+    used_risk = sum(float(h.get("risk") or 0.0) for h in held)
+    held_names = {h.get("underlying") for h in held}
+    chosen = []
+    for sym in _earnings_names_tonight(today, exclude=held_names):
+        if len(held) + len(chosen) >= cfg.EARNINGS_MAX_CONCURRENT:
+            break
+        spot = None
+        if _YF_OK:
+            try:
+                spot = float(yf.Ticker(sym).fast_info.last_price)
+            except Exception:
+                spot = None
+        legs, net_credit, risk = _build_condor(odc, sym, spot, today)
+        if not legs or risk is None:
+            continue
+        if risk > cfg.EARNINGS_MAX_RISK:
+            at.log(f"earnings: {sym} condor risk ${risk:.0f} > per-trade cap "
+                   f"${cfg.EARNINGS_MAX_RISK:.0f} — skip")
+            continue
+        if used_risk + risk > cfg.EARNINGS_NIGHT_RISK_BUDGET:
+            at.log(f"earnings: {sym} risk ${risk:.0f} would exceed night budget "
+                   f"${cfg.EARNINGS_NIGHT_RISK_BUDGET:.0f} (used ${used_risk:.0f}) — skip")
+            continue
+        used_risk += risk
+        chosen.append({"underlying": sym, "legs": legs,
+                       "net_credit": round(net_credit, 2), "risk": risk})
+    return chosen
+
+
 def _enter(tc, odc, state, dry, vix):
     import autotrade as at
     e = state.setdefault("earnings", {})
+    e.setdefault("holdings", [])
     now = at.et_now()
     today = now.date()
     today_s = today.isoformat()
-    if e.get("holding"):
+    if len(_holdings(state)) >= cfg.EARNINGS_MAX_CONCURRENT:
         return
     if e.get("last_entry_date") == today_s:
         return
@@ -189,64 +274,43 @@ def _enter(tc, odc, state, dry, vix):
         return
     if vix is None or not (cfg.EARNINGS_VIX_MIN <= vix <= cfg.EARNINGS_VIX_MAX):
         return
-    sym = _next_earnings_name(today)
-    if not sym:
-        return
     e["last_entry_date"] = today_s                   # attempt at most once/day
-    spot = None
-    if _YF_OK:
+    picks = eligible_tonight(odc, state, today, vix)
+    if not picks:
+        at.log("earnings: no eligible defined-risk condor tonight — standing down")
+        at.save_state(state)
+        return
+    for p in picks:
+        sym, legs = p["underlying"], p["legs"]
+        net_credit, risk = p["net_credit"], p["risk"]
+        if dry:
+            at.log(f"[DRY] earnings would SELL condor {sym} net≈{net_credit} risk≈${risk:.0f} "
+                   f"legs={[l['symbol'] for l in legs]}")
+            continue
         try:
-            spot = float(yf.Ticker(sym).fast_info.last_price)
-        except Exception:
-            spot = None
-    legs, net_credit, risk = _build_condor(odc, sym, spot, today)
-    if not legs or risk is None:
-        at.log(f"earnings: no defined-risk condor available for {sym} — standing down")
-        at.save_state(state)
-        return
-    if risk > cfg.EARNINGS_MAX_RISK:
-        at.log(f"earnings: {sym} condor risk ${risk:.0f} > cap ${cfg.EARNINGS_MAX_RISK:.0f} — skip")
-        at.save_state(state)
-        return
-    if dry:
-        at.log(f"[DRY] earnings would SELL condor {sym} net≈{net_credit} risk≈${risk:.0f} "
-               f"legs={[l['symbol'] for l in legs]}")
-        at.save_state(state)
-        return
-    try:
-        o = at.place_multi_leg(tc, legs, net_credit, 1, dry)
-        e["holding"] = {"underlying": sym, "legs": legs,
-                        "entry_net": round(net_credit * 100, 2),  # $ credit received
-                        "qty": 1, "risk": risk, "entry_date": today_s,
-                        "order_id": str(getattr(o, "id", "")) or None,
-                        "opened": now.isoformat()}
-        at.log(f"EARNINGS condor SELL {sym} net≈{net_credit} risk≈${risk:.0f} "
-               f"id={getattr(o,'id',None)}")
-        at.tg_send(f"📅 Earnings IV-crush: sold a defined-risk condor on {sym} "
-                   f"(credit ≈ ${net_credit*100:,.0f}, max risk ${risk:,.0f}).")
-        at.save_state(state)
-    except Exception as ex:
-        at.log(f"earnings: condor submit {sym} failed: {ex}")
+            o = at.place_multi_leg(tc, legs, net_credit, 1, dry)
+            e["holdings"].append({"underlying": sym, "legs": legs,
+                                  "entry_net": round(net_credit * 100, 2),  # $ credit received
+                                  "qty": 1, "risk": risk, "entry_date": today_s,
+                                  "order_id": str(getattr(o, "id", "")) or None,
+                                  "opened": now.isoformat()})
+            at.log(f"EARNINGS condor SELL {sym} net≈{net_credit} risk≈${risk:.0f} "
+                   f"id={getattr(o,'id',None)}")
+            at.tg_send(f"📅 Earnings IV-crush: sold a defined-risk condor on {sym} "
+                       f"(credit ≈ ${net_credit*100:,.0f}, max risk ${risk:,.0f}).")
+        except Exception as ex:
+            at.log(f"earnings: condor submit {sym} failed: {ex}")
+    at.save_state(state)
 
 
-def _exit(tc, odc, state, dry):
-    """The session AFTER entry (post-announcement), close the condor on the crush."""
+def _close_one(tc, odc, state, h, dry) -> bool:
+    """Close a single earnings condor post-crush. Returns True if it was closed (so the
+    caller can drop it from holdings)."""
     import autotrade as at
-    e = state.setdefault("earnings", {})
-    h = e.get("holding")
-    if not h:
-        return
-    now = at.et_now()
-    today_s = now.date().isoformat()
-    if h.get("entry_date") == today_s:
-        return                                       # earnings is tonight; hold
-    # Post-earnings: close once the open has settled.
-    if now.hour < 9 or (now.hour == 9 and now.minute < 35):
-        return
     legs = h.get("legs", [])
     if dry:
         at.log(f"[DRY] earnings would CLOSE {h.get('underlying')} condor (post-crush)")
-        return
+        return False
     # Cost to close ≈ current net debit to buy it back; realized = credit − cost.
     cost = 0.0
     try:
@@ -264,14 +328,43 @@ def _exit(tc, odc, state, dry):
                 pass
         realized = float(h.get("entry_net", 0.0)) - cost * 100
         at.record_strategy_realized(state, "earnings_crush", realized)
-        e["holding"] = None
-        e["last_realized"] = round(realized, 2)
+        state.setdefault("earnings", {})["last_realized"] = round(realized, 2)
         at.log(f"EARNINGS close {h.get('underlying')} realized≈{realized:+.0f}")
         at.tg_send(f"📅 Earnings IV-crush on {h.get('underlying')} closed: "
                    f"P&L ≈ ${realized:+,.0f}.")
-        at.save_state(state)
+        return True
     except Exception as ex:
-        at.log(f"earnings: close failed: {ex}")
+        at.log(f"earnings: close {h.get('underlying')} failed: {ex}")
+        return False
+
+
+def _exit(tc, odc, state, dry):
+    """The session AFTER entry (post-announcement), close each held condor on the crush."""
+    import autotrade as at
+    e = state.setdefault("earnings", {})
+    holds = _holdings(state)
+    if not holds:
+        return
+    now = at.et_now()
+    today_s = now.date().isoformat()
+    # Post-earnings: close once the open has settled.
+    if now.hour < 9 or (now.hour == 9 and now.minute < 35):
+        return
+    remaining = []
+    closed_any = False
+    for h in holds:
+        if h.get("entry_date") == today_s:
+            remaining.append(h)                      # earnings is tonight; hold
+            continue
+        if _close_one(tc, odc, state, h, dry):
+            closed_any = True
+        else:
+            remaining.append(h)                      # dry-run or close failed — keep it
+    # Re-home everything into the canonical 'holdings' list (drops the legacy 'holding').
+    e["holdings"] = remaining
+    e["holding"] = None
+    if closed_any:
+        at.save_state(state)
 
 
 def run(tc, state, dry: bool, vix=None):
@@ -293,11 +386,13 @@ def run(tc, state, dry: bool, vix=None):
 
 def summary(state: dict) -> dict:
     e = state.get("earnings", {}) or {}
-    h = e.get("holding")
+    holds = _holdings(state)
     return {
-        "holding": ({"underlying": h["underlying"], "risk": h.get("risk"),
-                     "entry_net": h.get("entry_net"), "entry_date": h.get("entry_date")}
-                    if h else None),
+        "holdings": [{"underlying": h["underlying"], "risk": h.get("risk"),
+                      "entry_net": h.get("entry_net"), "entry_date": h.get("entry_date")}
+                     for h in holds],
+        "open_risk": round(sum(float(h.get("risk") or 0.0) for h in holds), 2),
+        "concurrent": len(holds),
         "last_realized": e.get("last_realized"),
         "last_entry_date": e.get("last_entry_date"),
     }

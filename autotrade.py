@@ -872,6 +872,33 @@ def option_chain_for(odc, underlying, spot, want_today_expiry: bool = False,
     return sorted(calls + puts, key=lambda r: (r["type"], r["strike"]))
 
 
+def debit_spread_long_leg(rows: list[dict], spot: float, bullish: bool,
+                          itm_pct: float = None) -> "dict | None":
+    """Pick the slightly-ITM long leg for a MOMENTUM debit spread (AUDIT_ROADMAP #19).
+    A strict-ATM long leg is all gamma/theta — it bleeds fastest and needs a big move to
+    pay. Targeting ~DEBIT_LONG_LEG_ITM_PCT in-the-money (proxy for ~0.65 delta) gives a
+    long leg that is mostly intrinsic, so the spread tracks the underlying with far less
+    theta drag while the short leg (chosen OTM for the width) defines the risk.
+      - bullish  -> a CALL whose strike is ~itm_pct BELOW spot (in-the-money call)
+      - bearish  -> a PUT  whose strike is ~itm_pct ABOVE spot (in-the-money put)
+    Returns the chosen row from `rows`, or None if no strike on the right side is listed.
+    Pure / deterministic so the router can surface it as a prior and the test can assert it
+    lands ITM (not ATM). Does NOT touch the conviction-ITM selector or the 0DTE condor path."""
+    if not rows or not spot or spot <= 0:
+        return None
+    if itm_pct is None:
+        itm_pct = cfg.DEBIT_LONG_LEG_ITM_PCT
+    want = "call" if bullish else "put"
+    target = spot * (1 - itm_pct) if bullish else spot * (1 + itm_pct)
+    # Only consider strikes actually in-the-money on the right side (a call must be below
+    # spot, a put above) — so a thin chain can never hand back an OTM/ATM strike as "ITM".
+    cands = [r for r in rows if r["type"] == want
+             and (r["strike"] < spot if bullish else r["strike"] > spot)]
+    if not cands:
+        return None
+    return min(cands, key=lambda r: abs(r["strike"] - target))
+
+
 def conviction_chain_for(odc, underlying, spot, bullish: bool) -> list[dict]:
     """Deep-ITM, multi-day contract set for the conviction-ITM book (see
     CONVICTION_ITM_SPEC.md). Unlike option_chain_for (near-ATM, nearest expiry), this
@@ -1027,8 +1054,67 @@ def conviction_itm_qualifies(r: dict, event_state=None, regime=None) -> bool:
     return bool(has_catalyst or clean_trend)
 
 
+# The four overlapping directional vehicles the router chooses between (#21). All four
+# express the SAME directional view; the router picks ONE per signal so they don't all
+# fire on one name and read as independent bets.
+DIRECTIONAL_VEHICLES = ("stock", "long_option", "debit_spread", "conviction_itm")
+# Decision strategy labels that all belong to the ONE "directional" bucket for the #10
+# sector/correlation + #6 sizing caps. A debit spread is bucketed via its directional bias.
+DIRECTIONAL_STRATEGIES = frozenset(
+    {"stock_long", "stock_short", "long_option", "debit_spread"})
+
+
+def route_directional_vehicle(r: dict, options_intel=None, event_state=None,
+                              regime=None) -> "str | None":
+    """Deterministically pick ONE directional vehicle for a signal (AUDIT_ROADMAP #21).
+    The four bullish/bearish vehicles (stock, long option, debit spread, conviction-ITM)
+    overlap with no selection rule, so all four can fire on one name. This routes by setup
+    and the choice is surfaced to the model as a STRONG prior (and aggregated for caps):
+      * high ATM IV-rank (> VEHICLE_ROUTER_HIGH_IVR) -> 'stock' — don't buy rich premium
+        for a capped payoff at the top of the name's IV range.
+      * low-IV CLEAN multi-day trend / hard catalyst -> 'conviction_itm' if that book is
+        enabled (deep-ITM multi-day rides the catalyst) else 'debit_spread'.
+      * low-IV intraday MOMENTUM (strong mover, no clean multi-day trend) -> 'debit_spread'.
+      * default / no clear options edge -> 'stock'.
+    Returns one of DIRECTIONAL_VEHICLES, or None when the name isn't directional at all
+    (so the router never forces a vehicle onto a non-signal). Pure + deterministic."""
+    sig = r.get("signal") or ""
+    bullish = sig == "STRONG_BULL" or (sig.endswith("BULL"))
+    bearish = sig == "STRONG_BEAR" or (sig.endswith("BEAR"))
+    if not (bullish or bearish):
+        return None
+    sym = r.get("symbol")
+    oi = (options_intel or {}).get(sym) if sym else None
+    ivr = oi.get("iv_rank") if oi else None
+    # 1) Rich vol -> shares (buying premium here is a bad trade regardless of edge).
+    if ivr is not None and ivr > cfg.VEHICLE_ROUTER_HIGH_IVR:
+        return "stock"
+    # 2) Low-IV clean multi-day trend / hard catalyst -> conviction-ITM (if enabled).
+    if conviction_itm_qualifies(r, event_state=event_state, regime=regime):
+        return "conviction_itm" if cfg.CONVICTION_ITM_ENABLED else "debit_spread"
+    # 3) Low-IV intraday momentum (a strong mover w/o a clean multi-day trend) -> debit spread.
+    if abs(r.get("day_pct") or 0) >= 2.0:
+        return "debit_spread"
+    # 4) Default: shares.
+    return "stock"
+
+
+def build_directional_router(scan, options_intel=None, event_state=None,
+                             regime=None) -> dict:
+    """Run route_directional_vehicle over the scan and return {symbol: vehicle} for every
+    directional name (#21). Surfaced to the model as a prior and used by the guardrail to
+    enforce one-vehicle-per-name. Names with no directional signal are omitted."""
+    out = {}
+    for r in (scan or []):
+        v = route_directional_vehicle(r, options_intel=options_intel,
+                                      event_state=event_state, regime=regime)
+        if v:
+            out[r.get("symbol")] = v
+    return out
+
+
 def build_option_chains(odc, scan, positions, vix, now,
-                        max_underlyings: int = 3,
+                        max_underlyings: int = None,
                         event_state=None, regime=None) -> tuple[dict, set, set]:
     """Decide which underlyings could plausibly trade options THIS cycle and fetch
     a compact chain for each. Returns
@@ -1037,8 +1123,21 @@ def build_option_chains(odc, scan, positions, vix, now,
     When CONVICTION_ITM_ENABLED, a name that qualifies (hard catalyst or clean
     multi-day trend, §2) is offered the DEEP-ITM multi-day contract set instead of the
     default ATM short-dated set; conviction_itm_symbol_set tags those OCC symbols so the
-    guardrail routes them to the risk-based sizing branch."""
+    guardrail routes them to the risk-based sizing branch.
+
+    max_underlyings SCALES with the day's breadth (AUDIT_ROADMAP #22): a hard cap of 3
+    starves fresh strong trends on a busy day. When None (the normal call), the cap grows
+    from MAX_OPTION_UNDERLYINGS_BASE toward MAX_OPTION_UNDERLYINGS_BUSY by the count of
+    names moving >= 3%, so a tape with many movers can fetch more chains. Trend candidates
+    are queued BEFORE held-position underlyings so a new entry is never crowded out."""
     spot_of = {r["symbol"]: r["last"] for r in scan}
+    # Breadth-scaled fetch cap (#22): more names moving >=3% -> more chains, up to the busy
+    # ceiling. A caller may still pin max_underlyings explicitly (tests / special paths).
+    if max_underlyings is None:
+        big_movers = sum(1 for r in scan if abs(r.get("day_pct") or 0) >= 3.0)
+        max_underlyings = max(cfg.MAX_OPTION_UNDERLYINGS_BASE,
+                              min(cfg.MAX_OPTION_UNDERLYINGS_BUSY,
+                                  cfg.MAX_OPTION_UNDERLYINGS_BASE + big_movers))
     targets = []  # (underlying, spot, want_today_expiry)
     # conviction-ITM routing: underlying -> bullish? for names that qualified this cycle.
     conviction_route: dict = {}
@@ -1060,7 +1159,20 @@ def build_option_chains(odc, scan, positions, vix, now,
                   if abs(r["day_pct"]) >= 2.0 and r["symbol"] not in cfg.BLACKLIST]
         pulled = [r for r in movers
                   if anti_chase_reason(r["day_pct"] > 0, r) is None]   # entry would be allowed
-        for r in (pulled or movers)[:5]:
+        cand = pulled or movers
+        # Trend-candidate ordering (#22): the FRESHEST strong trends go to the front of
+        # the queue so a new entry on a busy day is never crowded out by held names (which
+        # are appended AFTER this block). Prefer WITH-TAPE movers (a long on a risk_on tape /
+        # a short on a risk_off tape — the trend the bot most wants to ride), then by raw
+        # move size. Offer a few more than the calm-day cap so the scaled max_underlyings
+        # governs how many actually get fetched.
+        _tape = (regime or {}).get("tape_bias") if regime else None
+
+        def _trend_rank(r):
+            up = (r.get("day_pct") or 0) > 0
+            with_tape = ((up and _tape == "risk_on") or ((not up) and _tape == "risk_off"))
+            return (0 if with_tape else 1, -abs(r.get("day_pct") or 0))
+        for r in sorted(cand, key=_trend_rank)[:cfg.MAX_OPTION_UNDERLYINGS_BUSY]:
             targets.append((r["symbol"], r["last"], False))
         # Conviction-ITM auto-routing (§2/§3): a qualifying name gets the DEEP-ITM
         # multi-day set INSTEAD of the ATM short-dated set. Scan the FULL movers list (not
@@ -1133,6 +1245,24 @@ def _decision_strategy(d: dict) -> str:
             return "multi_leg"
         return "credit_spread" if float(net) >= 0 else "debit_spread"
     return a or "unknown"
+
+
+def _decision_vehicle(d: dict, conviction_symbols=None) -> "str | None":
+    """Map a model decision to one of DIRECTIONAL_VEHICLES (#21), or None if it is not a
+    single-name directional vehicle (a credit spread / index condor / hold / close). Used
+    to enforce the router's one-vehicle-per-name choice in the guardrail."""
+    conviction_symbols = conviction_symbols or set()
+    a = d.get("action")
+    if a == "buy_stock":
+        return "stock"
+    if a == "buy_option":
+        osym = d.get("option_symbol")
+        if d.get("book") == "conviction_itm" or (osym and osym in conviction_symbols):
+            return "conviction_itm"
+        return "long_option"
+    if a == "multi_leg" and _decision_strategy(d) == "debit_spread":
+        return "debit_spread"
+    return None
 
 
 def _decision_broker_symbols(d: dict) -> set:
@@ -3197,7 +3327,8 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
                       option_spread_pct=None, scan_row=None,
                       dir_counts=None, book_symbols=None,
                       regime=None, event_state=None, options_intel=None,
-                      conviction_symbols=None, positions=None) -> tuple[bool, str]:
+                      conviction_symbols=None, positions=None,
+                      vehicle_router=None) -> tuple[bool, str]:
     """ref_price: current per-share price of the asset being traded — the stock
     last price for buy_stock, the option premium per share for buy_option. Used
     for the notional and total-deployed-capital caps.
@@ -3212,6 +3343,7 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
     book_symbols = book_symbols or set()
     conviction_symbols = conviction_symbols or set()
     positions = positions or []
+    vehicle_router = vehicle_router or {}
     action = decision.get("action")
     # The growth sleeve and overnight-drift book are separate, code-managed books —
     # the intraday engine may not open, short, or close their names (it would fight
@@ -3268,6 +3400,36 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
         if und and n_today >= cfg.MAX_SPREADS_PER_NAME_PER_DAY:
             return False, (f"{und}: {n_today} spreads already today "
                            f"(cap {cfg.MAX_SPREADS_PER_NAME_PER_DAY}) — no more re-entries on this name")
+    # Deterministic directional-vehicle router (AUDIT_ROADMAP #21). Treat the four
+    # bullish/bearish vehicles (stock / long option / debit spread / conviction-ITM) as ONE
+    # "directional" bucket per name so they can't all fire on one signal and read as
+    # independent bets:
+    #   (a) if the router chose a vehicle for this name, REQUIRE the decision to use it
+    #       (a debit spread on a name the router sent to STOCK because IV-rank is rich is
+    #        exactly the bad trade #21 prevents);
+    #   (b) regardless of the router, block a SECOND directional vehicle on a name already
+    #       held directionally in the SAME direction (one open vehicle per name+side).
+    if cfg.VEHICLE_ROUTER_ENABLED and action in ("buy_stock", "buy_option", "multi_leg"):
+        _veh = _decision_vehicle(decision, conviction_symbols)
+        if _veh is not None:
+            _und = (_decision_underlying(decision) or decision.get("symbol")
+                    or (parse_occ(decision.get("option_symbol")) or {}).get("underlying"))
+            _routed = vehicle_router.get(_und)
+            if _routed and _routed != _veh:
+                return False, (f"vehicle router: {_und} routed to '{_routed}' this setup, "
+                               f"not '{_veh}' — one vehicle per directional signal (#21)")
+            # One open directional vehicle per name+side: aggregate the four into one bucket.
+            _bias = _trade_bias(decision)            # 'bullish'/'bearish'/None
+            _want = {"bullish": "bull", "bearish": "bear"}.get(_bias)
+            if _want and _und:
+                for p in positions:
+                    _pund = (parse_occ(p.get("symbol", "")) or {}).get(
+                        "underlying") or p.get("symbol")
+                    if _pund != _und:
+                        continue
+                    if _position_direction(p) == _want:
+                        return False, (f"vehicle router: {_und} already held {_want} via another "
+                                       f"directional vehicle — one vehicle per name+side (#21)")
     today = now.strftime("%Y-%m-%d")
     if today in cfg.ECON_BLACKOUT_DATES and action not in ("hold", "close"):
         return False, "econ blackout day — no new entries"
@@ -3838,7 +4000,8 @@ def status_text(tc, state) -> str:
         g = state.get("growth", {})
         on = (state.get("overnight") or {}).get("holding")
         thh = (state.get("tail_hedge") or {}).get("holding")
-        ech = (state.get("earnings") or {}).get("holding")
+        import earnings_crush as _ec
+        _eholds = _ec._holdings(state)
         reg = state.get("last_regime") or {}
         by_strat = honest_trade_stats(tc, state).get("by_strategy", {})
         strat_line = (" | ".join(f"{k} ${v:+.0f}" for k, v in
@@ -3854,7 +4017,9 @@ def status_text(tc, state) -> str:
                  f"pending ${g.get('pending_cash', 0):.0f}",
                  f"Overnight: {on['symbol']+' '+format(on.get('qty',0),'g') if on else 'flat'}",
                  f"Tail hedge: {thh['symbol']+' x'+str(thh.get('qty')) if thh else 'flat'}",
-                 f"Earnings: {ech['underlying']+' condor (risk $'+format(ech.get('risk',0),'.0f')+')' if ech else 'flat'}",
+                 (f"Earnings: {len(_eholds)} condor(s) "
+                  f"[{', '.join(h['underlying'] for h in _eholds)}] risk "
+                  f"${sum(float(h.get('risk') or 0) for h in _eholds):.0f}" if _eholds else "Earnings: flat"),
                  (f"Regime: {reg.get('trend','-')}/{reg.get('vol','-')} — "
                   + ("FLAT (no new entries)" if reg.get('flat')
                      else "allowed: " + (", ".join(reg.get('allowed_strategies') or []) or "-"))
@@ -4213,6 +4378,14 @@ def run_cycle(dry: bool = False):
     option_chains, offered_options, conviction_symbols = build_option_chains(
         odc, scan, positions, vix, now, event_state=event_state, regime=regime)
 
+    # Deterministic directional-vehicle router (#21): pick ONE vehicle per directional
+    # name (stock / long option / debit spread / conviction-ITM) by setup, so the four
+    # overlapping books don't all fire on the same name. Surfaced to the model as a strong
+    # prior below and enforced in passes_guardrails (one vehicle per name).
+    vehicle_router = (build_directional_router(
+        scan, options_intel=options_intel, event_state=event_state, regime=regime)
+        if cfg.VEHICLE_ROUTER_ENABLED else {})
+
     # Authoritative day P&L straight off the account (equity vs start-of-day),
     # plus open unrealized — the ground truth the model should trust over any
     # per-symbol fill math. Profit-target gating uses this same number. The
@@ -4244,6 +4417,7 @@ def run_cycle(dry: bool = False):
         "bracket_managed": sorted(bracketed),
         "signal_scan": scan[:20],
         "option_chains": option_chains,
+        "directional_vehicle_router": vehicle_router or None,
         "vix": vix,
         "fear_greed": fear_greed(),
         "news": breaking_news([r["symbol"] for r in scan[:10]]),
@@ -4274,6 +4448,18 @@ def run_cycle(dry: bool = False):
                                             f"14:00 0DTE cutoff)"),
             "condor_window": "10:00–10:30 ET",
             "option_symbols_must_come_from": "option_chains",
+            "directional_vehicle_router": (
+                "directional_vehicle_router maps {symbol: vehicle} — the ONE vehicle the "
+                "deterministic router chose for that name (stock / long_option / "
+                "debit_spread / conviction_itm). Treat it as a STRONG prior: express a "
+                "directional view on a routed name through THAT vehicle, not a different "
+                "one. Do not stack multiple vehicles on the same name — the guardrail "
+                "rejects a 2nd directional vehicle on a name already held directionally."),
+            "debit_spread_long_leg": (
+                f"For a MOMENTUM debit spread, buy a SLIGHTLY-ITM long leg "
+                f"(~{cfg.DEBIT_LONG_LEG_ITM_PCT:.0%} in-the-money, ≈0.65 delta — mostly "
+                f"intrinsic, low theta) and SELL an OTM short leg for the width. Do NOT "
+                f"make the long leg strict-ATM (max gamma/theta, bleeds fastest)."),
         },
         "pre_filter_reason": why,
     }
@@ -4400,7 +4586,7 @@ def run_cycle(dry: bool = False):
                                        regime=regime, event_state=event_state,
                                        options_intel=options_intel,
                                        conviction_symbols=conviction_symbols,
-                                       positions=positions)
+                                       positions=positions, vehicle_router=vehicle_router)
         if not ok:
             log(f"guardrail blocked {action}: {reason}")
             result = {"status": "blocked", "action": action, "reason": reason}

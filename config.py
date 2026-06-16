@@ -148,6 +148,30 @@ MOMENTUM_OPTION_CUTOFF_HOUR = 15
 MOMENTUM_OPTION_CUTOFF_MIN  = 0    # momentum debit spreads enterable 10:00–15:00 ET
                                    # (spreads are force-closed 15:45, so this leaves
                                    #  ~45min of working time — 15:30 would be useless)
+# Debit-spread long-leg selection (AUDIT_ROADMAP #19). A strict-ATM long leg carries
+# max gamma/theta — it decays fastest and needs a big move to pay. For a MOMENTUM debit
+# spread, target a SLIGHTLY-ITM long leg (~0.60-0.70 delta, more intrinsic / less theta)
+# while the short leg stays OTM to define the width. DEBIT_LONG_LEG_ITM_PCT is the % the
+# long strike sits in-the-money (proxy for ~0.65 delta): a call long ~spot*(1-pct), a put
+# long ~spot*(1+pct). Surfaced to the model as a prior; the conviction-ITM book (already
+# deep-ITM) and the 0DTE index condor path are unaffected.
+DEBIT_LONG_LEG_ITM_PCT = 0.04
+# Option-chain fetch breadth (AUDIT_ROADMAP #22). On a CALM day 3 underlyings is plenty;
+# on a busy day (many names moving >=3%) a hard cap of 3 starves fresh strong trends —
+# held positions and a couple of movers fill the slots and a new entry never gets a chain.
+# Scale the cap up toward MAX_OPTION_UNDERLYINGS_BUSY by the count of >=3% movers, and
+# fetch the top WITH-TAPE trend candidates BEFORE held-position underlyings so a new entry
+# is never crowded out by names we're only re-managing.
+MAX_OPTION_UNDERLYINGS_BUSY = 6    # ceiling on chains fetched on a busy (many-mover) day
+MAX_OPTION_UNDERLYINGS_BASE = 3    # baseline on a calm day (the old hard cap)
+# Deterministic directional-vehicle router (AUDIT_ROADMAP #21). Four bullish/bearish
+# vehicles (stock, long option, debit spread, conviction-ITM) overlap with no rule for
+# WHICH to use — so all four can fire on the same name and read as independent bets. The
+# router picks ONE vehicle per directional signal by setup and surfaces it as a strong
+# prior: high ATM IV-rank → stock (don't buy rich premium); low-IV clean multi-day trend
+# → conviction-ITM (if enabled); low-IV intraday momentum → debit spread; default → stock.
+VEHICLE_ROUTER_ENABLED   = True
+VEHICLE_ROUTER_HIGH_IVR  = 60.0    # ATM IV-rank above this → prefer STOCK (premium is rich)
 
 # ---- overnight momentum hold (catalyst-backed conviction; see overnight_conviction.py)
 # A momentum DEBIT spread is normally force-closed at 15:45. It may instead RIDE
@@ -477,15 +501,36 @@ TAIL_HEDGE_TAKE_PROFIT_MULT = 3.0   # monetize a hedge that triples on a vol spi
 # Defined-risk short premium (iron condor) into a single name's earnings, opened
 # the afternoon before, closed the day after on the IV crush. Best when VIX 16-22.
 EARNINGS_CRUSH_ENABLED = False
-EARNINGS_VIX_MIN  = 16.0
-EARNINGS_VIX_MAX  = 22.0
-EARNINGS_MAX_RISK = 1_000.0   # max defined loss per earnings trade
+# VIX band (AUDIT_ROADMAP #23). The 16-22 band left the book DARK most of the month (VIX
+# sits 12-16 in calm regimes). Widen the band so the structural IV-crush edge is harvested
+# across more of the calendar; the upper bound still stands the book down in a panic tape
+# where a single name can gap clean through both wings.
+EARNINGS_VIX_MIN  = 12.0
+EARNINGS_VIX_MAX  = 28.0
+EARNINGS_MAX_RISK = 1_000.0   # max defined loss per SINGLE earnings condor
 EARNINGS_WING_WIDTH = 5.0
 EARNINGS_MIN_DTE  = 2         # prefer an expiry >= this many days out, so a single
                               # missed post-earnings close can't let the condor expire
                               # ITM and assign (falls back to nearest if none listed)
-EARNINGS_UNIVERSE = [         # liquid optionable names with clean earnings moves
+# Concurrency + shared risk budget (AUDIT_ROADMAP #23). The book used to open ONE condor
+# a night on the first universe name reporting. Allow up to EARNINGS_MAX_CONCURRENT condors
+# the same night (on DIFFERENT names) as long as their combined defined risk stays within
+# EARNINGS_NIGHT_RISK_BUDGET — spreading the crush edge across several names instead of
+# betting the whole night on one print. Each individual condor still respects EARNINGS_MAX_RISK.
+EARNINGS_MAX_CONCURRENT  = 3       # max open earnings condors held over one night
+EARNINGS_NIGHT_RISK_BUDGET = 2_500.0   # shared defined-risk ceiling across tonight's condors
+# Eligibility filter (AUDIT_ROADMAP #23). Only sell into a name whose front-expiry option
+# market is TIGHT — a wide condor donates the spread on all four legs at entry AND exit, and
+# a thin two-sided market makes the post-crush buy-back expensive. Reject a name whose ATM
+# straddle legs quote wider than this fraction of their mid.
+EARNINGS_MAX_LEG_SPREAD_PCT = 0.12
+EARNINGS_UNIVERSE = [         # liquid optionable names with clean, well-priced earnings moves.
+                              # Broadened (#23) so a night rarely has zero eligible names; the
+                              # tight-spread + VIX-band runtime filters keep quality high.
     "AAPL", "MSFT", "AMZN", "GOOGL", "META", "NVDA", "TSLA", "AMD", "NFLX", "CRM",
+    "AVGO", "ORCL", "ADBE", "CRWD", "PANW", "NOW", "INTC", "QCOM", "MU", "TXN",
+    "JPM", "BAC", "GS", "V", "MA", "DIS", "NKE", "COST", "WMT", "HD",
+    "PLTR", "SHOP", "UBER", "ABNB", "COIN", "SMCI", "MRVL", "DELL", "LRCX", "KLAC",
 ]
 
 # ---- conviction-ITM book (deep-ITM, multi-day directional options) ----------
@@ -599,6 +644,19 @@ RUNTIME_SETTABLE = {
     "TAIL_HEDGE_BUDGET": float,
     "EARNINGS_CRUSH_ENABLED": bool,
     "EARNINGS_MAX_RISK": float,
+    # earnings book broadening (#23): VIX band, concurrency + shared budget, tight-spread filter
+    "EARNINGS_VIX_MIN": float,
+    "EARNINGS_VIX_MAX": float,
+    "EARNINGS_MAX_CONCURRENT": int,
+    "EARNINGS_NIGHT_RISK_BUDGET": float,
+    "EARNINGS_MAX_LEG_SPREAD_PCT": float,
+    # debit-spread long-leg ITM target (#19) + option-chain breadth scaling (#22)
+    # + deterministic directional-vehicle router (#21)
+    "DEBIT_LONG_LEG_ITM_PCT": float,
+    "MAX_OPTION_UNDERLYINGS_BUSY": int,
+    "MAX_OPTION_UNDERLYINGS_BASE": int,
+    "VEHICLE_ROUTER_ENABLED": bool,
+    "VEHICLE_ROUTER_HIGH_IVR": float,
     "GAP_FADE_ENABLED": bool,
     "GAP_FADE_NOTIONAL": float,
     # conviction-ITM book (deep-ITM, multi-day directional options)
