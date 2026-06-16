@@ -241,7 +241,11 @@ def _run_manage(state_opt, now_dt, mid):
     tc = FakeTC([osym])
     closed = []
     at_close_orig = at.close_symbols
+    at_closem_orig = at.close_symbols_marketable
     at.close_symbols = lambda tc, syms, dry: (closed.extend(syms) or set(syms))
+    # #15: conviction discretionary exits (max-hold/DTE/trail/stop) now route through the
+    # marketable-limit close; capture it too so the exit-trigger assertions still hold.
+    at.close_symbols_marketable = lambda tc, odc, syms, dry: (closed.extend(syms) or set(syms))
     orig_now = at.et_now
     at.et_now = lambda: now_dt
     _mid_patch(mid)
@@ -249,6 +253,7 @@ def _run_manage(state_opt, now_dt, mid):
         at.manage_options(tc, odc=None, state=state, dry=True)
     finally:
         at.close_symbols = at_close_orig
+        at.close_symbols_marketable = at_closem_orig
         at.et_now = orig_now
         at.option_latest_quote = at._orig_olq
         at._quote_mid = at._orig_qmid

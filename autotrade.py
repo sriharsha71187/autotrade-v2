@@ -51,6 +51,7 @@ try:
     from alpaca.trading.client import TradingClient
     from alpaca.trading.requests import (
         MarketOrderRequest, LimitOrderRequest,
+        StopOrderRequest, StopLimitOrderRequest,
         TakeProfitRequest, StopLossRequest, OptionLegRequest,
         GetOrdersRequest, ReplaceOrderRequest,
     )
@@ -2067,6 +2068,207 @@ def close_symbols(tc, symbols, dry):
     return flat
 
 
+def close_symbols_marketable(tc, odc, symbols, dry):
+    """DISCRETIONARY-exit close (AUDIT_ROADMAP #15): close each leg with a MARKETABLE
+    LIMIT priced off the live quote — sell-to-close a LONG at bid×(1−slip), buy-to-close
+    a SHORT at ask×(1+slip) — so a normal profit-take / trail / breakeven / thesis exit
+    doesn't donate the (up to 15%-wide) bid/ask spread the way a bare market order does.
+    Waits OPTION_EXIT_FILL_WAIT_SEC for the limit, then FALLS BACK to the pure-MARKET
+    close_symbols() for anything still open (certainty over the last few cents).
+
+    Used ONLY by the discretionary manage_options / manage_multileg exits. The SAFETY
+    closes (EOD/forced flatten, max-loss kill, naked-short, orphan sweep, loss-halt
+    flatten) call close_symbols() directly and stay pure market. Same wash-safe pre-cancel
+    + confirmed-flat contract as close_symbols (returns the SET confirmed flat)."""
+    if dry:
+        for sym in symbols:
+            log(f"[DRY] would CLOSE (marketable-limit) {sym}")
+        return set(symbols)
+    if odc is None:
+        # No quote source -> we cannot price a limit. Don't silently skip the exit:
+        # fall straight through to the guaranteed market close.
+        return close_symbols(tc, symbols, dry)
+    slip = cfg.OPTION_EXIT_SLIP
+    targets = set(symbols)
+    # Pass 1: cancel any resting order touching these symbols (same wash-safety as the
+    # market path — a leftover opposite-side leg makes the close reject as a wash trade).
+    try:
+        for o in tc.get_orders(filter=GetOrdersRequest(
+                status=QueryOrderStatus.OPEN, limit=200)):
+            osyms = {o.symbol} | {getattr(l, "symbol", None)
+                                  for l in (getattr(o, "legs", None) or [])}
+            if targets & osyms:
+                tc.cancel_order_by_id(o.id)
+    except Exception as ce:
+        log(f"pre-close (marketable) cancel failed: {ce}")
+    time.sleep(1.0)
+    # Pass 2: submit a marketable limit per leg, sized to close the held qty on the
+    # correct side. We read the held position to know qty + long/short.
+    try:
+        held = {p.symbol: p for p in tc.get_all_positions()}
+    except Exception:
+        held = {}
+    working = {}    # sym -> order_id of the resting marketable limit
+    for sym in symbols:
+        pos = held.get(sym)
+        if pos is None:
+            continue                                   # already flat -> handled below
+        try:
+            pqty = abs(int(float(pos.qty)))
+            is_long = float(pos.qty) > 0
+        except Exception:
+            continue
+        if pqty <= 0:
+            continue
+        q = option_latest_quote(odc, sym)
+        bid = float(getattr(q, "bid_price", 0) or 0) if q else 0.0
+        ask = float(getattr(q, "ask_price", 0) or 0) if q else 0.0
+        if is_long:
+            # SELL to close: cross DOWN to the bid (give up `slip` of it for a quick fill).
+            if bid <= 0:
+                continue                               # no priceable bid -> let market path take it
+            lim = max(0.01, round(bid * (1 - slip), 2))
+            side = OrderSide.SELL
+        else:
+            # BUY to close a short: cross UP through the ask.
+            if ask <= 0:
+                continue
+            lim = round(ask * (1 + slip), 2)
+            side = OrderSide.BUY
+        try:
+            o = tc.submit_order(order_data=LimitOrderRequest(
+                symbol=sym, qty=pqty, side=side,
+                time_in_force=TimeInForce.DAY, limit_price=lim))
+            working[sym] = str(getattr(o, "id", "") or "")
+            log(f"EXIT marketable-limit {('SELL' if is_long else 'BUY')} {pqty} {sym} @ {lim} "
+                f"(bid {bid} ask {ask} slip {slip:.0%})")
+        except Exception as e:
+            log(f"marketable-limit submit {sym} failed: {e}")   # fall through to market
+    # Wait the fill window, then check which legs actually went flat.
+    if working:
+        time.sleep(max(0.0, float(cfg.OPTION_EXIT_FILL_WAIT_SEC)))
+    flat = set()
+    try:
+        still_held = {p.symbol for p in tc.get_all_positions()}
+    except Exception:
+        still_held = None
+    leftover = []
+    for sym in symbols:
+        if still_held is not None and sym not in still_held:
+            flat.add(sym)                              # filled (or already gone)
+        else:
+            # Cancel the unfilled marketable limit so it can't double-fill against the
+            # market fallback, then hand the leg to the guaranteed market close.
+            oid = working.get(sym)
+            if oid:
+                try:
+                    tc.cancel_order_by_id(oid)
+                except Exception:
+                    pass
+            leftover.append(sym)
+    if leftover:
+        if working:
+            time.sleep(0.5)                            # let the cancels settle before market
+        log(f"EXIT marketable-limit unfilled {leftover} — MARKET fallback")
+        flat |= close_symbols(tc, leftover, dry)
+    return flat
+
+
+# ===========================================================================
+# Overnight protective resting orders (AUDIT_ROADMAP #17)
+# ===========================================================================
+# Cycle-based stops only fire when a cycle runs (Mac awake). A DELIBERATE overnight hold
+# (conviction-ITM option, an overnight spread/stock) therefore rides UNPROTECTED if the
+# laptop sleeps through a gap. Place a BROKER-SIDE resting GTC protective order when the
+# overnight hold is granted, and cancel/replace it when the position is closed or re-managed
+# intraday so it can't double-fire with the cycle exit. Catch every broker rejection.
+#
+# INFRA NOTE (surfaced, not implemented): a resting broker order is the backstop, but the
+# real fix is to RUN THE CYCLES ON A SERVER/CRON independent of laptop wake (the launchd job
+# only fires when the Mac is awake). Move com.autotrade.cycle to an always-on host.
+
+def place_overnight_option_stop(tc, symbol, qty, entry_premium, stop_pct, dry):
+    """Resting GTC protective order for an overnight-held LONG option (#17). Tries a GTC
+    STOP (then STOP-LIMIT) at the option's stop level (entry_premium × (1+stop_pct)); if the
+    broker won't accept a stop on the contract, falls back to a resting GTC LIMIT take-profit
+    and LOGS that a hard stop isn't broker-supported. Returns the resting order id, or None.
+    Never raises — a rejected order is caught, logged, and we continue (the cycle stop still
+    covers it whenever a cycle runs)."""
+    if dry:
+        log(f"[DRY] would place overnight protective GTC order on {symbol}")
+        return None
+    try:
+        qty = abs(int(qty))
+    except Exception:
+        qty = 1
+    if qty <= 0 or not entry_premium:
+        return None
+    stop_px = round(float(entry_premium) * (1.0 + float(stop_pct)), 2)   # stop_pct is negative
+    stop_px = max(0.01, stop_px)
+    # 1) Plain GTC STOP (sell-stop below the long's mark).
+    try:
+        o = tc.submit_order(order_data=StopOrderRequest(
+            symbol=symbol, qty=qty, side=OrderSide.SELL,
+            time_in_force=TimeInForce.GTC, stop_price=stop_px))
+        log(f"OVERNIGHT PROTECT {symbol}: resting GTC STOP {qty} @ {stop_px} id={getattr(o,'id','')}")
+        return str(getattr(o, "id", "") or "")
+    except Exception as e:
+        log(f"overnight protect {symbol}: GTC stop rejected ({e}) — trying stop-limit")
+    # 2) GTC STOP-LIMIT (some option venues accept a stop-limit but not a bare stop).
+    try:
+        lim = max(0.01, round(stop_px * (1 - cfg.OPTION_EXIT_SLIP), 2))
+        o = tc.submit_order(order_data=StopLimitOrderRequest(
+            symbol=symbol, qty=qty, side=OrderSide.SELL,
+            time_in_force=TimeInForce.GTC, stop_price=stop_px, limit_price=lim))
+        log(f"OVERNIGHT PROTECT {symbol}: resting GTC STOP-LIMIT {qty} stop {stop_px} lim {lim} "
+            f"id={getattr(o,'id','')}")
+        return str(getattr(o, "id", "") or "")
+    except Exception as e:
+        log(f"overnight protect {symbol}: GTC stop-limit rejected ({e}) — "
+            f"NO broker-side hard stop available for this option; cycle stop remains the only stop")
+    return None
+
+
+def place_overnight_stock_stop(tc, symbol, qty, stop_price, dry):
+    """Resting GTC sell-stop for an overnight-held STOCK (#17) at the position's stop level.
+    Returns the order id or None; never raises (rejection caught + logged)."""
+    if dry:
+        log(f"[DRY] would place overnight GTC stock stop on {symbol} @ {stop_price}")
+        return None
+    try:
+        qty = abs(int(float(qty)))
+        stop_px = round(float(stop_price), 2)
+    except Exception:
+        return None
+    if qty <= 0 or stop_px <= 0:
+        return None
+    try:
+        o = tc.submit_order(order_data=StopOrderRequest(
+            symbol=symbol, qty=qty, side=OrderSide.SELL,
+            time_in_force=TimeInForce.GTC, stop_price=stop_px))
+        log(f"OVERNIGHT PROTECT {symbol}: resting GTC stock STOP {qty} @ {stop_px} id={getattr(o,'id','')}")
+        return str(getattr(o, "id", "") or "")
+    except Exception as e:
+        log(f"overnight protect stock {symbol}: GTC stop rejected ({e}) — continuing")
+        return None
+
+
+def cancel_overnight_protection(tc, order_id, dry):
+    """Cancel a previously-placed resting overnight protective order so it can't double-fire
+    with the cycle-based exit once the position is closed or re-managed intraday (#17).
+    Never raises — an already-gone/filled order is fine."""
+    if not order_id:
+        return
+    if dry:
+        log(f"[DRY] would cancel overnight protective order {order_id}")
+        return
+    try:
+        tc.cancel_order_by_id(order_id)
+        log(f"OVERNIGHT PROTECT canceled resting order {order_id}")
+    except Exception as e:
+        log(f"overnight protect cancel {order_id} failed (likely already gone): {e}")
+
+
 # ===========================================================================
 # Multi-leg management (code-enforced stop/target for every spread/condor)
 # ===========================================================================
@@ -2221,7 +2423,10 @@ def manage_multileg(tc, odc, state, dry):
                 log(f"MULTILEG EXIT {symbols}: {reason}")
                 tg_send((f"🛑 MAX-LOSS KILL spread {symbols}: {reason} — force-closing."
                          if _is_kill else f"🧩 Closing spread: {reason}."))
-                flat = close_symbols(tc, symbols, dry)
+                # SAFETY (max-loss kill) -> pure MARKET; DISCRETIONARY (stop/target/trail/
+                # breakeven) -> marketable-limit with a market fallback (#15).
+                flat = (close_symbols(tc, symbols, dry) if _is_kill
+                        else close_symbols_marketable(tc, odc, symbols, dry))
                 # Stopped out / killed -> lock the name for the day (no re-losing the same idea).
                 if (reason.startswith("stop") or _is_kill) and all(s in flat for s in symbols):
                     _lock_name_today(state, _decision_underlying({"legs": legs}),
@@ -2281,6 +2486,49 @@ def open_spreads_for_context(state) -> list:
                                    if kind == "debit" else "")
                                 + "EOD-closed 15:45 unless overnight"),
             "opened": pos.get("opened"),
+        })
+    return out
+
+
+def open_options_for_context(state) -> list:
+    """Present tracked LONG single-leg options to the model WITH their peak/high-water
+    context (AUDIT_ROADMAP #16) — mirror of open_spreads_for_context. A bare position row
+    shows only current unrealized P&L, so the model can't see a winner GIVING BACK its peak.
+    Surface, per option: hw_pl (the high-water % already tracked by manage_options), the
+    peak unrealized $, current % of entry, current unrealized $, and a `giving_back` flag
+    (true once the current % has dropped a meaningful band — OPTION_TRAIL_GIVEBACK_BAND —
+    below the peak). ADVISORY context only; the code exit ladder is unchanged."""
+    out = []
+    for o in (state.get("active_options") or []):
+        sym = o.get("symbol")
+        if not sym:
+            continue
+        entry = o.get("entry")
+        qty = int(o.get("qty", 1) or 1)
+        hw_pl = o.get("hw_pl")               # high-water profit fraction (e.g. +0.32)
+        pl = o.get("pl")                     # current profit fraction (stamped by manage_options)
+        # Peak unrealized $ = entry premium × 100 × qty × hw_pl. Current unrealized $ likewise.
+        peak_usd = (round(float(entry) * 100 * qty * float(hw_pl))
+                    if entry is not None and hw_pl is not None else None)
+        cur_usd = (round(float(entry) * 100 * qty * float(pl))
+                   if entry is not None and pl is not None else None)
+        giving_back = bool(
+            hw_pl is not None and pl is not None
+            and hw_pl >= cfg.OPTION_BREAKEVEN_AT          # only meaningful once it was a winner
+            and pl <= hw_pl - cfg.OPTION_TRAIL_GIVEBACK_BAND)
+        meta = parse_occ(sym) or {}
+        out.append({
+            "symbol": sym,
+            "underlying": meta.get("underlying", "?"),
+            "qty": qty,
+            "book": o.get("book"),
+            "entry_premium": entry,
+            "hw_pl_pct": (round(float(hw_pl) * 100, 1) if hw_pl is not None else None),
+            "current_pct_of_entry": (round(float(pl) * 100, 1) if pl is not None else None),
+            "peak_unrealized_$": peak_usd,
+            "current_unrealized_$": cur_usd,
+            "giving_back": giving_back,
+            "opened": o.get("opened"),
         })
     return out
 
@@ -2360,6 +2608,11 @@ def manage_options(tc, odc, state, dry):
                 still.append(o)   # still working; wait for the fill
                 continue
             log(f"option {sym} no longer held — dropping from tracking")
+            # #17: position is gone (closed by the model, expired, or the resting stop
+            # fired). Cancel any still-resting protective order so it can't fire on a
+            # symbol we no longer hold. Harmless if it already filled/canceled.
+            if o.get("protective_order_id"):
+                cancel_overnight_protection(tc, o.get("protective_order_id"), dry)
             continue  # expired/exercised/closed already
         meta = parse_occ(sym)
         mid = _quote_mid(option_latest_quote(odc, sym))
@@ -2409,6 +2662,7 @@ def manage_options(tc, odc, state, dry):
             elif mid is not None and o.get("entry"):
                 pl = (mid - o["entry"]) / o["entry"]
                 o["hw_pl"] = max(o.get("hw_pl", pl), pl)
+                o["pl"] = pl                              # current % of entry (for #16 context)
                 # Same breakeven/chandelier ladder as single-leg longs, but the conviction
                 # book keeps its OWN (wider) hard stop, CONVICTION_ITM_STOP_PCT.
                 reason = _option_exit_reason(pl, o["hw_pl"], stop_pct=cfg.CONVICTION_ITM_STOP_PCT)
@@ -2417,13 +2671,26 @@ def manage_options(tc, odc, state, dry):
         elif mid is not None and o.get("entry"):
             pl = (mid - o["entry"]) / o["entry"]
             o["hw_pl"] = max(o.get("hw_pl", pl), pl)      # high-water profit
+            o["pl"] = pl                                  # current % of entry (for #16 context)
             reason = _option_exit_reason(pl, o["hw_pl"])
         if reason:
             _is_kill = reason.startswith("MAX-LOSS KILL")
+            # SAFETY paths force pure MARKET (#15): the max-loss kill and the EOD/0DTE
+            # force-close window must exit with certainty. Everything else here is a
+            # DISCRETIONARY exit (stop / trail / breakeven / conviction DTE/max-hold) and
+            # uses a marketable limit with a market fallback to save the spread.
+            _is_eod_close = reason.endswith("EOD close") or reason.startswith("0DTE/EOD")
+            _forced = _is_kill or _is_eod_close
             log(f"OPTION EXIT {sym}: {reason}")
             tg_send((f"🛑 MAX-LOSS KILL {sym}: {reason} — force-closing."
                      if _is_kill else f"📊 Exiting {sym} ({reason})."))
-            flat = close_symbols(tc, [sym], dry)
+            # #17: cancel the resting GTC protective order BEFORE closing so it can't
+            # double-fire against the cycle exit (and won't wash-block the close).
+            if o.get("protective_order_id"):
+                cancel_overnight_protection(tc, o.get("protective_order_id"), dry)
+                o.pop("protective_order_id", None)
+            flat = (close_symbols(tc, [sym], dry) if _forced
+                    else close_symbols_marketable(tc, odc, [sym], dry))
             if sym in flat and (reason.startswith("stop") or _is_kill):
                 _lock_name_today(state, (meta or {}).get("underlying"),
                                  "max-loss kill" if _is_kill else "long option stopped out")
@@ -3100,6 +3367,17 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
         if iv is not None and iv > cfg.OPTION_MAX_ATM_IV:
             return False, (f"{und}: ATM IV {iv:.0f}% > {cfg.OPTION_MAX_ATM_IV:.0f}% ceiling — "
                            f"extreme-IV lottery ticket (overpriced/noisy/squeezy), skip")
+        # IV-RANK gate (AUDIT_ROADMAP #11): block BUYING single-name premium at the top of
+        # its own IV range — a long/debit pays rich vol for a capped payoff. Applies only to
+        # premium-BUYING (buy_option long, buy_stock directional, debit_spread); index condors
+        # (premium SELLING on SPY/QQQ/IWM/DIA) are exempt, handled by the action set above
+        # (iron_condor never reaches here) and the index-underlying carve-out below. Fail OPEN
+        # on iv_rank None (not yet computed / <20 obs) — don't block on missing data.
+        ivr = oi.get("iv_rank") if oi else None
+        if (ivr is not None and ivr > cfg.OPTION_MAX_IV_RANK
+                and und not in cfg.PREMIUM_INDEX_UNDERLYINGS):
+            return False, (f"{und}: ATM IV-rank {ivr:.0f} > {cfg.OPTION_MAX_IV_RANK:.0f} ceiling — "
+                           f"buying RICH vol on a capped payoff (top of its IV range), skip")
     # Stopped-out cooldown: once a single-name option trade is closed at a LOSS (code stop
     # or thesis cut), don't re-enter that name for STOPPED_COOLDOWN_MIN — stop re-losing the
     # same idea (the 6/12 ADBE/RDW churn) without killing a two-way name for the whole day.
@@ -3957,6 +4235,7 @@ def run_cycle(dry: bool = False):
         "account": acct,
         "positions": positions,
         "open_spreads": open_spreads_for_context(state),
+        "open_options": open_options_for_context(state),   # single-leg longs + peak/give-back (#16)
         "growth_sleeve": gs.summary(state),
         "overnight_drift": od.summary(state),
         "tail_hedge": th.summary(state),
@@ -4161,6 +4440,17 @@ def run_cycle(dry: bool = False):
                             _opt_entry["book"] = "conviction_itm"
                             _opt_entry["opened_day"] = now.date().isoformat()
                             _opt_entry["max_hold_days"] = cfg.CONVICTION_ITM_MAX_HOLD_DAYS
+                            # #17: a conviction-ITM hold rides multiple days, so place a
+                            # BROKER-SIDE resting GTC protective stop now — it covers the
+                            # position on a gap when no cycle runs (Mac asleep). Stored so
+                            # manage_options can cancel it on close/re-manage (no double-fire).
+                            try:
+                                _prot = place_overnight_option_stop(
+                                    tc, osym, oqty, entry, cfg.CONVICTION_ITM_STOP_PCT, dry)
+                                if _prot:
+                                    _opt_entry["protective_order_id"] = _prot
+                            except Exception as _pe:
+                                log(f"overnight protect place failed {osym}: {_pe}")
                         state.setdefault("active_options", []).append(_opt_entry)
                     else:
                         log(f"[DRY] would buy option {oqty} {osym} @lim {lim} (ask {opt_ask})")
@@ -4193,6 +4483,17 @@ def run_cycle(dry: bool = False):
                                 ml_entry["overnight"] = True
                                 log(f"OVERNIGHT HOLD granted {decision.get('symbol')}: {why_on}")
                                 tg_send(f"🌙 Overnight hold {decision.get('symbol')}: {why_on}")
+                                # #17: a multi-leg spread is already DEFINED-RISK (max loss
+                                # bounded by the structure), and Alpaca has no resting
+                                # protective stop for an MLEG (a per-leg stop could leave a
+                                # naked short on a fill) — so no broker-side stop is placed
+                                # here; the cycle stop/target manages it. INFRA: run cycles
+                                # on a server/cron independent of laptop wake so the cycle
+                                # actually fires overnight (the resting-order gap this would
+                                # otherwise leave).
+                                log("OVERNIGHT HOLD (spread): defined-risk, no broker-side "
+                                    "resting stop available for MLEG — relies on the cycle "
+                                    "stop; RUN CYCLES OFF-LAPTOP (server/cron) for coverage.")
                             else:
                                 log(f"overnight hold DENIED {decision.get('symbol')}: {why_on}")
                         state.setdefault("active_multileg", []).append(ml_entry)

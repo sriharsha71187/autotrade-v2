@@ -208,6 +208,18 @@ OPTION_TRAIL_GIVEBACK_BAND = 0.20  # FIXED give-back in profit-POINTS below the 
                                    # the peak and let big winners round-trip too far.
 OPTION_TRAIL_GIVEBACK  = 0.25      # (legacy multiplicative give-back — kept for back-compat;
                                    # no longer used by the exit ladder)
+# DISCRETIONARY exits (profit-take / trailing / breakeven / thesis / normal stop) use a
+# MARKETABLE LIMIT instead of a market order so they don't donate the (up to 15%-wide)
+# bid/ask spread on every close (AUDIT_ROADMAP #15): sell-to-close at bid×(1−slip),
+# buy-to-close at ask×(1+slip), then FALL BACK to market after a short fill timeout. The
+# SAFETY closes (EOD/forced flatten, max-loss kill, naked-short force-close, orphan sweep,
+# loss-halt flatten) stay PURE MARKET — certainty of exit over a few cents of slippage.
+OPTION_EXIT_SLIP       = 0.02      # marketable-limit slip off bid/ask on discretionary exits
+OPTION_EXIT_FILL_WAIT_SEC = 8      # wait this long for the marketable limit, then market-fallback
+# IV-rank ceiling for BUYING single-name premium (AUDIT_ROADMAP #11). A long/debit
+# single-name option whose ATM IV-rank is above this is buying RICH vol on a capped
+# payoff — block it. Premium SELLING (index condors) and unknown iv_rank (None) are exempt.
+OPTION_MAX_IV_RANK     = 70.0      # block single-name DEBIT/long entry when ATM iv_rank > this
 OPTION_EOD_CLOSE_HOUR  = 15        # force-close long options + spreads at/after this ET time
 OPTION_EOD_CLOSE_MIN   = 45        # ...15:45 ET (and any 0DTE before expiry)
 STOCK_EOD_CLOSE_MIN    = 50        # flatten stocks at 15:50 ET (DAY brackets die at the close,
@@ -568,6 +580,9 @@ RUNTIME_SETTABLE = {
     "OPTION_TRAIL_GIVEBACK": float,
     "OPTION_BREAKEVEN_AT": float,
     "OPTION_TRAIL_GIVEBACK_BAND": float,
+    "OPTION_EXIT_SLIP": float,             # #15 marketable-limit exit slip
+    "OPTION_EXIT_FILL_WAIT_SEC": float,    # #15 fill wait before market fallback
+    "OPTION_MAX_IV_RANK": float,           # #11 single-name premium-buying IV-rank ceiling
     "CYCLE_ACTIVE_INTERVAL_MIN": float,
     "CYCLE_NORMAL_INTERVAL_MIN": float,
     "OVERNIGHT_MOMENTUM_ENABLED": bool,
