@@ -75,6 +75,28 @@ PAPER            = True
 ACCOUNT_BASELINE = 100_000.0
 DAILY_LOSS_HALT  = -300.0
 
+# ---- account-level drawdown floor + red-day de-risking (AUDIT_ROADMAP #13) --
+# The per-DAY loss halt (DAILY_LOSS_HALT) resets every morning, so it does nothing to
+# stop a slow multi-day bleed — the stated −$1,500 ruin guardrail was never a CUMULATIVE
+# floor. ACCOUNT_DRAWDOWN_HALT is a multi-day circuit breaker measured off the trailing
+# equity HIGH-WATER (not the static baseline) so a recovery to new highs re-arms it: when
+# equity falls this far below its rolling peak, NEW risk is blocked for the day (manage/
+# exit still allowed), exactly like the daily halt. RED_DAY_DERISK halves risk-sizing
+# after 2 consecutive red days (consecutive_red_days from the EOD ledger result).
+ACCOUNT_DRAWDOWN_HALT = 3000.0     # halt NEW entries when equity <= high_water − this
+RED_DAY_DERISK        = True       # after N consecutive red days, shrink risk-sizing
+RED_DAY_RISK_MULT     = 0.5        # ...by this multiplier (applied to the #6 risk budgets)
+RED_DAY_DERISK_AFTER  = 2          # consecutive red days that trigger the de-risk
+
+# ---- hard per-position max-loss kill (AUDIT_ROADMAP #14) --------------------
+# Independent of the daily/cumulative halt: force-close ANY single position whose
+# unrealized loss blows past MAX_POSITION_LOSS_MULT × its INITIAL defined risk. The daily
+# halt failed to cap the −$2,382 SMCI leg (the wash-reject loop blocked the exit); this is
+# the backstop that kills a position the −50% option stop misses (a gapped long, or a
+# debit spread whose loss ran well past its debit). Set well above the −50% stop so the two
+# don't double-fire on the normal long-option case.
+MAX_POSITION_LOSS_MULT = 2.0       # force-close at loss > this × the position's initial risk
+
 # ---- daily profit target (a CEILING that banks gains, never a quota) -------
 # Below TARGET: trade normally. TARGET..STRETCH: high-conviction entries only.
 # At/above STRETCH: stop opening new risk for the day (still manage/exit).
@@ -99,6 +121,16 @@ OPTION_MAX_SPREAD_PCT  = 0.15      # skip options whose bid-ask spread exceeds t
 MAX_DEPLOYED_CAPITAL   = 40_000.0  # cap on total exposure across all open trades
 MAX_SAME_DIRECTION_POSITIONS = 10  # correlation cap: don't put the whole book on one
                                    # directional bet (e.g. 7 tech shorts on a selloff)
+# Sector/correlation heat cap (AUDIT_ROADMAP #10/#18). MAX_SAME_DIRECTION_POSITIONS only
+# buckets long-vs-short, so 8 correlated semis longs read as 8 independent bets when they
+# are really ONE concentrated AI/semis bet. These two add a finer correlation control:
+#   - MAX_SECTOR_DIRECTIONAL: cap same-direction open positions WITHIN one sector (see
+#     SECTOR_MAP below); a 5th semis-long is blocked even though the gross bull count is fine.
+#   - PORTFOLIO_HEAT_MULT: total open DEFINED-RISK across all open positions (option/spread
+#     max-loss + stock stop-distance risk), incl. the new trade, must stay <= this multiple
+#     of abs(DAILY_LOSS_HALT). Bounds total intra-cycle open risk to a few days' loss budget.
+MAX_SECTOR_DIRECTIONAL = 4         # max same-direction open positions within ONE sector
+PORTFOLIO_HEAT_MULT    = 3.0       # total open defined-risk <= this × abs(DAILY_LOSS_HALT)
 CONDOR_WING_WIDTH      = 5.0       # $ width of condor wings, for max-loss sizing
 # The 14:00 ET options cutoff is for 0DTE / same-day index structures (condors,
 # buy_option) which pin into the close. MOMENTUM DEBIT spreads are multi-day and
@@ -314,6 +346,26 @@ MOMENTUM_UNIVERSE = [
     "KLAC", "ANET", "DELL", "ORCL", "ADBE", "NOW", "INTC",
 ]
 
+# ---- sector/theme map for the correlation-heat cap (AUDIT_ROADMAP #10) -------
+# Coarse correlation buckets — names that tend to move together get ONE bucket, so the
+# heat cap (MAX_SECTOR_DIRECTIONAL) treats 8 semis longs as one concentrated bet, not 8
+# independent ones. Deliberately broad (AI/semis is one bucket, not split by sub-industry)
+# because the failure mode is correlated drawdown, not GICS precision. Symbol→sector is
+# built off this in code (sector_for); anything unmapped falls back to "other".
+SECTOR_MAP = {
+    "semis_ai": ["NVDA", "AMD", "AVGO", "MU", "ARM", "TSM", "ASML", "LRCX", "KLAC",
+                 "ANET", "SMCI", "INTC", "AMAT", "MRVL", "DELL", "VRT"],
+    "megacap_tech": ["AAPL", "MSFT", "AMZN", "META", "GOOGL", "NFLX"],
+    "software": ["PANW", "DDOG", "SNOW", "CRWD", "NET", "ORCL", "ADBE", "NOW", "CRM",
+                 "PLTR", "SHOP", "INTU", "AXON"],
+    "crypto": ["COIN", "MSTR", "MSTU", "MSTX", "BITX", "ETHU"],
+    "ev_mobility": ["TSLA", "UBER", "ABNB", "MELI"],
+    "energy": ["XLE", "USO", "XOM", "CVX", "UCO", "ERX", "OIH", "SLB"],
+    "defense": ["ITA", "LMT", "RTX", "NOC", "GD"],
+    "index_etf": ["SPY", "QQQ", "IWM", "DIA", "VOO", "VTI"],
+    "metals": ["GLD", "GDX", "NUGT", "NEM"],
+}
+
 # ---- growth sleeve (long-horizon compounding book, funded by prior-day gains) ---
 # A SEPARATE capital pool from the intraday engine. Each new trading day it deploys
 # yesterday's profit (plus a small floor on flat days) into a screened basket of
@@ -490,6 +542,15 @@ RUNTIME_SETTABLE = {
     "OPTION_RISK_TARGET": float,
     "STOCK_RISK_PER_TRADE": float,     # STOCK_RISK_CONV is a dict — not cast-mappable (scalars only)
     "MAX_SAME_DIRECTION_POSITIONS": int,
+    # correlation-heat cap (#10) + account drawdown floor / red-day de-risk (#13)
+    # + per-position max-loss kill (#14). All scalars; SECTOR_MAP (a dict) is not settable.
+    "MAX_SECTOR_DIRECTIONAL": int,
+    "PORTFOLIO_HEAT_MULT": float,
+    "ACCOUNT_DRAWDOWN_HALT": float,
+    "RED_DAY_DERISK": bool,
+    "RED_DAY_RISK_MULT": float,
+    "RED_DAY_DERISK_AFTER": int,
+    "MAX_POSITION_LOSS_MULT": float,
     "MAX_SPREADS_PER_NAME_PER_DAY": int,
     "MOMENTUM_OPTION_MIN_DTE": int,
     "CREDIT_SPREAD_INDEX_ONLY": bool,

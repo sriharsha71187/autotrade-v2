@@ -124,6 +124,10 @@ def default_state() -> dict:
         "processed_fills": [],      # applied fill ids (cap ~800) — idempotency guard for update_pnl_ledger
         "closed_trades": [],        # per-close records {sym,day,strategy,realized,qty} (cap ~500) for expectancy
         "book_symbols": [],         # durable set of symbols owned by the self-reporting books (double-count guard)
+        "equity_high_water": None,  # rolling MAX of equity — basis for the account-drawdown circuit breaker (#13)
+        "consecutive_red_days": 0,  # consecutive red EOD days (#13 red-day de-risk); maintained at EOD off the ledger
+        "drawdown_halted": "",      # YYYY-MM-DD the account-drawdown floor blocked new entries (once/day latch)
+        "red_day_counted": "",      # YYYY-MM-DD already folded into consecutive_red_days (idempotency latch)
     }
 
 
@@ -164,6 +168,12 @@ def load_state() -> dict:
         fresh["processed_fills"] = s.get("processed_fills", []) or []
         fresh["closed_trades"] = s.get("closed_trades", []) or []
         fresh["book_symbols"] = s.get("book_symbols", []) or []
+        # Account-drawdown circuit breaker (#13) is multi-day by design: the equity
+        # high-water and the consecutive-red-day count MUST survive the daily reset (the
+        # whole point is a cumulative floor that the per-day halt can't provide).
+        # drawdown_halted is a per-day latch, so it resets fresh each day.
+        fresh["equity_high_water"] = s.get("equity_high_water")
+        fresh["consecutive_red_days"] = int(s.get("consecutive_red_days", 0) or 0)
         # Migrate any legacy single-condor field into the multileg list.
         legacy = s.get("active_condor")
         if legacy:
@@ -336,6 +346,80 @@ def bracketed_symbols(tc) -> set:
     except Exception as e:
         log(f"bracketed_symbols fetch failed: {e}")
         return set()
+
+
+_SECTOR_LOOKUP = None
+def sector_for(symbol: str) -> str:
+    """Coarse correlation bucket for a symbol (AUDIT_ROADMAP #10). Built once off
+    cfg.SECTOR_MAP (sector -> [symbols]); unmapped names fall back to 'other'. Accepts a
+    plain ticker or an OCC option symbol (parsed to its underlying)."""
+    global _SECTOR_LOOKUP
+    if _SECTOR_LOOKUP is None:
+        _SECTOR_LOOKUP = {}
+        for sect, syms in (getattr(cfg, "SECTOR_MAP", {}) or {}).items():
+            for s in syms:
+                _SECTOR_LOOKUP[s.upper()] = sect
+    if not symbol:
+        return "other"
+    und = (parse_occ(symbol) or {}).get("underlying") or symbol
+    return _SECTOR_LOOKUP.get(str(und).upper(), "other")
+
+
+def _position_direction(p) -> "str | None":
+    """'bull'/'bear' for an open position dict (long stock / long call = bull; short
+    stock / long put = bear), else None (a short option leg of a spread nets out)."""
+    meta = parse_occ(p.get("symbol", ""))
+    if meta:
+        # Only LONG option legs carry a clean directional read; a short leg is part of a
+        # defined-risk structure and is ignored here (mirrors directional_counts intent).
+        if "SHORT" in str(p.get("side", "")).upper():
+            return None
+        return "bull" if meta["type"] == "call" else "bear"
+    if "SHORT" in str(p.get("side", "")).upper():
+        return "bear"
+    return "bull"
+
+
+def open_defined_risk(state, positions) -> float:
+    """Approximate total open DEFINED-RISK across the whole book, in $ (AUDIT_ROADMAP
+    #10/#18 portfolio-heat cap). Per position:
+      - tracked long option: entry premium × 100 × qty × |OPTION_STOP_PCT| (its hard-stop
+        risk, not full premium — a long option is rarely held to zero);
+      - tracked multi-leg: its defined max-loss (debit paid / width−credit), via multileg_risk;
+      - stock: qty × |entry−stop| when a bracket stop is known, else a ~2% notional default.
+    Approximate by design — it's a heat governor, not an accounting figure. Tracked options/
+    spreads come from state; bare stock positions from the live `positions` list."""
+    risk = 0.0
+    # Tracked long single-leg options (state["active_options"]).
+    for o in (state.get("active_options") or []):
+        entry = o.get("entry")
+        qty = int(o.get("qty", 1) or 1)
+        if entry:
+            stop_pct = (cfg.CONVICTION_ITM_STOP_PCT if o.get("book") == "conviction_itm"
+                        else cfg.OPTION_STOP_PCT)
+            risk += abs(float(entry)) * 100 * qty * abs(stop_pct)
+    # Tracked multi-leg spreads/condors (state["active_multileg"]).
+    for pos in (state.get("active_multileg") or []):
+        legs = pos.get("legs") or []
+        qty = int(pos.get("qty", 1) or 1)
+        net_dollars = float(pos.get("entry_net", 0.0) or 0.0)   # signed $ (+credit/−debit)
+        net_per_share = (net_dollars / (100 * qty)) if qty else 0.0
+        r = multileg_risk(legs, net_per_share, qty)
+        if r is None:                                            # shouldn't happen (defined-risk only)
+            r = abs(net_dollars)
+        risk += r
+    # Bare STOCK positions held at the broker (options handled above via state).
+    for p in (positions or []):
+        if parse_occ(p.get("symbol", "")):
+            continue                                            # option leg — counted via state
+        qty = abs(float(p.get("qty", 0) or 0))
+        entry = abs(float(p.get("avg_entry", 0) or 0))
+        stop = p.get("stop")
+        if stop:
+            risk += qty * abs(entry - float(stop))
+        else:
+            risk += 0.02 * qty * entry                          # default ~2% of notional
+    return risk
 
 
 def directional_counts(positions) -> dict:
@@ -2107,7 +2191,17 @@ def manage_multileg(tc, odc, state, dry):
             pos["pl"] = round(pl)
             pos["value_now"] = round(-cost_to_close)   # $ to liquidate the spread now
             reason = None
-            if entry_net >= 0:               # credit structure (profit capped at credit)
+            # Hard per-position max-loss KILL (AUDIT_ROADMAP #14): force-close a spread whose
+            # loss has blown past MAX_POSITION_LOSS_MULT × its INITIAL defined risk (debit
+            # paid / width−credit), independent of the −50% debit / −100% credit stop below.
+            # Catches a spread whose loss ran well past its debit (the case the % stop misses).
+            _init_risk = multileg_risk(legs, entry_net / (100 * qty), qty)
+            _cur_loss = -pl                                          # +$ when losing
+            if (_init_risk and _init_risk > 0
+                    and _cur_loss > cfg.MAX_POSITION_LOSS_MULT * _init_risk):
+                reason = (f"MAX-LOSS KILL (loss ${_cur_loss:.0f} > "
+                          f"{cfg.MAX_POSITION_LOSS_MULT:g}× initial risk ${_init_risk:.0f})")
+            elif entry_net >= 0:             # credit structure (profit capped at credit)
                 if pl <= -1.0 * entry_net:
                     reason = f"stop (P&L ${pl:.0f} on ${entry_net:.0f} credit)"
                 elif pl >= 0.5 * entry_net:
@@ -2123,12 +2217,15 @@ def manage_multileg(tc, odc, state, dry):
                 if reason:
                     reason = f"{reason} of debit (P&L ${pl:.0f} on ${debit:.0f})"
             if reason:
+                _is_kill = reason.startswith("MAX-LOSS KILL")
                 log(f"MULTILEG EXIT {symbols}: {reason}")
-                tg_send(f"🧩 Closing spread: {reason}.")
+                tg_send((f"🛑 MAX-LOSS KILL spread {symbols}: {reason} — force-closing."
+                         if _is_kill else f"🧩 Closing spread: {reason}."))
                 flat = close_symbols(tc, symbols, dry)
-                # Stopped out -> lock the name for the day (no re-losing the same idea).
-                if reason.startswith("stop") and all(s in flat for s in symbols):
-                    _lock_name_today(state, _decision_underlying({"legs": legs}), "spread stopped out")
+                # Stopped out / killed -> lock the name for the day (no re-losing the same idea).
+                if (reason.startswith("stop") or _is_kill) and all(s in flat for s in symbols):
+                    _lock_name_today(state, _decision_underlying({"legs": legs}),
+                                     "max-loss kill" if _is_kill else "spread stopped out")
                 # Keep tracking unless every leg confirmed flat (no silent orphan).
                 if not all(s in flat for s in symbols):
                     log(f"MULTILEG EXIT INCOMPLETE {[s for s in symbols if s not in flat]} — keeping tracked")
@@ -2268,7 +2365,25 @@ def manage_options(tc, odc, state, dry):
         mid = _quote_mid(option_latest_quote(odc, sym))
         reason = None
         is_conviction = (cfg.CONVICTION_ITM_ENABLED and o.get("book") == "conviction_itm")
-        if is_conviction:
+        # Hard per-position max-loss KILL (AUDIT_ROADMAP #14): a backstop INDEPENDENT of the
+        # daily/cumulative halt and the −50% % stop. If the position's unrealized loss has
+        # blown past MAX_POSITION_LOSS_MULT × its INITIAL defined risk, force-close it now.
+        # For a long option, initial risk = entry premium × 100 × qty × |the option stop %|
+        # (CONVICTION_ITM_STOP_PCT for that book, else OPTION_STOP_PCT); current loss =
+        # (entry − mid) × 100 × qty. Threshold is well past the −50% stop, so on the normal
+        # long-option case the % stop fires FIRST and this never double-fires; it catches the
+        # cases the % stop misses (a gapped/illiquid mark that ran past the stop unfilled).
+        if mid is not None and o.get("entry"):
+            _qty = int(o.get("qty", 1) or 1)
+            _stop_pct = cfg.CONVICTION_ITM_STOP_PCT if is_conviction else cfg.OPTION_STOP_PCT
+            _init_risk = abs(float(o["entry"])) * 100 * _qty * abs(_stop_pct)
+            _cur_loss = (float(o["entry"]) - mid) * 100 * _qty       # +$ when losing
+            if _init_risk > 0 and _cur_loss > cfg.MAX_POSITION_LOSS_MULT * _init_risk:
+                reason = (f"MAX-LOSS KILL (loss ${_cur_loss:.0f} > "
+                          f"{cfg.MAX_POSITION_LOSS_MULT:g}× initial risk ${_init_risk:.0f})")
+        if reason:
+            pass                                  # max-loss kill takes priority over all else
+        elif is_conviction:
             # Conviction-ITM multi-day hold: EXEMPT from the 15:45 EOD/0DTE force-close
             # (it rides for several days). Re-judged each cycle on current metrics —
             # exit on the option stop (CONVICTION_ITM_STOP_PCT), the trailing profit-lock,
@@ -2304,11 +2419,14 @@ def manage_options(tc, odc, state, dry):
             o["hw_pl"] = max(o.get("hw_pl", pl), pl)      # high-water profit
             reason = _option_exit_reason(pl, o["hw_pl"])
         if reason:
+            _is_kill = reason.startswith("MAX-LOSS KILL")
             log(f"OPTION EXIT {sym}: {reason}")
-            tg_send(f"📊 Exiting {sym} ({reason}).")
+            tg_send((f"🛑 MAX-LOSS KILL {sym}: {reason} — force-closing."
+                     if _is_kill else f"📊 Exiting {sym} ({reason})."))
             flat = close_symbols(tc, [sym], dry)
-            if sym in flat and reason.startswith("stop"):
-                _lock_name_today(state, (meta or {}).get("underlying"), "long option stopped out")
+            if sym in flat and (reason.startswith("stop") or _is_kill):
+                _lock_name_today(state, (meta or {}).get("underlying"),
+                                 "max-loss kill" if _is_kill else "long option stopped out")
             if sym not in flat:              # close failed -> keep tracking, retry (no orphan)
                 log(f"OPTION EXIT INCOMPLETE {sym} — keeping tracked")
                 still.append(o)
@@ -2761,12 +2879,58 @@ def _trade_bias(decision) -> "str | None":
     return None
 
 
+def _red_day_risk_mult(state) -> float:
+    """Risk-sizing multiplier from the consecutive-red-day de-risk (AUDIT_ROADMAP #13).
+    After RED_DAY_DERISK_AFTER consecutive red days, shrink the #6 risk budgets by
+    RED_DAY_RISK_MULT; otherwise 1.0. consecutive_red_days is maintained at EOD off the
+    ledger's realized result (compute_outcomes)."""
+    if not getattr(cfg, "RED_DAY_DERISK", False):
+        return 1.0
+    if int(state.get("consecutive_red_days", 0) or 0) >= int(cfg.RED_DAY_DERISK_AFTER):
+        return float(cfg.RED_DAY_RISK_MULT)
+    return 1.0
+
+
+def _sector_heat_check(state, positions, new_symbol, new_direction, new_risk):
+    """Shared sector-concentration + portfolio-heat gate for a NEW directional entry
+    (AUDIT_ROADMAP #10/#18). Returns (ok, reason).
+      - SECTOR cap: count CURRENT open positions in the SAME sector AND same direction;
+        block a new one once that reaches MAX_SECTOR_DIRECTIONAL (so N correlated semis
+        longs can't read as N independent bets).
+      - PORTFOLIO HEAT: open defined-risk across the book + this new trade's risk must stay
+        <= PORTFOLIO_HEAT_MULT × abs(DAILY_LOSS_HALT). Approximate but bounds total open risk.
+    new_direction: 'bull'/'bear'/None (None skips the sector cap — e.g. a neutral condor)."""
+    if new_direction in ("bull", "bear"):
+        sect = sector_for(new_symbol)
+        if sect != "other":
+            same = 0
+            for p in positions:
+                if sector_for(p.get("symbol", "")) != sect:
+                    continue
+                if _position_direction(p) == new_direction:
+                    same += 1
+            if same >= cfg.MAX_SECTOR_DIRECTIONAL:
+                return False, (f"sector heat cap: already {same} {new_direction} positions in "
+                               f"'{sect}' (max {cfg.MAX_SECTOR_DIRECTIONAL}) — too correlated")
+    open_risk = open_defined_risk(state, positions)
+    total = open_risk + max(0.0, new_risk or 0.0)
+    heat_cap = cfg.PORTFOLIO_HEAT_MULT * abs(cfg.DAILY_LOSS_HALT)
+    log(f"PORTFOLIO HEAT: open ${open_risk:.0f} + new ${max(0.0, new_risk or 0.0):.0f} "
+        f"= ${total:.0f} vs cap ${heat_cap:.0f} "
+        f"({cfg.PORTFOLIO_HEAT_MULT:g}×|halt {cfg.DAILY_LOSS_HALT:.0f}|)")
+    if total > heat_cap:
+        return False, (f"portfolio heat: open risk ${open_risk:.0f} + new ${max(0.0, new_risk or 0.0):.0f} "
+                       f"= ${total:.0f} > ${heat_cap:.0f} cap "
+                       f"({cfg.PORTFOLIO_HEAT_MULT:g}×|halt|) — book too hot")
+    return True, "ok"
+
+
 def passes_guardrails(decision, state, acct, now, ref_price=None,
                       offered_options=None, assets=None,
                       option_spread_pct=None, scan_row=None,
                       dir_counts=None, book_symbols=None,
                       regime=None, event_state=None, options_intel=None,
-                      conviction_symbols=None) -> tuple[bool, str]:
+                      conviction_symbols=None, positions=None) -> tuple[bool, str]:
     """ref_price: current per-share price of the asset being traded — the stock
     last price for buy_stock, the option premium per share for buy_option. Used
     for the notional and total-deployed-capital caps.
@@ -2780,6 +2944,7 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
     dir_counts = dir_counts or {"bull": 0, "bear": 0}
     book_symbols = book_symbols or set()
     conviction_symbols = conviction_symbols or set()
+    positions = positions or []
     action = decision.get("action")
     # The growth sleeve and overnight-drift book are separate, code-managed books —
     # the intraday engine may not open, short, or close their names (it would fight
@@ -2848,6 +3013,13 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
     if (daily_pl <= cfg.DAILY_LOSS_HALT and action not in ("hold", "close")
             and not state.get("loss_override")):
         return False, f"daily loss halt hit ({daily_pl:.0f})"
+    # Account-level drawdown circuit breaker (#13): when equity has fallen
+    # ACCOUNT_DRAWDOWN_HALT below its trailing high-water, run_cycle latches drawdown_halted
+    # for the day. It blocks NEW entries (manage/exit still allowed) — the multi-day floor
+    # the per-day halt above can't enforce. The loss override waives it (user choice).
+    if (state.get("drawdown_halted") == today and action not in ("hold", "close")
+            and not state.get("loss_override")):
+        return False, f"account drawdown halt (equity below high-water − ${cfg.ACCOUNT_DRAWDOWN_HALT:.0f})"
     # Daily profit target — a ceiling that banks gains, not a quota to chase.
     if action not in ("hold", "close"):
         conv = (decision.get("conviction") or "").lower()
@@ -3025,7 +3197,8 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
         # with no usable stop we keep the model's qty and only enforce the notional clamp.
         if abs(ref_price - stop) > 0:
             conv = (decision.get("conviction") or "medium").lower()
-            budget = cfg.STOCK_RISK_PER_TRADE * cfg.STOCK_RISK_CONV.get(conv, 1.0)
+            budget = (cfg.STOCK_RISK_PER_TRADE * cfg.STOCK_RISK_CONV.get(conv, 1.0)
+                      * _red_day_risk_mult(state))   # halve after 2 consecutive red days (#13)
             sized = max(1, int(budget / abs(ref_price - stop)))
             # Clamp so the position fits the per-trade notional cap and total deployed cap.
             sized = min(sized, int(cfg.PER_TRADE_NOTIONAL_CAP // ref_price))
@@ -3045,6 +3218,12 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
         if deployed + notional > cfg.MAX_DEPLOYED_CAPITAL:
             return False, (f"deployed {deployed:.0f}+{notional:.0f} > "
                            f"max deployed {cfg.MAX_DEPLOYED_CAPITAL}")
+        # Sector-concentration + portfolio-heat cap (#10). New stock risk = qty×|entry−stop|.
+        _new_risk = qty * abs(ref_price - stop)
+        ok_h, why_h = _sector_heat_check(state, positions, sym,
+                                         "bull" if direction == "long" else "bear", _new_risk)
+        if not ok_h:
+            return False, why_h
 
     elif action == "buy_option":
         if qty <= 0:
@@ -3121,6 +3300,12 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
             # executor records it as a shielded multi-day hold.
             decision["qty"] = contracts
             decision["book"] = "conviction_itm"
+            # Sector + portfolio-heat cap (#10). Conviction-ITM risk = stop-based contract risk.
+            ok_h, why_h = _sector_heat_check(state, positions, _und,
+                                             "bull" if bullish else "bear",
+                                             risk_per_contract * contracts)
+            if not ok_h:
+                return False, why_h
             return True, (f"conviction-ITM: {contracts}x @ ${premium:.2f} "
                           f"(risk ~${risk_per_contract*contracts:.0f}, outlay ${outlay:.0f})")
         # RISK-based sizing for the NON-conviction long-option path (AUDIT_ROADMAP #6):
@@ -3128,9 +3313,11 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
         # premium times the option stop %; size toward the target, then REDUCE until the
         # outlay fits PER_OPTION_NOTIONAL_CAP and total deployed. If even 1 contract busts
         # the notional cap, reject (existing behavior). Overrides the model's qty.
+        # OPTION_RISK_TARGET is de-risked after 2 consecutive red days (#13).
         risk_per_contract = ask_est * 100 * abs(cfg.OPTION_STOP_PCT)
+        _opt_risk_target = cfg.OPTION_RISK_TARGET * _red_day_risk_mult(state)
         if risk_per_contract > 0:
-            qty = max(1, int(cfg.OPTION_RISK_TARGET / risk_per_contract))
+            qty = max(1, int(_opt_risk_target / risk_per_contract))
         while qty > 1 and qty * ask_est * 100 > cfg.PER_OPTION_NOTIONAL_CAP:
             qty -= 1
         room = cfg.MAX_DEPLOYED_CAPITAL - deployed
@@ -3144,8 +3331,14 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
             return False, (f"deployed {deployed:.0f}+{notional:.0f} > "
                            f"max deployed {cfg.MAX_DEPLOYED_CAPITAL}")
         log(f"OPTION RISK-SIZE {osym}: {qty}x @ ${ask_est:.2f} "
-            f"(risk/ct ${risk_per_contract:.0f}, target ${cfg.OPTION_RISK_TARGET:.0f}, "
+            f"(risk/ct ${risk_per_contract:.0f}, target ${_opt_risk_target:.0f}, "
             f"notional ${notional:.0f})")
+        # Sector + portfolio-heat cap (#10). New option risk = its hard-stop risk.
+        ok_h, why_h = _sector_heat_check(state, positions, _decision_underlying(decision),
+                                         "bull" if bullish else "bear",
+                                         qty * risk_per_contract)
+        if not ok_h:
+            return False, why_h
 
     elif action in ("multi_leg", "iron_condor"):
         # iron_condor is the legacy 4-leg form (positive net_credit); multi_leg is
@@ -3189,6 +3382,14 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
         if deployed + risk > cfg.MAX_DEPLOYED_CAPITAL:
             return False, (f"deployed {deployed:.0f}+risk {risk:.0f} > "
                            f"max deployed {cfg.MAX_DEPLOYED_CAPITAL}")
+        # Sector + portfolio-heat cap (#10). The spread's defined max-loss IS its risk; a
+        # debit spread's directional lean buckets it (a neutral condor → None = heat-only).
+        _bias = _spread_directional_bias(legs)
+        _new_dir = {"bullish": "bull", "bearish": "bear"}.get(_bias)
+        ok_h, why_h = _sector_heat_check(state, positions, _decision_underlying(decision),
+                                         _new_dir, risk)
+        if not ok_h:
+            return False, why_h
 
     return True, "ok"
 
@@ -3584,6 +3785,28 @@ def run_cycle(dry: bool = False):
     elif daily_pl <= cfg.DAILY_LOSS_HALT and state.get("loss_override"):
         log(f"loss override ON: day P&L {daily_pl:+.0f} past halt, but trading continues")
 
+    # 2b-ii. Account-level DRAWDOWN floor (AUDIT_ROADMAP #13) — a multi-day circuit
+    # breaker the per-day halt can't provide. Track a rolling equity HIGH-WATER (so a
+    # recovery to new highs re-arms the floor) and, when equity falls ACCOUNT_DRAWDOWN_HALT
+    # below it, block NEW entries for the day. Unlike the daily halt this does NOT flatten —
+    # open positions are still managed/exited (manage_*/EOD run above); it only stops NEW
+    # risk, enforced in passes_guardrails via the drawdown_halted day-latch. The loss
+    # override (user choice) also waives it.
+    today = now.strftime("%Y-%m-%d")
+    hw_prev = state.get("equity_high_water")
+    equity_now = acct["equity"]
+    state["equity_high_water"] = equity_now if hw_prev is None else max(float(hw_prev), equity_now)
+    drawdown = state["equity_high_water"] - equity_now
+    if (drawdown >= cfg.ACCOUNT_DRAWDOWN_HALT and not state.get("loss_override")
+            and state.get("drawdown_halted") != today):
+        state["drawdown_halted"] = today
+        log(f"ACCOUNT DRAWDOWN HALT: equity {equity_now:,.0f} is ${drawdown:,.0f} below "
+            f"high-water {state['equity_high_water']:,.0f} (>= ${cfg.ACCOUNT_DRAWDOWN_HALT:,.0f}) "
+            f"— blocking NEW entries today (manage/exit still allowed)")
+        tg_send(f"🛑 ACCOUNT DRAWDOWN HALT: equity ${equity_now:,.0f} is ${drawdown:,.0f} below "
+                f"the high-water ${state['equity_high_water']:,.0f} (floor ${cfg.ACCOUNT_DRAWDOWN_HALT:,.0f}). "
+                f"No new entries today — open positions still managed.")
+
     if state.get("halted"):
         log("halted — skipping new decisions")
         state["last_action"] = "halted"
@@ -3897,7 +4120,8 @@ def run_cycle(dry: bool = False):
                                        directional_counts(positions), held_books,
                                        regime=regime, event_state=event_state,
                                        options_intel=options_intel,
-                                       conviction_symbols=conviction_symbols)
+                                       conviction_symbols=conviction_symbols,
+                                       positions=positions)
         if not ok:
             log(f"guardrail blocked {action}: {reason}")
             result = {"status": "blocked", "action": action, "reason": reason}
@@ -4049,9 +4273,25 @@ def compute_outcomes(tc=None, day=None) -> dict:
     try:
         st = load_state()
         update_pnl_ledger(tc, st)
-        save_state(st)
         hstats = honest_trade_stats(tc, st)
         expectancy = weekly_strategy_expectancy(st)
+        # Consecutive-red-day counter for the #13 red-day de-risk. Use the cross-day
+        # ledger's realized result for the day (the honest figure, not same-day-only): a
+        # red day (< 0) increments the streak, a flat/green day resets it. Latched per day
+        # so a re-run of outcomes for the same day doesn't double-count.
+        try:
+            drp = hstats.get("day_realized_pl")
+            if drp is not None and st.get("red_day_counted") != day:
+                if float(drp) < 0:
+                    st["consecutive_red_days"] = int(st.get("consecutive_red_days", 0) or 0) + 1
+                else:
+                    st["consecutive_red_days"] = 0
+                st["red_day_counted"] = day
+                log(f"red-day counter: {day} realized ${float(drp):+.0f} -> "
+                    f"consecutive_red_days={st['consecutive_red_days']}")
+        except Exception as re:
+            log(f"red-day counter update failed: {re}")
+        save_state(st)
     except Exception as e:
         log(f"outcomes attribution failed: {e}")
         hstats = {}
