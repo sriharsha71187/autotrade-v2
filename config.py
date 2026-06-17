@@ -149,6 +149,17 @@ STOCK_RISK_PER_TRADE   = 250.0     # base $ risk per stock trade (medium convict
 STOCK_RISK_CONV        = {"low": 0.6, "medium": 1.0, "high": 1.6}  # → ~$150/$250/$400
 OPTION_MAX_SPREAD_PCT  = 0.15      # skip options whose bid-ask spread exceeds this (illiquid)
 MAX_DEPLOYED_CAPITAL   = 40_000.0  # cap on total exposure across all open trades
+# Sleeve overlap (flag-OFF until verified): a name the long-term growth sleeve holds is
+# normally OFF-LIMITS to the intraday engine (managed-book block). But the sleeve holds only
+# ~$100 micro-positions, and that tiny hold was vetoing high-conviction intraday setups in the
+# same name (6/17: locked out of the entire semis complex on a +semis day). When enabled, the
+# intraday engine MAY take a LONG stock entry in a name held ONLY by the sleeve (NOT by pairs/
+# overnight/tail/earnings — those carry real collision/hedge risk) when the sleeve's cost basis
+# there is below SLEEVE_OVERLAP_MAX_SLEEVE_COST. The per-name notional / correlation / sector-
+# heat caps still bound total exposure. The intraday slice is tracked in state['intraday_overlap']
+# and flattened at EOD (preserving the sleeve's piece) so it can't become an overnight orphan.
+SLEEVE_OVERLAP_ENABLED        = False
+SLEEVE_OVERLAP_MAX_SLEEVE_COST = 500.0   # only overlap when the sleeve hold in the name is minor
 MAX_SAME_DIRECTION_POSITIONS = 10  # correlation cap: don't put the whole book on one
                                    # directional bet (e.g. 7 tech shorts on a selloff)
 # Sector/correlation heat cap (AUDIT_ROADMAP #10/#18). MAX_SAME_DIRECTION_POSITIONS only
@@ -669,6 +680,8 @@ OVERRIDES_FILE = HOME / "autotrade_overrides.json"
 RUNTIME_SETTABLE = {
     "INVARIANT_CHECKS_ENABLED": bool,
     "INVARIANT_DAY_PL_TOL": float,
+    "SLEEVE_OVERLAP_ENABLED": bool,
+    "SLEEVE_OVERLAP_MAX_SLEEVE_COST": float,
     "BEHAVIORAL_TRIPWIRE_ENABLED": bool,
     "TRIPWIRE_NOTRADE_CYCLES": int,
     "TRIPWIRE_REPEAT_BLOCKS": int,

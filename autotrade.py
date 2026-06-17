@@ -3087,18 +3087,61 @@ def flatten_one_stock(tc, sym, tag="flatten") -> bool:
     return False
 
 
-def flatten_stocks_eod(tc, dry, skip=None):
+def _flatten_overlap_slices(tc, state, dry):
+    """EOD: close the intraday SLEEVE-OVERLAP slices (state['intraday_overlap']) WITHOUT
+    touching the sleeve's own piece. For each tracked name, sell min(recorded slice, broker
+    qty − sleeve-tracked qty) — so the sleeve's long-term hold survives and no intraday slice
+    can ride overnight as an orphan. Runs before the normal flatten (those names are in `skip`)."""
+    io = (state or {}).get("intraday_overlap") or {}
+    if not io:
+        return
+    sleeve_qty = {}
+    for h in (state.get("growth_sleeve") or []):
+        sleeve_qty[h.get("symbol")] = sleeve_qty.get(h.get("symbol"), 0.0) + float(h.get("qty", 0) or 0)
+    try:
+        held = {p.symbol: float(p.qty) for p in tc.get_all_positions()}
+    except Exception as e:
+        log(f"overlap flatten: positions fetch failed: {e}")
+        return
+    for sym, slice_qty in list(io.items()):
+        broker = held.get(sym, 0.0)
+        excess = broker - sleeve_qty.get(sym, 0.0)            # never sell into the sleeve's piece
+        sell = int(min(float(slice_qty), excess) + 1e-9)
+        if sell < 1:
+            io.pop(sym, None)                                  # already gone (stop/target hit)
+            continue
+        if dry:
+            log(f"[DRY] would EOD-flatten overlap slice {sym} x{sell} (keep sleeve {sleeve_qty.get(sym,0)})")
+            continue
+        try:
+            for o in tc.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN, limit=100)):
+                if o.symbol == sym and not parse_occ(o.symbol):
+                    tc.cancel_order_by_id(o.id)               # clear the slice's resting bracket
+            time.sleep(0.3)
+            tc.submit_order(order_data=MarketOrderRequest(
+                symbol=sym, qty=sell, side=OrderSide.SELL, time_in_force=TimeInForce.DAY))
+            log(f"EOD FLATTEN overlap slice {sym} x{sell} (sleeve {sleeve_qty.get(sym,0)} kept)")
+            tg_send(f"🌆 EOD-flattened intraday {sym} (×{sell}); sleeve hold kept.")
+            io.pop(sym, None)
+        except Exception as e:
+            log(f"overlap flatten {sym} failed: {e}")          # keep tracked → retry next cycle
+
+
+def flatten_stocks_eod(tc, dry, skip=None, state=None):
     """At/after 15:50 ET, flatten any open STOCK position (cancel its bracket
     orders, then market-close). DAY bracket legs die at the close, so a stock left
     open overnight would be unprotected — and this is an intraday bot. (True
     overnight stock holds would need GTC brackets; not supported yet.)
     `skip`: symbols to leave alone (the growth sleeve holds these intentionally
-    overnight and manages them itself)."""
+    overnight and manages them itself). `state`: when given, also flattens the
+    sleeve-overlap intraday slices first (preserving the sleeve's piece)."""
     skip = skip or set()
     now = et_now()
     if not (now.hour > cfg.OPTION_EOD_CLOSE_HOUR or
             (now.hour == cfg.OPTION_EOD_CLOSE_HOUR and now.minute >= cfg.STOCK_EOD_CLOSE_MIN)):
         return
+    if state is not None:
+        _flatten_overlap_slices(tc, state, dry)
     try:
         positions = tc.get_all_positions()
     except Exception as e:
@@ -3492,7 +3535,7 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
                       dir_counts=None, book_symbols=None,
                       regime=None, event_state=None, options_intel=None,
                       conviction_symbols=None, positions=None,
-                      vehicle_router=None) -> tuple[bool, str]:
+                      vehicle_router=None, sleeve_overlap_ok=None) -> tuple[bool, str]:
     """ref_price: current per-share price of the asset being traded — the stock
     last price for buy_stock, the option premium per share for buy_option. Used
     for the notional and total-deployed-capital caps.
@@ -3508,12 +3551,21 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
     conviction_symbols = conviction_symbols or set()
     positions = positions or []
     vehicle_router = vehicle_router or {}
+    sleeve_overlap_ok = sleeve_overlap_ok or set()
     action = decision.get("action")
     # The growth sleeve and overnight-drift book are separate, code-managed books —
     # the intraday engine may not open, short, or close their names (it would fight
     # the book's own management and tangle broker position netting).
     if action in ("buy_stock", "buy_option", "abort") and decision.get("symbol") in book_symbols:
-        return False, f"{decision.get('symbol')} is a managed-book holding (off-limits to intraday)"
+        # Exception (SLEEVE_OVERLAP_ENABLED): a LONG stock entry in a name held ONLY by the
+        # sleeve as a minor hold is allowed — the sleeve's $100 piece shouldn't veto a real
+        # intraday setup. The intraday slice is tracked + EOD-flattened separately (no orphan).
+        _ov = (getattr(cfg, "SLEEVE_OVERLAP_ENABLED", False)
+               and action == "buy_stock"
+               and (decision.get("direction") or "long").lower() == "long"
+               and decision.get("symbol") in sleeve_overlap_ok)
+        if not _ov:
+            return False, f"{decision.get('symbol')} is a managed-book holding (off-limits to intraday)"
     # Deterministic regime gate (when the engine is on): the regime decides which
     # strategies may open this cycle. This is also where the momentum demotion is
     # enforced — naked directional stock trades map to a label the regime never
@@ -4559,6 +4611,19 @@ def run_cycle(dry: bool = False):
                   | th.held_symbols(state) | ec.held_symbols(state)
                   | sp.held_symbols(state))
 
+    # Sleeve-overlap (flag-OFF default): names the intraday engine MAY take a LONG stock
+    # entry in despite the managed-book block — held ONLY by the sleeve (not pairs/overnight/
+    # tail/earnings) AND a minor sleeve hold (cost basis < cap). The intraday slice is tracked
+    # + EOD-flattened separately so it can't orphan. All other caps still apply downstream.
+    sleeve_overlap_ok = set()
+    if getattr(cfg, "SLEEVE_OVERLAP_ENABLED", False):
+        _other_books = held_books - sleeve
+        for _h in (state.get("growth_sleeve") or []):
+            _s = _h.get("symbol")
+            _cost = abs(float(_h.get("qty", 0) or 0) * float(_h.get("entry", 0) or 0))
+            if _s and _s not in _other_books and _cost < cfg.SLEEVE_OVERLAP_MAX_SLEEVE_COST:
+                sleeve_overlap_ok.add(_s)
+
     # Cross-day realized-P&L ledger (AUDIT_ROADMAP #5). The self-reporting books book
     # their own realized via record_strategy_realized, so accumulate every symbol they
     # have EVER held into a durable set — even after a book closes a position and its
@@ -4599,7 +4664,7 @@ def run_cycle(dry: bool = False):
     manage_multileg(tc, odc, state, dry)
     manage_options(tc, odc, state, dry)
     manage_stops(tc, dry, skip=held_books, state=state)   # trail bracket stops + fade/thesis-break cut
-    flatten_stocks_eod(tc, dry, skip=held_books)
+    flatten_stocks_eod(tc, dry, skip=held_books, state=state)
     # Conviction-ITM holds are deliberate multi-day options (managed by manage_options:
     # stop / max-hold / DTE exit). Shield their OCC symbols from the EOD orphan sweep so
     # a tracking desync can't force-close them at 15:45, exactly like the tail/earnings books.
@@ -5110,7 +5175,8 @@ def run_cycle(dry: bool = False):
                                        regime=regime, event_state=event_state,
                                        options_intel=options_intel,
                                        conviction_symbols=conviction_symbols,
-                                       positions=positions, vehicle_router=vehicle_router)
+                                       positions=positions, vehicle_router=vehicle_router,
+                                       sleeve_overlap_ok=sleeve_overlap_ok)
         if not ok:
             log(f"guardrail blocked {action}: {reason}")
             result = {"status": "blocked", "action": action, "reason": reason}
@@ -5127,6 +5193,12 @@ def run_cycle(dry: bool = False):
                                             decision["target_price"], dry, ref=ref_price)
                     order_id = str(o.id) if o else None
                     state.setdefault("last_entry_time", {})[decision["symbol"]] = now.isoformat()
+                    # Sleeve-overlap entry: this LONG slice sits in a sleeve-held (shielded)
+                    # name, so the normal EOD flatten skips it. Track the qty so the EOD
+                    # sweep closes exactly this slice and leaves the sleeve's piece (no orphan).
+                    if not dry and decision["symbol"] in sleeve_overlap_ok:
+                        _io = state.setdefault("intraday_overlap", {})
+                        _io[decision["symbol"]] = _io.get(decision["symbol"], 0) + int(decision["qty"])
                 elif action == "buy_option":
                     # Marketable LIMIT (limit just above ask) instead of a naked
                     # market order — fills promptly but caps the price so a fast or
