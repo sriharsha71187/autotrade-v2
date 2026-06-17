@@ -4618,10 +4618,16 @@ def run_cycle(dry: bool = False):
     sleeve_overlap_ok = set()
     if getattr(cfg, "SLEEVE_OVERLAP_ENABLED", False):
         _other_books = held_books - sleeve
+        _already_overlapped = set((state.get("intraday_overlap") or {}).keys())
         for _h in (state.get("growth_sleeve") or []):
             _s = _h.get("symbol")
             _cost = abs(float(_h.get("qty", 0) or 0) * float(_h.get("entry", 0) or 0))
-            if _s and _s not in _other_books and _cost < cfg.SLEEVE_OVERLAP_MAX_SLEEVE_COST:
+            # ONE overlap slice per name per day: once the intraday engine has an overlap
+            # position in a sleeve name, it's no longer eligible — otherwise the model (which
+            # fixates on the day's strongest name) re-stacks it every cooldown into a single-
+            # name concentration runaway. The slice is cleared at the EOD flatten.
+            if (_s and _s not in _other_books and _s not in _already_overlapped
+                    and _cost < cfg.SLEEVE_OVERLAP_MAX_SLEEVE_COST):
                 sleeve_overlap_ok.add(_s)
 
     # Cross-day realized-P&L ledger (AUDIT_ROADMAP #5). The self-reporting books book

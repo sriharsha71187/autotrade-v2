@@ -47,13 +47,13 @@ check("ON: non-book name unaffected by this block",
 
 # ---- cycle eligibility: sleeve-only + minor cost; excludes other-book + big holds ----
 # (replicate the cycle's sleeve_overlap_ok computation inline against the real config)
-def overlap_ok(sleeve, other_books):
+def overlap_ok(sleeve, other_books, already=None):
     cfg.SLEEVE_OVERLAP_ENABLED = True
     ok = set()
-    other = set(other_books)
+    other = set(other_books); already = set(already or [])
     for h in sleeve:
         s = h.get("symbol"); cost = abs(h.get("qty",0)*h.get("entry",0))
-        if s and s not in other and cost < cfg.SLEEVE_OVERLAP_MAX_SLEEVE_COST:
+        if s and s not in other and s not in already and cost < cfg.SLEEVE_OVERLAP_MAX_SLEEVE_COST:
             ok.add(s)
     return ok
 sleeve = [{"symbol": "LRCX", "qty": 0.293, "entry": 334.0},   # ~$98 minor -> eligible
@@ -62,6 +62,8 @@ check("eligible: minor sleeve-only LRCX is overlap-ok", "LRCX" in overlap_ok(sle
 check("excluded: large sleeve hold BIGX not overlap-ok", "BIGX" not in overlap_ok(sleeve, set()))
 check("excluded: sleeve name ALSO in another book (pairs) not overlap-ok",
       "LRCX" not in overlap_ok(sleeve, {"LRCX"}))
+check("brake: name already overlapped today is NOT eligible again (no re-stack runaway)",
+      "LRCX" not in overlap_ok(sleeve, set(), already={"LRCX"}))
 
 # ---- EOD overlap flatten: sells the slice, preserves the sleeve piece ----
 class FakePos:
