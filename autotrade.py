@@ -4431,7 +4431,15 @@ def behavioral_tripwire(state, result, now):
             # Collapse the reason to its RULE (strip the variable tail after ':' or '(') so
             # the same guardrail tallies together regardless of the specific symbol/number.
             reason = str((result or {}).get("reason") or "?")
-            key = (reason.split(":")[0].split("(")[0].strip()[:48]) or "?"
+            key = reason.split(":")[0].split("(")[0].strip()
+            # Also strip a leading TICKER token so the SAME rule across different symbols
+            # tallies together (e.g. "LRCX is a managed-book holding" + "ASML is a managed-
+            # book holding" -> one stuck-block key), without over-collapsing reasons that
+            # start with a lowercased/hyphenated rule name ("anti-chase", "IV-rank").
+            _w = key.split()
+            if _w and len(_w[0]) <= 6 and _w[0].isalpha() and _w[0].isupper():
+                key = " ".join(_w[1:])
+            key = key[:48] or "?"
             bt["blocks"][key] = bt["blocks"].get(key, 0) + 1
         # A) setups but no trades all day
         if ("notrade" not in bt["alerted"]

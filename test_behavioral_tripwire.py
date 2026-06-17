@@ -74,6 +74,15 @@ for r in ["IV-rank too high", "IV-rank too high", "daily halt"]:
 check("B: distinct reasons counted separately",
       st4["behavior_track"]["blocks"].get("IV-rank too high") == 2
       and st4["behavior_track"]["blocks"].get("daily halt") == 1)
+# leading TICKER token is stripped so the SAME rule across symbols tallies as one
+st5b = {}
+for sym in ("LRCX", "ASML", "AMD"):
+    A.behavioral_tripwire(
+        st5b, {"status": "blocked", "reason": f"{sym} is a managed-book holding (off-limits to intraday)"}, now)
+check("B: ticker stripped — LRCX/ASML/AMD managed-book collapse to one key (3)",
+      st5b["behavior_track"]["blocks"].get("is a managed-book holding") == 3)
+check("B: lowercase/hyphenated rule NOT over-collapsed",
+      "IV-rank too high" in st4["behavior_track"]["blocks"])
 
 # ---- never raises on a malformed result ----
 st5 = {}
