@@ -9,6 +9,11 @@ whole thing is INERT when FADE_STOP_ENABLED is off (the deployed/staged state)."
 import config as cfg
 import autotrade as A
 
+# Isolation: never write to the production log or fire real Telegram from a test.
+import tempfile, pathlib
+cfg.LOG_FILE = pathlib.Path(tempfile.mkdtemp()) / "test.log"
+A.tg_send = lambda *a, **k: None
+
 failures = []
 def check(name, cond):
     print(f"{'PASS' if cond else 'FAIL'}: {name}")

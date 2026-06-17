@@ -4,6 +4,10 @@ and that it's inert when the flag is off and never raises."""
 import config as cfg
 import autotrade as A
 
+# Isolation: log to a temp file, never the production log.
+import tempfile, pathlib
+cfg.LOG_FILE = pathlib.Path(tempfile.mkdtemp()) / "test.log"
+
 failures = []
 def check(name, cond):
     print(f"{'PASS' if cond else 'FAIL'}: {name}")
