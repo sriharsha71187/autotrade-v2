@@ -21,6 +21,8 @@ ENV_FILE = HOME / ".autotrade.env"
 STATE_FILE      = HOME / "autotrade_state.json"
 SNAPSHOT_DIR    = HOME / "autotrade_snapshots"      # per-cycle decision + result records
 OUTCOMES_DIR    = HOME / "autotrade_outcomes"       # daily realized-P&L / fills capture
+SCORECARD_DIR   = HOME / "autotrade_scorecard"      # per-entry quality scorecard (extension/rank vs outcome)
+SCORECARD_ENABLED = True                            # log a quality record on every entry (read-only; no trading effect)
 # Cross-day P&L ledger: when stamping a strategy label on an opened lot, search the
 # submitted-decision map back this many days so a long opened on day X but CLOSED on a later
 # day still attributes to its original entry (stock_long), not a sign-inferred 'stock_short'.

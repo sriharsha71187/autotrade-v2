@@ -4068,6 +4068,43 @@ def passes_guardrails(decision, state, acct, now, ref_price=None,
 # ===========================================================================
 # Snapshot for EOD replay
 # ===========================================================================
+def record_trade_scorecard(decision, ref_price, scan_row, scan, regime, now):
+    """On every EXECUTED entry, log a per-trade quality record — so we can later answer
+    'are these GOOD trades?' with data, not vibes. Captures how CHASED/EXTENDED the entry
+    was (vwap_ext, off_hod, rsi, day move) and whether the bot picked the day's best mover
+    (rank among the scan) vs the alternatives it passed. Read-only; joins to realized P&L
+    later (the name's outcome that day) to correlate entry quality with result. Never raises."""
+    if not getattr(cfg, "SCORECARD_ENABLED", False):
+        return
+    try:
+        sym = _decision_underlying(decision) or decision.get("symbol")
+        row = scan_row or next((r for r in (scan or []) if r.get("symbol") == sym), {}) or {}
+        # rank of this name among the day's movers (1 = biggest |day move| in the scan)
+        movers = sorted([r for r in (scan or []) if r.get("day_pct") is not None],
+                        key=lambda r: abs(r.get("day_pct") or 0), reverse=True)
+        rank = next((i + 1 for i, r in enumerate(movers) if r.get("symbol") == sym), None)
+        top3 = [{"sym": r.get("symbol"), "day_pct": r.get("day_pct")} for r in movers[:3]]
+        rec = {
+            "ts": now.isoformat(), "day": now.strftime("%Y-%m-%d"),
+            "symbol": sym, "action": decision.get("action"),
+            "direction": (decision.get("direction") or "long"),
+            "conviction": decision.get("conviction"), "entry_ref": ref_price,
+            # chase/extension signals at entry:
+            "day_pct": row.get("day_pct"), "vwap_ext": row.get("vwap_ext"),
+            "off_hod": row.get("off_hod"), "rsi": row.get("rsi"), "from_open": row.get("from_open"),
+            # opportunity context: did it pick the best mover?
+            "rank_among_movers": rank, "n_scan": len(movers), "top3_movers": top3,
+            "regime": (f"{regime.get('trend')}/{regime.get('vol')}" if regime else None),
+        }
+        cfg.SCORECARD_DIR.mkdir(exist_ok=True)
+        with open(cfg.SCORECARD_DIR / f"{rec['day']}.jsonl", "a") as f:
+            f.write(json.dumps(rec) + "\n")
+        log(f"scorecard: {sym} {decision.get('action')} rank={rank}/{len(movers)} "
+            f"vwap_ext={row.get('vwap_ext')} rsi={row.get('rsi')} day={row.get('day_pct')}")
+    except Exception as e:
+        log(f"scorecard record failed (non-fatal): {e}")
+
+
 def write_snapshot(context: dict, decision: dict, result: dict = None):
     """One JSONL record per Claude cycle: market context, the FULL decision, and
     how it resolved (result: submitted/blocked/order_failed/hold + order_id/reason).
@@ -5300,6 +5337,8 @@ def run_cycle(dry: bool = False):
                             et[_und] = int(et.get(_und, 0)) + 1
                 result = {"status": "dry_run" if dry else "submitted", "action": action,
                           "order_id": order_id, "ref_price": ref_price}
+                if not dry and action in ("buy_stock", "buy_option", "multi_leg", "iron_condor"):
+                    record_trade_scorecard(decision, ref_price, scan_row, scan, regime, now)
             except Exception as e:
                 log(f"order placement failed for {action}: {e}")
                 tg_send(f"⚠️ Order failed ({action}): {e}")
