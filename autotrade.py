@@ -4517,18 +4517,20 @@ def behavioral_tripwire(state, result, now):
         if status in ("submitted", "dry_run"):
             bt["entries"] += 1
         elif status == "blocked":
-            # Collapse the reason to its RULE (strip the variable tail after ':' or '(') so
-            # the same guardrail tallies together regardless of the specific symbol/number.
-            reason = str((result or {}).get("reason") or "?")
-            key = reason.split(":")[0].split("(")[0].strip()
-            # Also strip a leading TICKER token so the SAME rule across different symbols
-            # tallies together (e.g. "LRCX is a managed-book holding" + "ASML is a managed-
-            # book holding" -> one stuck-block key), without over-collapsing reasons that
-            # start with a lowercased/hyphenated rule name ("anti-chase", "IV-rank").
-            _w = key.split()
-            if _w and len(_w[0]) <= 6 and _w[0].isalpha() and _w[0].isupper():
-                key = " ".join(_w[1:])
-            key = key[:48] or "?"
+            # Collapse a block reason to its RULE so the same guardrail tallies together
+            # regardless of the specific symbol/number. Two reason shapes occur:
+            #   "regime gate: ..."         -> rule is BEFORE the first colon
+            #   "INTC: ATM IV-rank 71 ..." -> ticker is before the colon, rule is AFTER it
+            # So: strip a leading TICKER token (with optional ':') FIRST, THEN take the rule
+            # up to the next ':' or '(', THEN drop digits (so "IV-rank 71" / "99" collapse).
+            reason = str((result or {}).get("reason") or "?").strip()
+            _w = reason.split()
+            if _w and 1 <= len(_w[0].rstrip(":")) <= 6 and _w[0].rstrip(":").isalpha() \
+                    and _w[0].rstrip(":").isupper():
+                reason = " ".join(_w[1:])          # drop the leading ticker (e.g. "INTC:" / "LRCX")
+            key = reason.split(":")[0].split("(")[0]
+            key = "".join(c for c in key if not c.isdigit())   # drop variable numbers
+            key = " ".join(key.split())[:48] or "?"            # collapse whitespace
             bt["blocks"][key] = bt["blocks"].get(key, 0) + 1
         # A) setups but no trades all day
         if ("notrade" not in bt["alerted"]

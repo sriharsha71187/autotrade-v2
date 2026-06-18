@@ -84,6 +84,22 @@ check("B: ticker stripped — LRCX/ASML/AMD managed-book collapse to one key (3)
 check("B: lowercase/hyphenated rule NOT over-collapsed",
       "IV-rank too high" in st4["behavior_track"]["blocks"])
 
+# "TICKER: rule N ..." shape (the 6/18 bug) — ticker before colon, rule after, varying numbers
+st5c = {}
+for r in ["INTC: ATM IV-rank 71 > 70 ceiling — buying RICH vol (top of range), skip",
+          "INTC: ATM IV-rank 73 > 70 ceiling — buying RICH vol (top of range), skip",
+          "KLAC: ATM IV-rank 99 > 70 ceiling — buying RICH vol (top of range), skip"]:
+    A.behavioral_tripwire(st5c, {"status": "blocked", "reason": r}, now)
+_k = list(st5c["behavior_track"]["blocks"].keys())
+check("B: 'TICKER: rule N' collapses to ONE non-empty key across symbols+numbers",
+      len(_k) == 1 and _k[0] not in ("", "?") and "IV-rank" in _k[0])
+check("B: that key tallied all 3", st5c["behavior_track"]["blocks"][_k[0]] == 3)
+# "rule: detail" shape (no leading ticker) still keys on the rule before the colon
+st5d = {}
+A.behavioral_tripwire(st5d, {"status": "blocked", "reason": "regime gate: stock_long not allowed in RANGE"}, now)
+check("B: 'regime gate: ...' keys on the rule before the colon",
+      "regime gate" in st5d["behavior_track"]["blocks"])
+
 # ---- never raises on a malformed result ----
 st5 = {}
 A.behavioral_tripwire(st5, None, now)
