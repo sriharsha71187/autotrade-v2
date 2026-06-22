@@ -187,6 +187,43 @@ def _size_legs(sig) -> tuple[int, int]:
     return qa, qb
 
 
+def _reconcile_orphans(at, tc, state):
+    """Alert-only: surface broker pair-leg positions NOT accounted for by tracked open pairs.
+    State can be lost (crash / API outage / shutdown mid-fill) while the broker legs persist —
+    exactly the 6/18 NVDA/TSM orphan (after-hours fill + the credit outage + the Juneteenth
+    weekend lost the save), so on 6/22 the bot re-opened NVDA/TSM and the old legs sat
+    untracked. This flags such desyncs every run so they don't linger unmanaged. NEVER trades."""
+    sp = state.get("sector_pairs", {})
+    expected = {}                                    # signed shares the book THINKS it holds
+    for pos in sp.get("open", {}).values():
+        d = pos.get("dir", 1)
+        expected[pos["a"]] = expected.get(pos["a"], 0.0) + (pos["qa"] if d == 1 else -pos["qa"])
+        expected[pos["b"]] = expected.get(pos["b"], 0.0) + (-pos["qb"] if d == 1 else pos["qb"])
+    pair_syms = {s for p in PAIRS_DEPLOY for s in (p[0], p[1])} | set(expected)
+    other = set()                                    # shared with another stock book → can't attribute, skip
+    for m in ("growth_sleeve", "overnight_drift"):
+        try:
+            other |= set(__import__(m).held_symbols(state))
+        except Exception:
+            pass
+    try:
+        broker = {p.symbol: float(p.qty) for p in tc.get_all_positions()}
+    except Exception:
+        return
+    for sym in sorted(pair_syms):
+        if sym in other:
+            continue
+        diff = broker.get(sym, 0.0) - expected.get(sym, 0.0)
+        if abs(diff) >= 1:
+            at.log(f"sector_pairs RECONCILE: {sym} broker {broker.get(sym,0):+.0f} vs tracked "
+                   f"{expected.get(sym,0):+.0f} → {diff:+.0f} UNTRACKED (orphan?)")
+            try:
+                at.tg_send(f"⚠️ Pairs orphan: {sym} broker {broker.get(sym,0):+.0f} vs "
+                           f"tracked {expected.get(sym,0):+.0f} (untracked pair leg)")
+            except Exception:
+                pass
+
+
 # ===========================================================================
 # run — open / manage / close
 # ===========================================================================
@@ -200,6 +237,8 @@ def run(tc, state, dry: bool):
         sp = state.setdefault("sector_pairs", {})
         sp.setdefault("open", {})
         now = at.et_now()
+        if not dry:
+            _reconcile_orphans(at, tc, state)        # flag broker pair-legs not in state (alert-only)
 
         # Pull data once for every symbol we might touch.
         symset = sorted({s for p in PAIRS_DEPLOY for s in (p[0], p[1])}
