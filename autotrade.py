@@ -4084,11 +4084,25 @@ def record_trade_scorecard(decision, ref_price, scan_row, scan, regime, now):
                         key=lambda r: abs(r.get("day_pct") or 0), reverse=True)
         rank = next((i + 1 for i, r in enumerate(movers) if r.get("symbol") == sym), None)
         top3 = [{"sym": r.get("symbol"), "day_pct": r.get("day_pct")} for r in movers[:3]]
+        # what KIND of trade — instrument, option structure, credit/debit, and which book made it
+        act = decision.get("action")
+        legs = decision.get("legs") or decision.get("condor_legs") or []
+        is_opt = bool(decision.get("option_symbol") or legs or act in ("buy_option", "iron_condor", "multi_leg"))
+        structure = {"buy_stock": "stock", "buy_option": "single_option",
+                     "iron_condor": "iron_condor", "multi_leg": "multi_leg_spread"}.get(act, act)
+        credit_debit = ("credit" if decision.get("net_credit") is not None
+                        else ("debit" if decision.get("net_price") is not None else None))
         rec = {
             "ts": now.isoformat(), "day": now.strftime("%Y-%m-%d"),
-            "symbol": sym, "action": decision.get("action"),
+            "symbol": sym, "action": act,
             "direction": (decision.get("direction") or "long"),
             "conviction": decision.get("conviction"), "entry_ref": ref_price,
+            # what kind of trade:
+            "instrument": ("option" if is_opt else "stock"), "structure": structure,
+            "book": decision.get("book"),
+            "n_legs": (len(legs) if legs else (1 if decision.get("option_symbol") else 0)),
+            "credit_debit": credit_debit, "option_symbol": decision.get("option_symbol"),
+            "qty": decision.get("qty"),
             # chase/extension signals at entry:
             "day_pct": row.get("day_pct"), "vwap_ext": row.get("vwap_ext"),
             "off_hod": row.get("off_hod"), "rsi": row.get("rsi"), "from_open": row.get("from_open"),
@@ -4119,6 +4133,9 @@ def write_snapshot(context: dict, decision: dict, result: dict = None):
     rec = {"t": et_now().isoformat(),
            "scan": context.get("signal_scan"),
            "vix": context.get("vix"),
+           "regime": context.get("regime"),
+           "news": context.get("news"),           # raw signal the model saw — for news→signal research
+           "learnings": context.get("learnings"), # rulebook state at decision time (discipline tracking)
            "positions": context.get("positions"),
            "decision": {k: decision.get(k) for k in dkeys},
            "result": result or {}}
