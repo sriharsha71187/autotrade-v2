@@ -8,6 +8,13 @@ resize it but never invent a trade.
 > **Paper only.** `PAPER=True` is hardcoded. Real keys live in `~/.autotrade.env`
 > (chmod 600, outside the repo). Nothing here places live-money orders.
 
+> **Status: instrumented experiment, not a proven strategy.** Whether the model's
+> *selection* actually adds value is the open question — three independent checks (a
+> leak-free archetype backtest, the literature, and the bot's own live decisions) so far
+> say **no proven intraday edge**. The bot is run to *collect data and distill a
+> deterministic strategy*, and to decide whether the LLM is removable. See
+> **[Research & validation](#research--validation)**.
+
 ## Workflow at a glance
 
 One model call (box ④) sits inside deterministic gates — **everything else is code**.
@@ -119,6 +126,52 @@ so it can't thrash. Code enforces the mechanical invariants (hysteresis, clock
 preservation, count clamping, silent-delete guard); the model does the semantic work. A
 learning can never override the protected human priors in `config.LEARNING_PROTECTED_PRIORS`.
 
+## Research & validation
+The architecture above is sound; the honest open question is whether the **model's
+selection adds value**. The current evidence — a leak-free archetype backtest, the
+LLM-as-trader literature, and the bot's own live decisions — points the same way: **no
+proven intraday selection edge.** The model's picks have not beaten a *random* pick from
+the same candidate pool (an early, controlled test had a random picker beating the model
+~93–100% of the time intraday); the one durable signature anywhere is long-only
+cross-sectional momentum, which is beta-tilted, not alpha.
+
+So the bot is run as an **instrumented experiment** — and, crucially, it captures
+everything needed to *build* a deterministic strategy, not just grade the model. The goal
+is **LLM-as-teacher**: use its decisions + outcomes as a labeled dataset, distill the part
+(if any) that works into deterministic code, and remove the LLM wherever a rule reproduces
+it.
+
+The data pipeline (all read-only / non-fatal; no effect on the trading path):
+- `~/autotrade_snapshots/` — per cycle: the **full candidate set + features**, the **news
+  the model saw**, the active rulebook, the decision, and the result (`write_snapshot`).
+- `~/autotrade_scorecard/` — per executed entry: how chased/extended it was (vwap_ext,
+  off-HOD, RSI, mover-rank vs the alternatives) **and the trade kind** (stock vs option,
+  structure, book, credit/debit) (`record_trade_scorecard`).
+- `research/backfill_outcomes.py` → `~/autotrade_candidate_outcomes/` — the missing **Y**:
+  forward returns of **every** candidate (picked *and* passed) at 30m/1h/2h/EOD/+1d/+3d.
+  Without the outcomes of the names we *passed*, selection skill is unmeasurable.
+- `research/analyze_picks.py` — rigorous selection-skill test: each pick vs the
+  alternatives it had **that same cycle**, plus a Monte-Carlo random baseline.
+- `research/distill.py` — mines the candidate dataset for a deterministic **feature→return
+  signal** (LLM-agnostic), out-of-sample day-split gated, and tests whether the model's
+  pick adds anything *beyond* the features. If a deterministic rule reproduces the good
+  entries, the LLM is removable from selection.
+- `research/qc_xsmom.py` — a QuantConnect/LEAN cross-sectional-momentum algo to re-validate
+  that one signature on a survivorship-free engine.
+
+Run the pipeline (after the bot has logged a few days of snapshots):
+```bash
+PY=~/autotrade/venv/bin/python3
+$PY ~/autotrade/research/backfill_outcomes.py   # snapshots -> candidate-outcomes (the Y)
+$PY ~/autotrade/research/analyze_picks.py        # picks vs same-cycle alternatives + random baseline
+$PY ~/autotrade/research/distill.py              # feature->return signal + LLM incremental value
+```
+
+The self-learning loop is held **on trial, not on trust**: it's firewalled from the
+deterministic signal mining (which only uses market data), and the snapshots now log the
+rulebook state, so the checkpoint can *measure* whether it improved entry quality or just
+churned the policy — and cut it if it's noise.
+
 ## Files
 - `autotrade.py` — the engine (cycle, management, guardrails, learning).
 - `config.py` — keys, paths, and all hard guardrails (edit guardrails here).
@@ -130,6 +183,8 @@ learning can never override the protected human priors in `config.LEARNING_PROTE
   (`*_ENABLED=False`) — both were backtested and rejected as single-name artifacts.
 - `alpaca_system_prompt.txt` — the model's trading instructions.
 - `backtest.py` — offline backtest harness.
+- `research/` — validation & distillation (see **Research & validation**):
+  `backfill_outcomes.py`, `analyze_picks.py`, `distill.py`, `qc_xsmom.py`.
 - `~/.autotrade.env` — secrets (copy from `autotrade.env.template`, chmod 600).
 
 ## CLI
