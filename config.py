@@ -69,6 +69,11 @@ CLAUDE_FALLBACK_MODEL = _env.get("CLAUDE_FALLBACK_MODEL", "claude-opus-4-8")
 # tokens, so the budget must comfortably fit thinking + the ~600-token JSON or the
 # answer is truncated (stop_reason=max_tokens, empty text -> "no JSON value found").
 CLAUDE_MAX_TOKENS = int(_env.get("CLAUDE_MAX_TOKENS", "8000"))
+# The nightly learnings pass returns the WHOLE updated rulebook (can be 25+ verbose rules
+# with evidence), so it needs far more headroom than a single trade decision. On a heavy
+# day (84 snapshots, 6/22) an 8000-token cap truncated it (stop_reason=max_tokens), losing
+# that day's learnings entirely. Give it its own, larger budget.
+CLAUDE_LEARNINGS_MAX_TOKENS = int(_env.get("CLAUDE_LEARNINGS_MAX_TOKENS", "16000"))
 TELEGRAM_TOKEN    = _env.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID  = _env.get("TELEGRAM_CHAT_ID", "")
 # Financial Modeling Prep — free economic-calendar feed for the event router. Optional:

@@ -5559,7 +5559,7 @@ def _learning_pass(day, stats, snapshots, existing, snap_cap=60):
     )
     try:
         r = _create_message(
-            max_tokens=cfg.CLAUDE_MAX_TOKENS,
+            max_tokens=cfg.CLAUDE_LEARNINGS_MAX_TOKENS,
             system=_learnings_system_prompt(),
             messages=[{"role": "user", "content": user}],
             output_config={"format": {"type": "json_schema", "schema": _LEARNINGS_SCHEMA}},
@@ -5634,13 +5634,116 @@ def backfill_learnings(days: int = 14):
     log(f"backfill complete: {len(active)} active, {len(retired)} retired rules")
 
 
-def run_eod():
+# --- EOD self-heal: a marker so a missed EOD (machine asleep over the 16:20 ET
+# slot) is recovered on the next cycle that runs, instead of being lost forever. ---
+_EOD_MARKER  = cfg.LEARNINGS_FILE.parent / ".eod_done"     # last YYYY-MM-DD that SUCCEEDED
+_EOD_ATTEMPT = cfg.LEARNINGS_FILE.parent / ".eod_attempt"  # "YYYY-MM-DD|isotime" of last FAILED try
+_EOD_RETRY_COOLDOWN_MIN = 30   # after a failed pass, wait this long before the catch-up retries
+
+
+def _last_eod_day():
+    try:
+        return _EOD_MARKER.read_text().strip() or None
+    except Exception:
+        return None
+
+
+def _mark_eod_done(day):
+    try:
+        _EOD_MARKER.write_text(day)
+    except Exception as e:
+        log(f"EOD marker write failed (non-fatal): {e}")
+
+
+def _note_eod_failure(day):
+    try:
+        _EOD_ATTEMPT.write_text(f"{day}|{et_now().isoformat()}")
+    except Exception:
+        pass
+
+
+def _eod_recently_failed(target, now):
+    """True if `target` failed within the cooldown window — so the per-cycle catch-up
+    backs off instead of re-sending the report every 60s on a deterministic failure."""
+    try:
+        d, ts = _EOD_ATTEMPT.read_text().strip().split("|", 1)
+        if d != target:
+            return False
+        return (now - datetime.fromisoformat(ts)).total_seconds() < _EOD_RETRY_COOLDOWN_MIN * 60
+    except Exception:
+        return False
+
+
+def _most_recent_session_day(now):
+    """The trading day whose EOD should already exist as of `now` (ET).
+    Today only counts once we're past the 16:20 ET EOD slot; otherwise step back
+    to the prior weekday. Holidays aren't enumerated — their snapshots are simply
+    empty, so a catch-up for one is a harmless no-op write."""
+    d = now
+    if (now.hour, now.minute) < (16, 20):
+        d = d - timedelta(days=1)
+    while d.weekday() >= 5:                  # Sat=5, Sun=6 -> walk back to Friday
+        d = d - timedelta(days=1)
+    return d.strftime("%Y-%m-%d")
+
+
+def eod_catchup():
+    """Cheap per-cycle guard: if the most recent session has no EOD on record,
+    run it now. Marker-guarded so it fires at most once per missed day; never trades."""
+    try:
+        now = et_now()
+        target = _most_recent_session_day(now)
+        if _last_eod_day() == target:
+            return                                # already succeeded
+        if _eod_recently_failed(target, now):
+            return                                # failed recently — back off, don't spam
+        log(f"EOD catch-up: missed EOD for {target} (last={_last_eod_day()}) — running now")
+        run_eod(day=target)
+    except Exception as e:
+        log(f"EOD catch-up skipped (non-fatal): {e}")
+
+
+_RESEARCH_MARKER = cfg.LEARNINGS_FILE.parent / ".research_capture_done"
+
+
+def _daily_research_capture():
+    """Once per weekday after the close, spawn the broad-universe point-in-time research
+    capture (technical + fundamentals + news) as a DETACHED subprocess so it never blocks
+    the trading loop. Marker-guarded to run at most once/day. Pure research — no trading."""
+    try:
+        now = et_now()
+        if now.weekday() >= 5 or (now.hour, now.minute) < (16, 30):
+            return                                  # weekdays only, after the close (data settled)
+        today = now.strftime("%Y-%m-%d")
+        try:
+            if _RESEARCH_MARKER.read_text().strip() == today:
+                return
+        except Exception:
+            pass
+        import os, subprocess
+        script = str(Path(__file__).resolve().parent / "research" / "nightly_research.py")
+        logf = open(os.path.expanduser("~/autotrade_research.log"), "a")
+        subprocess.Popen([sys.executable, script], stdout=logf,
+                         stderr=subprocess.STDOUT, start_new_session=True)
+        _RESEARCH_MARKER.write_text(today)
+        log(f"research capture: spawned nightly_research for {today} (detached)")
+    except Exception as e:
+        log(f"research capture skip (non-fatal): {e}")
+
+
+def run_eod(day=None, force=False):
     if not _ALPACA_OK:
         log(f"alpaca-py not importable: {_ALPACA_ERR}")
         return
     tc = trading_client()
-    day = et_now().strftime("%Y-%m-%d")
-    stats = honest_trade_stats(tc)
+    state = load_state()
+    day = day or et_now().strftime("%Y-%m-%d")
+    if not force and _last_eod_day() == day:
+        return                               # idempotent: already ran for this day
+    # MUST pass state: day_realized_pl reads the cross-day realized ledger that lives in
+    # state. Without it the learnings pass (and the EOD message) saw realized P&L $0 every
+    # night regardless of the real day — biasing what the model learned from.
+    stats = honest_trade_stats(tc, state)
     snapshots = _load_day_snapshots(day)
     existing = load_learnings()
     learnings, flips, ok = _learning_pass(day, stats, snapshots, existing)
@@ -5701,6 +5804,47 @@ def run_eod():
         if lines:
             tg_send_long("⚠️ Contradiction events today:\n\n" + "\n\n".join(lines))
 
+    # Mark done only on a real success; on failure record the attempt so the per-cycle
+    # catch-up retries after a cooldown instead of either re-spamming or losing the day.
+    if ok:
+        _mark_eod_done(day)
+    else:
+        _note_eod_failure(day)
+        log(f"EOD {day}: learnings pass failed — left unmarked, catch-up will retry after cooldown")
+
+
+def _cycle_once(dry=False):
+    """One scheduler tick: overlap-guarded cycle + EOD catch-up. Shared by the per-tick
+    `cycle` mode and the persistent `loop` daemon."""
+    lock = _acquire_cycle_lock() if not dry else True
+    if lock is None:
+        log("prior cycle still running — skipping this tick")
+        return
+    try:
+        run_cycle(dry=dry)
+        if not dry:
+            eod_catchup()             # recover an EOD missed while the host was asleep
+            _daily_research_capture() # spawn the nightly broad-universe research capture (detached)
+    finally:
+        if lock is not True:
+            lock.close()    # release the flock
+
+
+def run_loop(dry=False, interval=60):
+    """Persistent daemon: self-loops instead of relying on launchd StartInterval, which
+    stalls unreliably on this host (cycles silently stop firing even while the Mac is
+    awake — observed 6/22 & 6/23). Run under launchd KeepAlive so any crash relaunches.
+    Each iteration is fully guarded so one bad cycle never kills the loop."""
+    import os as _os
+    log(f"loop daemon started (interval={interval}s, pid={_os.getpid()})")
+    while True:
+        t0 = time.time()
+        try:
+            _cycle_once(dry=dry)
+        except Exception as e:
+            log(f"loop: cycle error (continuing): {e}")
+        time.sleep(max(1.0, interval - (time.time() - t0)))
+
 
 # ===========================================================================
 # Entry point
@@ -5711,15 +5855,9 @@ def main():
     dry = "--dry-run" in args
     try:
         if mode == "cycle":
-            lock = _acquire_cycle_lock() if not dry else True
-            if lock is None:
-                log("prior cycle still running — skipping this tick")
-                return
-            try:
-                run_cycle(dry=dry)
-            finally:
-                if lock is not True:
-                    lock.close()  # release the flock
+            _cycle_once(dry=dry)
+        elif mode == "loop":
+            run_loop(dry=dry, interval=int(args[1]) if len(args) > 1 and args[1].isdigit() else 60)
         elif mode == "eod":
             run_eod()
         elif mode == "backfill":
