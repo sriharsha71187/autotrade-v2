@@ -74,6 +74,12 @@ CLAUDE_MAX_TOKENS = int(_env.get("CLAUDE_MAX_TOKENS", "8000"))
 # day (84 snapshots, 6/22) an 8000-token cap truncated it (stop_reason=max_tokens), losing
 # that day's learnings entirely. Give it its own, larger budget.
 CLAUDE_LEARNINGS_MAX_TOKENS = int(_env.get("CLAUDE_LEARNINGS_MAX_TOKENS", "16000"))
+# TRADING_PAUSED — data-collection mode. When True the cycle skips the model decision call,
+# all order placement, AND the nightly EOD learnings pass (every Anthropic call), but the
+# daemon keeps running so the Anthropic-FREE broad-universe research capture still fires.
+# Flip live via the overrides file. Rationale: the intraday selection experiment showed no
+# edge; we collect the point-in-time dataset instead and call the model only in batch later.
+TRADING_PAUSED = bool(_env.get("TRADING_PAUSED", ""))
 TELEGRAM_TOKEN    = _env.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID  = _env.get("TELEGRAM_CHAT_ID", "")
 # Financial Modeling Prep — free economic-calendar feed for the event router. Optional:
@@ -685,6 +691,7 @@ EVENT_CATALYST_DATES: list[str] = [
 # secrets, file paths, or universes.
 OVERRIDES_FILE = HOME / "autotrade_overrides.json"
 RUNTIME_SETTABLE = {
+    "TRADING_PAUSED": bool,
     "INVARIANT_CHECKS_ENABLED": bool,
     "INVARIANT_DAY_PL_TOL": float,
     "SLEEVE_OVERLAP_ENABLED": bool,

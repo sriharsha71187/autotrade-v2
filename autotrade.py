@@ -4598,6 +4598,13 @@ def run_cycle(dry: bool = False):
         save_state(state)   # persist telegram offset + any command effects
         return
 
+    # TRADING PAUSED (data-collection mode): commands above still work and the daemon keeps
+    # firing the Anthropic-free research capture, but we skip the model decision + all order
+    # placement. No edge in the live intraday selection; we collect data and judge in batch.
+    if not dry and getattr(cfg, "TRADING_PAUSED", False):
+        save_state(state)
+        return
+
     odc = option_data_client() if _ALPACA_OK else None
 
     # 1b. Cadence throttle — every-minute ticks, but only do a real cycle every
@@ -5823,8 +5830,9 @@ def _cycle_once(dry=False):
     try:
         run_cycle(dry=dry)
         if not dry:
-            eod_catchup()             # recover an EOD missed while the host was asleep
-            _daily_research_capture() # spawn the nightly broad-universe research capture (detached)
+            if not getattr(cfg, "TRADING_PAUSED", False):
+                eod_catchup()         # EOD learnings (model call) — skipped while paused
+            _daily_research_capture() # Anthropic-free research capture — always runs
     finally:
         if lock is not True:
             lock.close()    # release the flock
