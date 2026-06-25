@@ -168,6 +168,68 @@ def news_headlines(tk):
         return []
 
 
+def _r(x):
+    return round(float(x), 4) if isinstance(x, (int, float)) and pd.notna(x) else None
+
+
+def options_snapshot(tk, spot):
+    """PERISHABLE, not free-reconstructable: implied-vol level/skew + option positioning.
+    Required for any options strategy or vol-based signal. Nearest expiry >= ~20 DTE."""
+    try:
+        exps = tk.options
+        if not exps or not spot:
+            return {}
+        tgt = next((e for e in exps if (dt.date.fromisoformat(e) - dt.date.today()).days >= 20), exps[-1])
+        oc = tk.option_chain(tgt); c, p = oc.calls, oc.puts
+        if c.empty or p.empty:
+            return {}
+        def atm(df):
+            return float(df.loc[(df.strike - spot).abs().idxmin(), "impliedVolatility"])
+        def otm(df, k):
+            sub = df[(df.strike - k).abs() < spot * 0.05]
+            return float(sub["impliedVolatility"].mean()) if len(sub) else None
+        pput, ccall = otm(p, spot * 0.9), otm(c, spot * 1.1)
+        coi, poi = int(c.openInterest.fillna(0).sum()), int(p.openInterest.fillna(0).sum())
+        cvol, pvol = int(c.volume.fillna(0).sum()), int(p.volume.fillna(0).sum())
+        return {"expiry": tgt, "dte": (dt.date.fromisoformat(tgt) - dt.date.today()).days,
+                "atm_iv": _r((atm(c) + atm(p)) / 2), "put_iv_otm": _r(pput), "call_iv_otm": _r(ccall),
+                "skew": _r(pput - ccall) if pput is not None and ccall is not None else None,
+                "pc_oi": _r(poi / max(coi, 1)), "pc_vol": _r(pvol / max(cvol, 1)),
+                "total_oi": coi + poi, "total_vol": cvol + pvol}
+    except Exception:
+        return {}
+
+
+def estimate_dispersion(tk):
+    """Analyst disagreement on next-quarter EPS — perishable (revises over time)."""
+    try:
+        ee = tk.get_earnings_estimate()
+        if ee is None or ee.empty:
+            return {}
+        r = ee.iloc[0]; avg = float(r["avg"])
+        return {"eps_est_avg": _r(avg), "eps_est_low": _r(r["low"]), "eps_est_high": _r(r["high"]),
+                "eps_dispersion": _r((float(r["high"]) - float(r["low"])) / abs(avg)) if avg else None,
+                "n_eps_analysts": int(r["numberOfAnalysts"]) if pd.notna(r["numberOfAnalysts"]) else None}
+    except Exception:
+        return {}
+
+
+def insider_summary(tk):
+    """Recent insider buy/sell activity — perishable signal."""
+    try:
+        ins = tk.insider_transactions
+        if ins is None or ins.empty or "Text" not in ins:
+            return {}
+        r = ins.head(25); t = r["Text"].astype(str)
+        buys = r[t.str.contains("Buy|Purchase", case=False, na=False)]
+        sells = r[t.str.contains("Sale|Sell", case=False, na=False)]
+        nv = (buys["Value"].fillna(0).sum() if "Value" in buys else 0) - \
+             (sells["Value"].fillna(0).sum() if "Value" in sells else 0)
+        return {"insider_buys": len(buys), "insider_sells": len(sells), "insider_net_value": int(nv)}
+    except Exception:
+        return {}
+
+
 def main():
     import yfinance as yf
     args = sys.argv[1:]
@@ -178,7 +240,7 @@ def main():
     print(f"Capturing perishable layer for {len(syms)} names · {day} …")
     anchor = anchor_prices(syms)
     OUT.mkdir(exist_ok=True)
-    rows, with_news, with_analyst = [], 0, 0
+    rows, with_news, with_analyst, with_opts = [], 0, 0, 0
     for i, s in enumerate(syms):
         a = anchor.get(s)
         if not a:
@@ -189,13 +251,18 @@ def main():
             info = {}
         per = perishable(info) if info else {}
         earn = earnings_surprise(tk) if info else {}
+        opts = options_snapshot(tk, a.get("last")) if info else {}
+        disp = estimate_dispersion(tk) if info else {}
+        ins = insider_summary(tk) if info else {}
         nh = news_headlines(tk) if info else []
         if nh: with_news += 1
+        if opts.get("atm_iv"): with_opts += 1
         if per.get("analyst", {}).get("n_analysts"): with_analyst += 1
-        rows.append({"date": day, "symbol": s, **a, **per, "earnings": earn, "news": nh})
+        rows.append({"date": day, "symbol": s, **a, **per, "earnings": earn,
+                     "options": opts, "dispersion": disp, "insider": ins, "news": nh})
         if i % 20 == 19: time.sleep(1)   # be gentle on yfinance
     (OUT / f"{day}.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
-    print(f"wrote {OUT/(day+'.jsonl')}  ·  {len(rows)} names · {with_analyst} w/ analyst · {with_news} w/ news")
+    print(f"wrote {OUT/(day+'.jsonl')}  ·  {len(rows)} names · {with_analyst} w/ analyst · {with_opts} w/ options · {with_news} w/ news")
     print("Perishable point-in-time snapshot stored (technicals recomputed from Alpaca at analysis time).")
 
 
