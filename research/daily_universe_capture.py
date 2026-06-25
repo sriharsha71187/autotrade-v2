@@ -42,14 +42,35 @@ def _keys():
     return k.get("ALPACA_API_KEY"), k.get("ALPACA_SECRET_KEY")
 
 
+def _wiki_symbols(url):
+    import pandas as pd
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    html = urllib.request.urlopen(req, timeout=25).read().decode("utf-8", "ignore")
+    for t in pd.read_html(io.StringIO(html)):
+        for i, c in enumerate([str(x).lower() for x in t.columns]):
+            if "symbol" in c or "ticker" in c:
+                return [str(s).strip().replace(".", "-") for s in t[t.columns[i]].tolist()
+                        if str(s).strip() and str(s) != "nan"]
+    return []
+
+
 def universe():
+    # S&P 500 (large) + S&P 400 (MidCap). Research: surviving anomaly edge concentrates in
+    # LESS-EFFICIENT names; mid-caps are the sweet spot (edge persists, still tradable). Small
+    # -cap 600 deferred (worst data quality / least tradable). Union, deduped.
+    syms = set()
     try:
         req = urllib.request.Request(SP500_CSV, headers={"User-Agent": "Mozilla/5.0"})
-        data = urllib.request.urlopen(req, timeout=20).read().decode("utf-8", "ignore")
-        rows = list(csv.DictReader(io.StringIO(data)))
-        return [r["Symbol"].strip().replace(".", "-") for r in rows if r.get("Symbol")] or FALLBACK
+        rows = list(csv.DictReader(io.StringIO(urllib.request.urlopen(req, timeout=20).read().decode("utf-8", "ignore"))))
+        syms.update(r["Symbol"].strip().replace(".", "-") for r in rows if r.get("Symbol"))
     except Exception as e:
-        print("universe fetch failed -> fallback:", e); return FALLBACK
+        print("SP500 fetch failed:", e)
+    try:
+        syms.update(_wiki_symbols("https://en.wikipedia.org/wiki/List_of_S%26P_400_companies"))
+    except Exception as e:
+        print("SP400 fetch failed:", e)
+    syms = sorted(s for s in syms if s and 1 <= len(s) <= 6)
+    return syms or FALLBACK
 
 
 def anchor_prices(symbols):
@@ -82,7 +103,28 @@ def _iso(ts):
     except Exception: return None
 
 
-def perishable(tk, info):
+def earnings_surprise(tk):
+    """Most recent REPORTED earnings: reported vs consensus EPS + surprise %, days since.
+    This is the PEAD input — the strongest documented signal cluster (under-reaction drift)."""
+    try:
+        ed = tk.get_earnings_dates(limit=8)
+        if ed is None or ed.empty:
+            return {}
+        rep = ed.dropna(subset=["Reported EPS"])
+        if rep.empty:
+            return {}
+        d, row = rep.index[0], rep.iloc[0]
+        days = (pd.Timestamp.now(tz="UTC") - d.tz_convert("UTC")).days
+        return {"last_earnings": d.date().isoformat(),
+                "eps_estimate": float(row["EPS Estimate"]) if pd.notna(row["EPS Estimate"]) else None,
+                "reported_eps": float(row["Reported EPS"]),
+                "surprise_pct": float(row["Surprise(%)"]) if pd.notna(row["Surprise(%)"]) else None,
+                "days_since": int(days)}
+    except Exception:
+        return {}
+
+
+def perishable(info):
     g = lambda k: info.get(k)
     out = {
         "analyst": {"target_mean": g("targetMeanPrice"), "target_high": g("targetHighPrice"),
@@ -105,22 +147,8 @@ def perishable(tk, info):
         "next_earnings": _iso(g("earningsTimestamp")),
         "market_cap": g("marketCap"), "sector": g("sector"), "industry": g("industry"),
     }
-    # recent rating actions (perishable change signal) — last 45 days
-    try:
-        ud = tk.upgrades_downgrades
-        if ud is not None and len(ud):
-            ud = ud.reset_index()
-            cut = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=45)
-            ud["GradeDate"] = pd.to_datetime(ud["GradeDate"], utc=True)
-            recent = ud[ud["GradeDate"] >= cut].head(8)
-            out["rating_actions_45d"] = [
-                {"date": r["GradeDate"].date().isoformat(), "firm": r.get("Firm"),
-                 "from": r.get("FromGrade"), "to": r.get("ToGrade"), "action": r.get("Action"),
-                 "target": r.get("currentPriceTarget")} for _, r in recent.iterrows()]
-        else:
-            out["rating_actions_45d"] = []
-    except Exception:
-        out["rating_actions_45d"] = []
+    # (rating CHANGES are derived from the nightly rec_mean / target_mean series, so we don't
+    #  pay a separate upgrades/downgrades scrape per name — and the research ranks that edge tiny.)
     return out
 
 
@@ -159,11 +187,12 @@ def main():
             tk = yf.Ticker(s); info = tk.info
         except Exception:
             info = {}
-        per = perishable(tk, info) if info else {}
+        per = perishable(info) if info else {}
+        earn = earnings_surprise(tk) if info else {}
         nh = news_headlines(tk) if info else []
         if nh: with_news += 1
         if per.get("analyst", {}).get("n_analysts"): with_analyst += 1
-        rows.append({"date": day, "symbol": s, **a, **per, "news": nh})
+        rows.append({"date": day, "symbol": s, **a, **per, "earnings": earn, "news": nh})
         if i % 20 == 19: time.sleep(1)   # be gentle on yfinance
     (OUT / f"{day}.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
     print(f"wrote {OUT/(day+'.jsonl')}  ·  {len(rows)} names · {with_analyst} w/ analyst · {with_news} w/ news")
