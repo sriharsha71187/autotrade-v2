@@ -145,6 +145,8 @@ def perishable(info):
         "float": {"float_shares": g("floatShares"), "pct_insiders": g("heldPercentInsiders"),
                   "pct_institutions": g("heldPercentInstitutions")},
         "next_earnings": _iso(g("earningsTimestamp")),
+        "ex_div": _iso(g("exDividendDate")),          # price drops by div; early-assignment risk (stops)
+        "div_yield": g("dividendYield"),
         "market_cap": g("marketCap"), "sector": g("sector"), "industry": g("industry"),
     }
     # (rating CHANGES are derived from the nightly rec_mean / target_mean series, so we don't
@@ -191,9 +193,18 @@ def options_snapshot(tk, spot):
         pput, ccall = otm(p, spot * 0.9), otm(c, spot * 1.1)
         coi, poi = int(c.openInterest.fillna(0).sum()), int(p.openInterest.fillna(0).sum())
         cvol, pvol = int(c.volume.fillna(0).sum()), int(p.volume.fillna(0).sum())
+        def spread(df):  # ATM relative bid/ask spread — option tradability for entry/stop fills
+            row = df.loc[(df.strike - spot).abs().idxmin()]
+            b, a = row.get("bid"), row.get("ask"); mid = (b + a) / 2 if b and a else None
+            return (a - b) / mid if mid and mid > 0 else None
+        sp = [x for x in (spread(c), spread(p)) if x is not None]
+        atm_iv = _r((atm(c) + atm(p)) / 2)
+        em = _r(atm_iv * (((dt.date.fromisoformat(tgt) - dt.date.today()).days / 365) ** 0.5)) if atm_iv else None
         return {"expiry": tgt, "dte": (dt.date.fromisoformat(tgt) - dt.date.today()).days,
-                "atm_iv": _r((atm(c) + atm(p)) / 2), "put_iv_otm": _r(pput), "call_iv_otm": _r(ccall),
+                "atm_iv": atm_iv, "put_iv_otm": _r(pput), "call_iv_otm": _r(ccall),
                 "skew": _r(pput - ccall) if pput is not None and ccall is not None else None,
+                "expected_move_pct": em,                          # straddle-implied move to the expiry
+                "atm_spread_pct": _r(sum(sp) / len(sp)) if sp else None,  # fill realism for entry/stops
                 "pc_oi": _r(poi / max(coi, 1)), "pc_vol": _r(pvol / max(cvol, 1)),
                 "total_oi": coi + poi, "total_vol": cvol + pvol}
     except Exception:
