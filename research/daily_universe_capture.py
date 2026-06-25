@@ -174,6 +174,23 @@ def _r(x):
     return round(float(x), 4) if isinstance(x, (int, float)) and pd.notna(x) else None
 
 
+def social_attention(sym):
+    """Retail attention + sentiment (StockTwits) — perishable, not reconstructable. watchlist_count
+    is the attention level; bull/bear of recent messages is crowd sentiment. Best-effort (rate-limited)."""
+    try:
+        url = f"https://api.stocktwits.com/api/2/streams/symbol/{sym}.json"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        d = json.loads(urllib.request.urlopen(req, timeout=12).read())
+        msgs = d.get("messages", [])
+        bull = sum(1 for m in msgs if (m.get("entities", {}).get("sentiment") or {}).get("basic") == "Bullish")
+        bear = sum(1 for m in msgs if (m.get("entities", {}).get("sentiment") or {}).get("basic") == "Bearish")
+        return {"watchlist_count": d.get("symbol", {}).get("watchlist_count"),
+                "msgs": len(msgs), "bull": bull, "bear": bear,
+                "bull_ratio": _r(bull / (bull + bear)) if (bull + bear) else None}
+    except Exception:
+        return {}
+
+
 def options_snapshot(tk, spot):
     """PERISHABLE, not free-reconstructable: implied-vol level/skew + option positioning.
     Required for any options strategy or vol-based signal. Nearest expiry >= ~20 DTE."""
@@ -247,11 +264,15 @@ def main():
     limit = int(args[args.index("--limit")+1]) if "--limit" in args else None
     day = args[args.index("--date")+1] if "--date" in args else dt.date.today().isoformat()
     syms = universe()
+    # rotate the order by day so the rate-limited social pass covers a fair slice each night
+    # (alphabetical would always starve the back of the list); deterministic, no RNG.
+    k = dt.date.fromisoformat(day).timetuple().tm_yday % max(len(syms), 1) if not limit else 0
+    syms = syms[k:] + syms[:k]
     if limit: syms = syms[:limit]
     print(f"Capturing perishable layer for {len(syms)} names · {day} …")
     anchor = anchor_prices(syms)
     OUT.mkdir(exist_ok=True)
-    rows, with_news, with_analyst, with_opts = [], 0, 0, 0
+    rows, with_news, with_analyst, with_opts, with_social = [], 0, 0, 0, 0
     for i, s in enumerate(syms):
         a = anchor.get(s)
         if not a:
@@ -265,15 +286,17 @@ def main():
         opts = options_snapshot(tk, a.get("last")) if info else {}
         disp = estimate_dispersion(tk) if info else {}
         ins = insider_summary(tk) if info else {}
+        soc = social_attention(s)                     # StockTwits — independent of yfinance
         nh = news_headlines(tk) if info else []
         if nh: with_news += 1
         if opts.get("atm_iv"): with_opts += 1
+        if soc.get("watchlist_count"): with_social += 1
         if per.get("analyst", {}).get("n_analysts"): with_analyst += 1
-        rows.append({"date": day, "symbol": s, **a, **per, "earnings": earn,
-                     "options": opts, "dispersion": disp, "insider": ins, "news": nh})
+        rows.append({"date": day, "symbol": s, **a, **per, "earnings": earn, "options": opts,
+                     "dispersion": disp, "insider": ins, "social": soc, "news": nh})
         if i % 20 == 19: time.sleep(1)   # be gentle on yfinance
     (OUT / f"{day}.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
-    print(f"wrote {OUT/(day+'.jsonl')}  ·  {len(rows)} names · {with_analyst} w/ analyst · {with_opts} w/ options · {with_news} w/ news")
+    print(f"wrote {OUT/(day+'.jsonl')}  ·  {len(rows)} names · {with_analyst} w/ analyst · {with_opts} w/ options · {with_social} w/ social · {with_news} w/ news")
     print("Perishable point-in-time snapshot stored (technicals recomputed from Alpaca at analysis time).")
 
 
