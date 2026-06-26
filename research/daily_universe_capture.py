@@ -33,6 +33,16 @@ SP500_CSV = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/ma
 FALLBACK = ["AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","AVGO","AMD","NFLX","CRM","ADBE",
             "QCOM","INTC","MU","AMAT","LRCX","KLAC","ASML","PANW","CRWD","SNOW","UBER","COIN"]
 
+# Index / sector / bond / commodity / dollar ETFs — tradable trend vehicles AND regime context.
+# Their option IV is the perishable gauge of the macro complex: SPY=market fear, TLT=rate vol,
+# HYG=credit fear, sector ETFs=rotation. (Treasury yield LEVELS ^TNX/^FVX/curve are an index,
+# not Alpaca-tradable -> pulled from yfinance at ANALYSIS time as reconstructable features.)
+MACRO_ETFS = ["SPY","QQQ","IWM","DIA","MDY","RSP","VTI",
+              "XLK","XLF","XLE","XLV","XLI","XLY","XLP","XLU","XLB","XLRE","XLC",
+              "TLT","IEF","SHY","HYG","LQD","TIP","AGG","BND",
+              "GLD","SLV","USO","GDX","DBC","UUP","VXX",
+              "SMH","SOXX","XBI","ARKK","KRE","ITB","JETS"]
+
 
 def _keys():
     k = {}
@@ -69,8 +79,9 @@ def universe():
         syms.update(_wiki_symbols("https://en.wikipedia.org/wiki/List_of_S%26P_400_companies"))
     except Exception as e:
         print("SP400 fetch failed:", e)
-    syms = sorted(s for s in syms if s and 1 <= len(s) <= 6)
-    return syms or FALLBACK
+    stocks = sorted(s for s in syms if s and 1 <= len(s) <= 6 and s not in MACRO_ETFS)
+    # ETFs FIRST so rate-limited social/options coverage never starves the macro/regime complex
+    return (MACRO_ETFS + stocks) if (stocks or MACRO_ETFS) else FALLBACK
 
 
 def anchor_prices(symbols):
@@ -264,10 +275,13 @@ def main():
     limit = int(args[args.index("--limit")+1]) if "--limit" in args else None
     day = args[args.index("--date")+1] if "--date" in args else dt.date.today().isoformat()
     syms = universe()
-    # rotate the order by day so the rate-limited social pass covers a fair slice each night
-    # (alphabetical would always starve the back of the list); deterministic, no RNG.
-    k = dt.date.fromisoformat(day).timetuple().tm_yday % max(len(syms), 1) if not limit else 0
-    syms = syms[k:] + syms[:k]
+    # Keep the macro/ETF complex pinned at the front (always captured); rotate only the stock
+    # tail by day so the rate-limited social/options pass covers a fair slice each night.
+    ne = len(MACRO_ETFS)
+    if not limit and len(syms) > ne:
+        tail = syms[ne:]
+        k = dt.date.fromisoformat(day).timetuple().tm_yday % max(len(tail), 1)
+        syms = syms[:ne] + tail[k:] + tail[:k]
     if limit: syms = syms[:limit]
     print(f"Capturing perishable layer for {len(syms)} names · {day} …")
     anchor = anchor_prices(syms)
