@@ -26,16 +26,24 @@ RESEARCH_JOBS = {
     "discover_options": "options discovery sweep", "discover": "feature discovery sweep",
     "option_trade_sim": "option-trade backtest", "trend_backtest": "trend backtest",
     "daily_universe_capture": "nightly perishable capture",
+    "ratings_backfill": "analyst-ratings backfill", "macro_backfill": "macro/regime backfill",
 }
 
 
 def running_now():
-    import subprocess
+    # auto-detect ANY research/*.py process (so new scripts never need registering)
+    import subprocess, re
     try:
         out = subprocess.run(["ps", "-axo", "command"], capture_output=True, text=True, timeout=3).stdout
     except Exception:
         return []
-    return [label for key, label in RESEARCH_JOBS.items() if f"{key}.py" in out]
+    jobs = []
+    for line in out.splitlines():
+        mt = re.search(r"research/(\w+)\.py", line)
+        if mt and "dashboard" not in line:
+            name = mt.group(1)
+            jobs.append(RESEARCH_JOBS.get(name, name.replace("_", " ")))
+    return sorted(set(jobs))
 
 
 def build():
