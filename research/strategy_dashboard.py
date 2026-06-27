@@ -51,13 +51,25 @@ def build():
     learns = "".join(f'<tr><td class=ld>{l["date"]}</td><td>{l["learning"]}'
                      f'<div class=imp>→ {l.get("impact","")}</div></td></tr>'
                      for l in d.get("learnings", []))
+    disc = d.get("discovered", {})
+    disc_html = ""
+    if disc:
+        drows = "".join(
+            f'<tr><td>{s["feature"]}</td><td>{s["horizon"]}d</td>'
+            f'<td>{s["ic_oos"]:+.3f}</td><td>{s["t_oos"]:+.2f}</td><td>{s.get("ic_is",0):+.3f}</td></tr>'
+            for s in disc.get("survivors", []))
+        disc_html = f"""
+        <h3>🔎 Open-ended discovery <span class=sub>({disc.get('n_tested','?')} feature/combo tests · {disc.get('method','')})</span></h3>
+        <div class=warn>⚠ {disc.get('caveat','')}</div>
+        <table><tr><th>signal / combo</th><th>horizon</th><th>IC&nbsp;oos</th><th>t&nbsp;oos</th><th>IC&nbsp;is</th></tr>{drows}</table>"""
     return f"""
     <h1>🧠 Strategy Board</h1>
     <p class=sub>{len(strat)} candidate strategies · {chips} · ledger updated {d.get('updated','')} ·
       page {dt.datetime.now().strftime('%H:%M:%S')}</p>
-    <p class=disc>Nothing is <b style="color:#22c55e">validated</b> until it clears t&gt;3 + OOS + cost haircut.
+    <p class=disc>Nothing is <b style="color:#22c55e">validated</b> until it clears t&gt;3 in BOTH halves + cost haircut.
       Metrics fill in as backfills mature and Tier-0 runs.</p>
     {''.join(cards)}
+    {disc_html}
     <h3>Learnings ledger</h3>
     <table>{learns}</table>
     """
@@ -75,7 +87,7 @@ h3{{margin:24px 0 8px}} .card{{background:#0f172a;border-radius:8px;padding:12px
 .metrics b{{color:#f1f5f9}} .ev{{color:#7c8aa0;font-size:11.5px;margin:4px 0}}
 .notes{{color:#94a3b8;font-size:12px}} .upd{{color:#475569}}
 table{{border-collapse:collapse;width:100%}} td{{padding:6px 8px;border-bottom:1px solid #1e293b;vertical-align:top}}
-.ld{{color:#64748b;white-space:nowrap;font-size:12px}} .imp{{color:#22c55e;font-size:12px;margin-top:2px}}
+.ld{{color:#64748b;white-space:nowrap;font-size:12px}} .warn{{background:#422006;color:#fbbf24;padding:8px 10px;border-radius:6px;font-size:12px;margin:6px 0}} .imp{{color:#22c55e;font-size:12px;margin-top:2px}}
 </style></head><body>{body}</body></html>"""
 
 
