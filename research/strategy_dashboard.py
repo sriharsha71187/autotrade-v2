@@ -6,6 +6,7 @@ Serves http://localhost:8790  (capture dash = 8788). Run: python research/strate
 """
 import json, datetime as dt
 from pathlib import Path
+import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 LEDGER = Path.home() / "autotrade_strategies.json"
@@ -19,10 +20,36 @@ def m(v, pct=False, dp=2):
     return f"{v*100:.0f}%" if pct else f"{v:.{dp}f}"
 
 
+RESEARCH_JOBS = {
+    "eodhd_backfill": "options history backfill", "news_backfill": "news history backfill",
+    "discover_xlayer": "cross-layer discovery sweep", "discover_setups": "setup discovery sweep",
+    "discover_options": "options discovery sweep", "discover": "feature discovery sweep",
+    "option_trade_sim": "option-trade backtest", "trend_backtest": "trend backtest",
+    "daily_universe_capture": "nightly perishable capture",
+}
+
+
+def running_now():
+    import subprocess
+    try:
+        out = subprocess.run(["ps", "-axo", "command"], capture_output=True, text=True, timeout=3).stdout
+    except Exception:
+        return []
+    return [label for key, label in RESEARCH_JOBS.items() if f"{key}.py" in out]
+
+
 def build():
     if not LEDGER.exists():
         return "<h2>No strategy ledger yet.</h2>"
     d = json.loads(LEDGER.read_text())
+    now = d.get("now", {})
+    jobs = running_now()
+    if jobs:
+        now_html = f'<div class=now><span class=live>● RUNNING</span> &nbsp;{" · ".join(jobs)}</div>'
+    else:
+        nxt = now.get("next", [])
+        now_html = (f'<div class=now><span class=idle>○ idle</span> &nbsp;focus: <b>{now.get("focus","—")}</b>'
+                    + (f' &nbsp;·&nbsp; next: {" → ".join(nxt[:3])}' if nxt else '') + '</div>')
     strat = d.get("strategies", [])
     counts = {}
     for s in strat: counts[s["status"]] = counts.get(s["status"], 0) + 1
@@ -64,8 +91,9 @@ def build():
         <table><tr><th>signal / combo</th><th>horizon</th><th>IC&nbsp;oos</th><th>t&nbsp;oos</th><th>IC&nbsp;is</th></tr>{drows}</table>"""
     return f"""
     <h1>🧠 Strategy Board</h1>
-    <p class=sub>{len(strat)} candidate strategies · {chips} · ledger updated {d.get('updated','')} ·
+    <p class=sub>{len(strat)} candidate strategies · {chips} · ledger updated {dt.datetime.fromtimestamp(os.path.getmtime(LEDGER)).strftime('%Y-%m-%d %H:%M')} ·
       page {dt.datetime.now().strftime('%H:%M:%S')}</p>
+    {now_html}
     <p class=disc>Nothing is <b style="color:#22c55e">validated</b> until it clears t&gt;3 in BOTH halves + cost haircut.
       Metrics fill in as backfills mature and Tier-0 runs.</p>
     {''.join(cards)}
@@ -87,7 +115,7 @@ h3{{margin:24px 0 8px}} .card{{background:#0f172a;border-radius:8px;padding:12px
 .metrics b{{color:#f1f5f9}} .ev{{color:#7c8aa0;font-size:11.5px;margin:4px 0}}
 .notes{{color:#94a3b8;font-size:12px}} .upd{{color:#475569}}
 table{{border-collapse:collapse;width:100%}} td{{padding:6px 8px;border-bottom:1px solid #1e293b;vertical-align:top}}
-.ld{{color:#64748b;white-space:nowrap;font-size:12px}} .warn{{background:#422006;color:#fbbf24;padding:8px 10px;border-radius:6px;font-size:12px;margin:6px 0}} .imp{{color:#22c55e;font-size:12px;margin-top:2px}}
+.ld{{color:#64748b;white-space:nowrap;font-size:12px}} .warn{{background:#422006;color:#fbbf24;padding:8px 10px;border-radius:6px;font-size:12px;margin:6px 0}} .imp{{color:#22c55e;font-size:12px;margin-top:2px}} .now{{background:#0f172a;border:1px solid #1e293b;border-radius:6px;padding:8px 12px;margin:0 0 16px;font-size:13px}} .live{{color:#22c55e;font-weight:700}} .idle{{color:#64748b;font-weight:700}}
 </style></head><body>{body}</body></html>"""
 
 
