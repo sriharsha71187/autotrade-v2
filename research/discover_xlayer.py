@@ -49,6 +49,7 @@ def main():
     od, nd = load_dir(OPTD, ["atm_iv"]), load_dir(NEWSD, ["n_news"])
     rd = load_dir(Path.home() / "autotrade_ratings_history", ["net"])   # analyst rating-changes
     ind = load_dir(Path.home() / "autotrade_insider_history", ["net_buy"])   # insider buying
+    instd = load_dir(Path.home() / "autotrade_institutional_history", ["n_inst"])   # 13D/G activity
     px = fetch(universe()); px.index = pd.to_datetime(px.index).tz_localize(None).normalize()
 
     L = {}  # layered feature panels
@@ -63,6 +64,8 @@ def main():
         if "avg_target" in rd: L["rate_tgt_chg"] = pan(rd, "avg_target").pct_change()
     if not ind.empty:
         L["insider_netbuy"] = pan(ind, "net_buy").rolling(4).sum()
+    if not instd.empty:
+        L["inst_activity"] = pan(instd, "n_inst").rolling(8).sum()
     L["tech_mom20"] = px/px.shift(20) - 1
     L["tech_dist50"] = px/px.rolling(50).mean() - 1
     L["tech_vol20"] = px.pct_change().rolling(20).std()

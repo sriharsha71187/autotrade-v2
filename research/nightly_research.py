@@ -25,7 +25,7 @@ def step(label, fn):
 
 if __name__ == "__main__":
     import daily_universe_capture, mature_universe_returns
-    import news_backfill, ratings_backfill, macro_backfill, insider_backfill
+    import news_backfill, ratings_backfill, macro_backfill, insider_backfill, inst_backfill
     import discover, discover_xlayer, discover_setups
 
     # 1-2: capture + mature
@@ -36,6 +36,7 @@ if __name__ == "__main__":
     step("ratings backfill", ratings_backfill.main)
     step("macro backfill", macro_backfill.main)
     step("insider backfill", insider_backfill.main)
+    step("institutional backfill", inst_backfill.main)
     # 4: re-run all discovery on the latest data -> updates the board
     step("discovery: single+interaction", discover.main)
     step("discovery: cross-layer", discover_xlayer.main)
