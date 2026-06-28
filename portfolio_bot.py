@@ -32,11 +32,17 @@ def apply_veto(target, manual_veto=None):
     if not stocks:
         return target, "no momentum stocks held", {}
     verdicts = llm_veto.screen(stocks, use_llm=True)
-    for t in manual_veto:                          # in-session LLM verdicts override
-        verdicts[t] = {"verdict": "VETO", "reason": "manual/in-session LLM review", "source": "manual"}
-    llm_live = any(v["source"] in ("llm", "manual") for v in verdicts.values())
-    if not llm_live:
-        return target, f"⚠ LLM-veto UNAVAILABLE (no API credits) — held all {len(stocks)} momentum names; MANUAL review recommended: {', '.join(stocks)}", verdicts
+    real_llm = any(v["source"] == "llm" for v in verdicts.values())
+    if not real_llm:
+        # mechanical-only is unreliable for distress (misses ECHO, false-vetoes WDC) -> trust ONLY manual vetoes
+        for t in stocks:
+            verdicts[t] = ({"verdict": "VETO", "reason": "manual/in-session LLM review", "source": "manual"}
+                           if t in manual_veto else {"verdict": "KEEP", "reason": "held (no auto-veto)", "source": "held"})
+        if not manual_veto:
+            return target, f"⚠ LLM-veto UNAVAILABLE (no API credits) — held all {len(stocks)} momentum names; MANUAL review recommended: {', '.join(stocks)}", verdicts
+    else:
+        for t in manual_veto:                      # in-session override on top of real LLM
+            verdicts[t] = {"verdict": "VETO", "reason": "manual/in-session LLM review", "source": "manual"}
     new = dict(target); freed = 0.0; kept = []
     for t in stocks:
         v = verdicts[t]["verdict"]
