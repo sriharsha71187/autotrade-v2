@@ -11,7 +11,7 @@ import warnings; warnings.filterwarnings("ignore")
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from trend_backtest import fetch, universe
 COST = 0.0005
-WEIGHTS = {"rp": 0.25, "stockmom": 0.30, "vtqqq": 0.25, "levqqq": 0.10, "thematic": 0.10}
+WEIGHTS = {"rp": 0.18, "stockmom": 0.50, "vtqqq": 0.18, "levqqq": 0.07, "thematic": 0.07}  # 50% momentum / 50% other
 THEMES = ["SMH","SOXX","IGV","XBI","XOP","GDX","KRE","ITB","XRT","XME","TAN","IYT","ARKK","JETS"]
 
 
