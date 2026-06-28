@@ -53,16 +53,17 @@ def main():
         turn = wsm.diff().abs().sum(1).sum()/(len(idx)/252)
         return smom, turn, (np.mean(priors)*100 if priors else np.nan)
 
+    BORROW = 0.065
+    def lev(x, L=1.5): return (L*x - (L-1)*(BORROW/252)).fillna(0)
     print(f"\n=== Momentum lookback: 3 vs 6 vs 12 month · {idx.min().date()}..{idx.max().date()} ===\n")
-    print(f"  {'lookback':10} {'-- sleeve --':>22} {'-- in growth blend --':>24} {'turn/yr':>9} {'avg prior 12mo run':>20}")
-    print(f"  {'':10} {'CAGR':>7}{'Shrp':>6}{'maxDD':>8} {'CAGR':>9}{'Shrp':>6}{'maxDD':>8}")
+    print(f"  {'lookback':10} {'-- blend @1.0x --':>24} {'-- blend @1.5x (deployed) --':>30} {'turn/yr':>8} {'prior run':>10}")
+    print(f"  {'':10} {'CAGR':>8}{'Shrp':>6}{'maxDD':>8} {'CAGR':>10}{'Shrp':>6}{'maxDD':>8}")
     for L, lbl in [(63, "3-month"), (126, "6-month"), (231, "12-month*")]:
         sm, turn, prior = sleeve(L)
-        cs, ss, ds = stats(sm)
         blend = 0.18*rp + 0.50*sm + 0.18*vtq + 0.07*qld + 0.07*spmo
-        cb, sb, db = stats(blend)
-        print(f"  {lbl:10} {cs*100:6.0f}%{ss:6.2f}{ds*100:7.0f}% {cb*100:8.1f}%{sb:6.2f}{db*100:7.0f}% {turn*100:8.0f}% {prior:17.0f}%")
-    print("\n  * = current. avg prior 12mo run = how much the picks had already gained (chasing metric).")
+        c1, s1, d1 = stats(blend); c2, s2, d2 = stats(lev(blend, 1.5))
+        print(f"  {lbl:10} {c1*100:7.1f}%{s1:6.2f}{d1*100:7.0f}% {c2*100:9.1f}%{s2:6.2f}{d2*100:7.0f}% {turn*100:7.0f}% {prior:9.0f}%")
+    print("\n  * = current (12mo). @1.5x = deployed leverage (6.5% borrow). prior run = chasing metric.")
 
 
 if __name__ == "__main__":
