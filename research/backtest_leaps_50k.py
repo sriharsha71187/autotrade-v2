@@ -11,7 +11,8 @@ import warnings; warnings.filterwarnings("ignore")
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from trend_backtest import fetch, universe
 
-R = 0.045; ITM = 0.80; PREM_PCT = 0.06; OPT_COST = 0.02; LEAPS_T = 252; START = 50000.0
+R = 0.045; ITM = 0.80; PREM_PCT = 0.06; OPT_COST = 0.02; LEAPS_T = 252
+START = float(sys.argv[1]) if len(sys.argv)>1 else 50000.0
 
 
 def N(x): return 0.5*(1+math.erf(x/math.sqrt(2)))
