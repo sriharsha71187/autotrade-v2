@@ -55,22 +55,20 @@ def apply_veto(target, manual_veto=None):
     return new, f"veto applied: dropped {vetoed or 'none'}; redistributed to {len(kept)} survivors", verdicts
 
 
-def rebalance(execute=False, lev=1.0, manual_veto=None):
-    import portfolio_growth as pg
-    from alpaca.trading.client import TradingClient
-    from alpaca.trading.requests import MarketOrderRequest
-    from alpaca.trading.enums import OrderSide, TimeInForce
+def rebalance(execute=False, lev=1.0, manual_veto=None, broker_name="alpaca", bk=None):
+    import portfolio_growth as pg, brokers
 
     target, (c, s, dd) = pg.compute(verbose=False)
     target, vnote, verdicts = apply_veto(target, manual_veto)
     veto_unavailable = vnote.startswith("⚠")                  # LLM-veto couldn't run -> don't auto-buy unvetted momentum
     target = {t: w*lev for t, w in target.items()}            # leverage
 
-    tc = TradingClient(cfg.ALPACA_API_KEY, cfg.ALPACA_SECRET_KEY, paper=True)
-    acct = tc.get_account(); equity = float(acct.equity)
-    positions = {p.symbol: float(p.market_value) for p in tc.get_all_positions()}
+    own = bk is None
+    if own: bk = brokers.get_broker(broker_name)
+    equity = bk.equity()
+    positions = bk.positions()
 
-    print(f"\n=== PORTFOLIO BOT · equity ${equity:,.0f} · leverage {lev}x · "
+    print(f"\n=== PORTFOLIO BOT · broker {broker_name} · equity ${equity:,.0f} · leverage {lev}x · "
           f"{'EXECUTE' if execute else 'DRY PLAN'} ===")
     print(f"  backtest(1.0x) CAGR {c*100:.1f}% Sharpe {s:.2f} maxDD {dd*100:.1f}% | ~lev-adj({lev}x): CAGR {c*lev*100:.0f}% maxDD {dd*lev*100:.0f}% (approx)")
     print(f"  veto: {vnote}\n")
@@ -95,35 +93,37 @@ def rebalance(execute=False, lev=1.0, manual_veto=None):
              "target": target, "veto": vnote, "executed": False}
     if not execute:
         STATE.write_text(json.dumps(state, indent=2))
-        print("  DRY PLAN — re-run with --execute to place orders."); return
+        print("  DRY PLAN — re-run with --execute to place orders.")
+        if own: bk.disconnect()
+        return
     placed = 0
     for sym, side, notional in orders:
         try:
-            tc.submit_order(MarketOrderRequest(symbol=sym, notional=round(notional, 2),
-                side=OrderSide.BUY if side == "BUY" else OrderSide.SELL, time_in_force=TimeInForce.DAY))
-            placed += 1
+            bk.place(sym, side, notional); placed += 1
         except Exception as e:
             print(f"    FAILED {side} {sym}: {str(e)[:60]}")
     state["executed"] = True; state["orders_placed"] = placed
     STATE.write_text(json.dumps(state, indent=2))
-    print(f"  {placed}/{len(orders)} orders placed on the PAPER account.")
+    if own: bk.disconnect()
+    print(f"  {placed}/{len(orders)} orders placed on {broker_name}.")
 
 
-def loop_mode(lev, manual_veto):
-    """KeepAlive daemon: wakes periodically, rebalances once per month when the market is open."""
-    import time
-    from alpaca.trading.client import TradingClient
-    tc = TradingClient(cfg.ALPACA_API_KEY, cfg.ALPACA_SECRET_KEY, paper=True)
-    print(f"portfolio_bot loop started · leverage {lev}x · monthly rebalance")
+def loop_mode(lev, manual_veto, broker_name):
+    """KeepAlive daemon: wakes periodically, rebalances once per month when the market is open.
+    Fresh broker connection each cycle (robust against IBKR Gateway disconnects/daily restart)."""
+    import time, brokers
+    print(f"portfolio_bot loop started · broker {broker_name} · leverage {lev}x · monthly rebalance")
     while True:
         try:
+            bk = brokers.get_broker(broker_name)
             st = json.loads(STATE.read_text()) if STATE.exists() else {}
             ym = dt.datetime.now().strftime("%Y-%m")
-            if st.get("last_rebalance_month") != ym and tc.get_clock().is_open:
+            if st.get("last_rebalance_month") != ym and bk.is_open():
                 print(f"[{dt.datetime.now()}] monthly rebalance for {ym}")
-                rebalance(execute=True, lev=lev, manual_veto=manual_veto)
+                rebalance(execute=True, lev=lev, manual_veto=manual_veto, broker_name=broker_name, bk=bk)
                 st = json.loads(STATE.read_text()); st["last_rebalance_month"] = ym
                 STATE.write_text(json.dumps(st, indent=2))
+            bk.disconnect()
         except Exception as e:
             print(f"[{dt.datetime.now()}] loop error: {str(e)[:120]}")
         time.sleep(3 * 3600)
@@ -132,10 +132,11 @@ def loop_mode(lev, manual_veto):
 def main():
     lev = float(sys.argv[sys.argv.index("--leverage")+1]) if "--leverage" in sys.argv else 1.0
     mv = sys.argv[sys.argv.index("--veto")+1].split(",") if "--veto" in sys.argv else []
+    broker = sys.argv[sys.argv.index("--broker")+1] if "--broker" in sys.argv else "alpaca"
     if "loop" in sys.argv:
-        loop_mode(lev, mv)
+        loop_mode(lev, mv, broker)
     else:
-        rebalance(execute="--execute" in sys.argv, lev=lev, manual_veto=mv)
+        rebalance(execute="--execute" in sys.argv, lev=lev, manual_veto=mv, broker_name=broker)
 
 
 if __name__ == "__main__":
