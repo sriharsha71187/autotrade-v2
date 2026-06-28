@@ -34,7 +34,7 @@ def main():
     mom = px[stocks].shift(21)/px[stocks].shift(147)-1                 # 6-month momentum
     rv = px[stocks].pct_change().rolling(30).std()*math.sqrt(252)      # IV proxy = realized vol
     mstart = list(idx[np.append([True], idx.to_period("M")[1:] != idx.to_period("M")[:-1])])
-    rebs = [d for d in mstart if d in mom.index][-6:]                  # last 6 months
+    rebs = [d for d in mstart if d in mom.index and "2025-10" <= d.strftime("%Y-%m") <= "2026-03"]  # Oct25-Mar26
 
     def sim(t, d0):
         i0 = idx.get_loc(d0); S0 = px[t].iloc[i0]; K = ITM*S0
