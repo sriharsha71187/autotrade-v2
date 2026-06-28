@@ -25,7 +25,7 @@ def atr(h, l, c, n=20):
     return tr.rolling(n).mean()
 
 
-def main():
+def compute(verbose=True):
     import yfinance as yf
     stk = fetch(universe()); stk.index = pd.to_datetime(stk.index).tz_localize(None).normalize()
     stk = stk.loc[:, stk.notna().sum() > 252]
@@ -90,14 +90,16 @@ def main():
     blend = (WEIGHTS["rp"]*s_rp + WEIGHTS["stockmom"]*s_sm + WEIGHTS["vtqqq"]*s_vq
              + WEIGHTS["levqqq"]*s_lq + WEIGHTS["thematic"]*s_th).fillna(0)
     c, s, dd = stats(blend)
-    print(f"\n=== GROWTH-TILTED portfolio · {idx.min().date()}..{idx.max().date()} ===\n")
-    print(f"  Backtest: CAGR {c*100:.1f}%   Sharpe {s:.2f}   maxDD {dd*100:.1f}%   (vs SPY ~13%/0.78/-34%)")
-    print(f"\n  TARGET POSITIONS NOW (regime: {'RISK-ON' if bool(bull.iloc[-1]) else 'RISK-OFF'}):")
-    tot = sum(target.values())
-    for t, wv in sorted(target.items(), key=lambda x: -x[1]):
-        if wv > 0.005: print(f"    {t:6} {wv*100:5.1f}%")
-    print(f"    {'TOTAL':6} {tot*100:5.1f}%  (cash: {max(0,1-tot)*100:.1f}%)")
+    target = {t: wv for t, wv in target.items() if wv > 0.005}
+    if verbose:
+        print(f"\n=== GROWTH-TILTED portfolio · {idx.min().date()}..{idx.max().date()} ===\n")
+        print(f"  Backtest: CAGR {c*100:.1f}%   Sharpe {s:.2f}   maxDD {dd*100:.1f}%   (vs SPY ~13%/0.78/-34%)")
+        print(f"\n  TARGET POSITIONS NOW (regime: {'RISK-ON' if bool(bull.iloc[-1]) else 'RISK-OFF'}):")
+        for t, wv in sorted(target.items(), key=lambda x: -x[1]):
+            print(f"    {t:6} {wv*100:5.1f}%")
+        tot = sum(target.values()); print(f"    {'TOTAL':6} {tot*100:5.1f}%  (cash: {max(0,1-tot)*100:.1f}%)")
+    return target, (c, s, dd)
 
 
 if __name__ == "__main__":
-    main()
+    compute()
