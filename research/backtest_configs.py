@@ -60,11 +60,13 @@ def main():
 
     current = 0.25*rp + 0.30*smom + 0.25*vtq + 0.10*qld + 0.10*spmo
     cfgA = 0.50*smom + 0.50*other
+    cfgC = 0.75*smom + 0.25*other
     cfgB = smom
 
     print(f"\n=== Configs @ 1.5x margin ({BORROW*100:.1f}% borrow) · {idx.min().date()}..{idx.max().date()} ===\n")
     print(f"  {'portfolio':42} {'CAGR':>7} {'Sharpe':>6} {'maxDD':>8}")
     row("A) 50% momentum + 50% other  @1.5x", cfgA)
+    row("C) 75% momentum + 25% other  @1.5x", cfgC)
     row("B) 100% momentum only        @1.5x", cfgB)
     print()
     row("current deploy (30% mom)     @1.5x", current)
