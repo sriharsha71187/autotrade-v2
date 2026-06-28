@@ -11,7 +11,7 @@ import warnings; warnings.filterwarnings("ignore")
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from trend_backtest import fetch, universe
 
-R = 0.045; ITM = 0.80; PREM_PCT = 0.06; OPT_COST = 0.02; LEAPS_T = 252
+R = 0.045; ITM = 0.80; PREM_PCT = 0.06; OPT_COST = 0.02; LEAPS_T = 252; CAP = 0.15  # max % of book per position
 
 
 def N(x): return 0.5*(1+math.erf(x/math.sqrt(2)))
@@ -44,6 +44,10 @@ def main():
                 iv = iv if iv == iv and iv > 0 else 0.5; prem = bs_call(S, 0.8*S, 1.0, iv)
                 pos[t] = {"sh": v/prem if prem > 0 else 0, "strike": 0.8*S, "exp": i0+LEAPS_T, "iv": iv}
         equity = cash + sum(val(p, t, i0) for t, p in pos.items())
+        for t, p in list(pos.items()):                  # CAP: trim winners over CAP% of book to cash
+            v = val(p, t, i0)
+            if v > CAP*equity and v > 0:
+                keep = CAP*equity; cash += (v-keep)*(1-OPT_COST); p["sh"] *= keep/v
         on = bool(bull.loc[d0]) if d0 in bull.index else True
         top10 = list(mom.loc[d0].dropna().sort_values(ascending=False).index[:10]) if on else []
         for t in list(pos):                              # sell removed / all if regime off
