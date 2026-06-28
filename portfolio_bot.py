@@ -55,19 +55,15 @@ def apply_veto(target, manual_veto=None):
     return new, f"veto applied: dropped {vetoed or 'none'}; redistributed to {len(kept)} survivors", verdicts
 
 
-def main():
-    execute = "--execute" in sys.argv
-    lev = 1.0
-    if "--leverage" in sys.argv: lev = float(sys.argv[sys.argv.index("--leverage")+1])
+def rebalance(execute=False, lev=1.0, manual_veto=None):
     import portfolio_growth as pg
     from alpaca.trading.client import TradingClient
     from alpaca.trading.requests import MarketOrderRequest
     from alpaca.trading.enums import OrderSide, TimeInForce
 
-    manual_veto = []
-    if "--veto" in sys.argv: manual_veto = sys.argv[sys.argv.index("--veto")+1].split(",")
     target, (c, s, dd) = pg.compute(verbose=False)
     target, vnote, verdicts = apply_veto(target, manual_veto)
+    veto_unavailable = vnote.startswith("⚠")                  # LLM-veto couldn't run -> don't auto-buy unvetted momentum
     target = {t: w*lev for t, w in target.items()}            # leverage
 
     tc = TradingClient(cfg.ALPACA_API_KEY, cfg.ALPACA_SECRET_KEY, paper=True)
@@ -79,13 +75,19 @@ def main():
     print(f"  backtest CAGR {c*100:.1f}% · Sharpe {s:.2f} · maxDD {dd*100:.1f}%")
     print(f"  veto: {vnote}\n")
     print(f"  {'symbol':7}{'target$':>11}{'current$':>11}{'delta$':>11}  action")
-    orders = []
+    orders = []; skipped = []
     for sym in sorted(set(list(target) + list(positions))):
         tgt = target.get(sym, 0.0)*equity; cur = positions.get(sym, 0.0); delta = tgt-cur
         act = ""
         if abs(delta) >= 25:
-            side = "BUY" if delta > 0 else "SELL"; act = f"{side} ${abs(delta):,.0f}"; orders.append((sym, side, abs(delta)))
+            side = "BUY" if delta > 0 else "SELL"
+            # SAFETY: if veto unavailable, don't auto-BUY an unvetted momentum stock (only ETFs + sells/trims)
+            if execute and veto_unavailable and side == "BUY" and sym not in ETF_SET:
+                skipped.append(sym); act = "HOLD (needs veto)"
+            else:
+                act = f"{side} ${abs(delta):,.0f}"; orders.append((sym, side, abs(delta)))
         print(f"  {sym:7}{tgt:>11,.0f}{cur:>11,.0f}{delta:>11,.0f}  {act}")
+    if skipped: print(f"  ⚠ skipped (unvetted momentum, veto unavailable): {', '.join(skipped)}")
     gross = sum(target.values())
     print(f"\n  gross exposure {gross*100:.0f}% · {len(orders)} orders")
 
@@ -105,6 +107,35 @@ def main():
     state["executed"] = True; state["orders_placed"] = placed
     STATE.write_text(json.dumps(state, indent=2))
     print(f"  {placed}/{len(orders)} orders placed on the PAPER account.")
+
+
+def loop_mode(lev, manual_veto):
+    """KeepAlive daemon: wakes periodically, rebalances once per month when the market is open."""
+    import time
+    from alpaca.trading.client import TradingClient
+    tc = TradingClient(cfg.ALPACA_API_KEY, cfg.ALPACA_SECRET_KEY, paper=True)
+    print(f"portfolio_bot loop started · leverage {lev}x · monthly rebalance")
+    while True:
+        try:
+            st = json.loads(STATE.read_text()) if STATE.exists() else {}
+            ym = dt.datetime.now().strftime("%Y-%m")
+            if st.get("last_rebalance_month") != ym and tc.get_clock().is_open:
+                print(f"[{dt.datetime.now()}] monthly rebalance for {ym}")
+                rebalance(execute=True, lev=lev, manual_veto=manual_veto)
+                st = json.loads(STATE.read_text()); st["last_rebalance_month"] = ym
+                STATE.write_text(json.dumps(st, indent=2))
+        except Exception as e:
+            print(f"[{dt.datetime.now()}] loop error: {str(e)[:120]}")
+        time.sleep(3 * 3600)
+
+
+def main():
+    lev = float(sys.argv[sys.argv.index("--leverage")+1]) if "--leverage" in sys.argv else 1.0
+    mv = sys.argv[sys.argv.index("--veto")+1].split(",") if "--veto" in sys.argv else []
+    if "loop" in sys.argv:
+        loop_mode(lev, mv)
+    else:
+        rebalance(execute="--execute" in sys.argv, lev=lev, manual_veto=mv)
 
 
 if __name__ == "__main__":
