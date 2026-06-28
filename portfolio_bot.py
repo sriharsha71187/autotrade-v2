@@ -72,7 +72,7 @@ def rebalance(execute=False, lev=1.0, manual_veto=None):
 
     print(f"\n=== PORTFOLIO BOT · equity ${equity:,.0f} · leverage {lev}x · "
           f"{'EXECUTE' if execute else 'DRY PLAN'} ===")
-    print(f"  backtest CAGR {c*100:.1f}% · Sharpe {s:.2f} · maxDD {dd*100:.1f}%")
+    print(f"  backtest(1.0x) CAGR {c*100:.1f}% Sharpe {s:.2f} maxDD {dd*100:.1f}% | ~lev-adj({lev}x): CAGR {c*lev*100:.0f}% maxDD {dd*lev*100:.0f}% (approx)")
     print(f"  veto: {vnote}\n")
     print(f"  {'symbol':7}{'target$':>11}{'current$':>11}{'delta$':>11}  action")
     orders = []; skipped = []
