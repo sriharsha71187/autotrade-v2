@@ -21,16 +21,21 @@ def main():
     spy = px["SPY"]
     risk_on = spy.iloc[-1] > spy.rolling(200).mean().iloc[-1]
     d = px.index[-1]
+    import json
+    STATE = Path.home() / ".momentum_holdings.json"
+    held = json.loads(STATE.read_text()).get("held", []) if STATE.exists() else []
     top = list(mom.iloc[-1].dropna().sort_values(ascending=False).index[:10])
+    new = top if risk_on else []                                  # risk-off -> hold nothing (cash)
     print(f"\n=== MOMENTUM PICKS · as of {d.date()} ===")
-    print(f"  regime: {'RISK-ON (deploy)' if risk_on else 'RISK-OFF -> go to CASH this month, skip the rebalance'}\n")
+    print(f"  regime: {'RISK-ON (deploy)' if risk_on else 'RISK-OFF -> CASH out the strategy sleeve this month'}\n")
     for i, t in enumerate(top, 1):
         m = float(mom.iloc[-1][t]); p = float(px[t].iloc[-1])
         print(f"  {i:2}. {t:6} ${p:>8.2f}   6mo +{m*100:.0f}%")
-    print(f"\n  PASTE THIS into the claude.ai prompt:")
-    print(f"  MOMENTUM PICKS: {', '.join(top)}")
-    if not risk_on:
-        print(f"  (regime RISK-OFF — tell claude.ai to move the book to cash instead of buying)")
+    print(f"\n  --- PASTE THESE TWO LINES into the claude.ai prompt ---")
+    print(f"  NEW PICKS:   {', '.join(new) if new else '(none — RISK-OFF, go to cash)'}")
+    print(f"  STRATEGY HOLDINGS (only these may be sold): {', '.join(held) if held else '(none yet)'}")
+    # update state to what you WILL hold after this rebalance
+    STATE.write_text(json.dumps({"held": new, "asof": str(d.date())}, indent=2))
 
 
 if __name__ == "__main__":
