@@ -33,12 +33,18 @@ def main():
     op = d["Open"]["SPY"]; cl = d["Close"]["SPY"]; vix = d["Close"]["^VIX"].ffill()
     df = pd.DataFrame({"o": op, "c": cl, "v": vix}).dropna()
     ma200 = df["c"].rolling(200).mean()
+    # price 0DTE at INTRADAY vol (open->close), not full-day VIX: overnight is ~35-40% of daily
+    # variance and a 0DTE sold at the open only faces the session. VRP factor 1.10 (0DTE VRP is thin).
+    oc = np.log(df["c"]/df["o"])
+    iv_intra = (oc.rolling(21).std()*math.sqrt(252)*1.10).shift(1)
     T = 1/252
     rows = {"condor (every day)": [], "condor + regime gate": [], "condor calm days only (VIX<20)": [],
             "condor sized 10% of account": [], "condor 10% + calm only": [],
             "LONG straddle (every day)": []}
     for i in range(200, len(df)):
-        S = float(df["o"].iloc[i]); C = float(df["c"].iloc[i]); iv = float(df["v"].iloc[i-1])/100
+        S = float(df["o"].iloc[i]); C = float(df["c"].iloc[i])
+        iv = float(iv_intra.iloc[i]); vx = float(df["v"].iloc[i-1])/100
+        if not (iv == iv and iv > 0): continue
         sig_d = iv*math.sqrt(T)
         Kc = S*math.exp(0.75*sig_d); Kp = S*math.exp(-0.75*sig_d)          # short strikes
         Wc = S*math.exp(2.0*sig_d);  Wp = S*math.exp(-2.0*sig_d)           # wings
@@ -54,9 +60,9 @@ def main():
         gate = S > float(ma200.iloc[i])
         rows["condor (every day)"].append(r_condor)
         rows["condor + regime gate"].append(r_condor if gate else 0.0)
-        rows["condor calm days only (VIX<20)"].append(r_condor if iv < 0.20 else 0.0)
+        rows["condor calm days only (VIX<20)"].append(r_condor if vx < 0.20 else 0.0)
         rows["condor sized 10% of account"].append(0.10*r_condor)
-        rows["condor 10% + calm only"].append(0.10*r_condor if iv < 0.20 else 0.0)
+        rows["condor 10% + calm only"].append(0.10*r_condor if vx < 0.20 else 0.0)
         rows["LONG straddle (every day)"].append(r_straddle)
 
     print(f"\n=== 0DTE on SPY · open->close · defined-risk margin · friction {FRICTION:.0%} of credit · 2007-2026 ===\n")
