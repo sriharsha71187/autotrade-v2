@@ -21,7 +21,8 @@ def bs(S, K, T, sig, put=False):
 
 def stats(rets):
     r = pd.Series(rets).dropna(); eq = (1+r).cumprod(); yrs = len(r)/252
-    if eq.iloc[-1] <= 0: return -1.0, 0.0, -1.0, (r > 0).mean(), r.min()
+    if (eq <= 0).any():                                   # ruin: equity hit zero -> game over
+        return -1.0, 0.0, -1.0, (r > 0).mean(), r.min()
     return eq.iloc[-1]**(1/yrs)-1, r.mean()/r.std()*math.sqrt(252) if r.std() else 0, \
            (eq/eq.cummax()-1).min(), (r > 0).mean(), r.min()
 
@@ -34,6 +35,7 @@ def main():
     ma200 = df["c"].rolling(200).mean()
     T = 1/252
     rows = {"condor (every day)": [], "condor + regime gate": [], "condor calm days only (VIX<20)": [],
+            "condor sized 10% of account": [], "condor 10% + calm only": [],
             "LONG straddle (every day)": []}
     for i in range(200, len(df)):
         S = float(df["o"].iloc[i]); C = float(df["c"].iloc[i]); iv = float(df["v"].iloc[i-1])/100
@@ -53,6 +55,8 @@ def main():
         rows["condor (every day)"].append(r_condor)
         rows["condor + regime gate"].append(r_condor if gate else 0.0)
         rows["condor calm days only (VIX<20)"].append(r_condor if iv < 0.20 else 0.0)
+        rows["condor sized 10% of account"].append(0.10*r_condor)
+        rows["condor 10% + calm only"].append(0.10*r_condor if iv < 0.20 else 0.0)
         rows["LONG straddle (every day)"].append(r_straddle)
 
     print(f"\n=== 0DTE on SPY · open->close · defined-risk margin · friction {FRICTION:.0%} of credit · 2007-2026 ===\n")
