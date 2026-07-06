@@ -24,10 +24,16 @@ def main():
     px = fetch(universe()); px.index = pd.to_datetime(px.index).tz_localize(None).normalize()
     px = px.loc[:, px.notna().sum() > 252]
     stocks = [c for c in px.columns if c not in NONSTOCK]
-    m6 = (px[stocks].shift(21)/px[stocks].shift(147) - 1).iloc[-1]    # 6mo momentum (skip last month)
+    m6f = px[stocks].shift(21)/px[stocks].shift(147) - 1              # full 6mo momentum panel
+    m6 = m6f.iloc[-1]                                                 # 6mo momentum (skip last month)
     m3 = (px[stocks].shift(21)/px[stocks].shift(84) - 1).iloc[-1]     # 3mo momentum (skip last month)
     spy = px["SPY"]
     risk_on = bool(spy.iloc[-1] > spy.rolling(200).mean().iloc[-1])
+    # dispersion gate (backtested 2026-07-06: 1.5x/0.9x = same CAGR, maxDD -40% vs -52%, both halves):
+    # momentum crashes when the winners-vs-pack spread collapses -> run 0.9x, else full 1.5x
+    disp = m6f.quantile(0.9, axis=1) - m6f.median(axis=1)
+    disp_on = bool(disp.iloc[-1] > disp.rolling(504).median().iloc[-1])
+    leverage = 1.5 if disp_on else 0.9
     d = px.index[-1]
 
     cand6 = list(m6.dropna().sort_values(ascending=False).index[:25])
@@ -55,7 +61,8 @@ def main():
     new = picks if risk_on else []
 
     print(f"\n=== MOMENTUM PICKS · 7 core + 3 fast-track · as of {d.date()} ===")
-    print(f"  regime: {'RISK-ON (deploy)' if risk_on else 'RISK-OFF -> CASH out the account, no buys'}\n")
+    print(f"  regime: {'RISK-ON (deploy)' if risk_on else 'RISK-OFF -> CASH out the account, no buys'}")
+    print(f"  dispersion: {'WIDE -> full leverage' if disp_on else 'COMPRESSED -> momentum-crash risk, leverage down'}\n")
     for i, t in enumerate(picks, 1):
         tag = "core" if t in core else "FAST"
         m = float((m6 if t in core else m3)[t]) * 100; win = "6mo" if t in core else "3mo"
@@ -68,8 +75,10 @@ def main():
     STATE = Path.home() / ".momentum_holdings.json"
     print(f"\n  --- PASTE INTO the claude.ai skill ---")
     print(f"  MOMENTUM PICKS: {', '.join(new) if new else '(none — RISK-OFF, sell to cash)'}")
-    if new and fast:
-        print(f"  (fast-track names — early-stage 3mo movers, give extra veto scrutiny: {', '.join(fast)})")
+    if new:
+        print(f"  LEVERAGE: {leverage}")
+        if fast:
+            print(f"  (fast-track names — early-stage 3mo movers, give extra veto scrutiny: {', '.join(fast)})")
     STATE.write_text(json.dumps({"held": new, "core": core if risk_on else [], "fast": fast if risk_on else [],
                                  "asof": str(d.date())}, indent=2))
 
