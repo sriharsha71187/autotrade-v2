@@ -1,0 +1,80 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+@page { size: Letter; margin: 0.55in 0.6in; }
+* { box-sizing: border-box; }
+body { font: 10.2px/1.45 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+       color: #1c2430; margin: 0; }
+h1 { font-size: 21px; margin: 0 0 2px; color: #0b2545; letter-spacing: -0.2px; }
+.tag { font-size: 11px; color: #4a5a6a; font-style: italic; margin: 0 0 12px;
+       border-left: 3px solid #2d6a4f; padding-left: 9px; }
+h2 { font-size: 12px; margin: 13px 0 4px; color: #0b2545; text-transform: uppercase;
+     letter-spacing: 0.6px; border-bottom: 1.5px solid #d8e0e8; padding-bottom: 2px; }
+p { margin: 4px 0; }
+ul { margin: 4px 0 4px 0; padding-left: 16px; }
+li { margin: 2px 0; }
+b { color: #0b2545; }
+.em { font-style: italic; color: #2d6a4f; font-weight: 600; }
+.status li { list-style: none; margin-left: -16px; margin: 4px 0; }
+.k { color: #6a7785; font-size: 9.4px; }
+table { border-collapse: collapse; width: 100%; margin: 5px 0; }
+td { padding: 3.5px 7px; border-bottom: 1px solid #e3e9ef; vertical-align: top; font-size: 10px; }
+td.h { width: 118px; font-weight: 700; color: #0b2545; }
+.foot { margin-top: 13px; padding-top: 7px; border-top: 1.5px solid #d8e0e8;
+        font-size: 9.2px; color: #6a7785; font-style: italic; }
+</style></head><body>
+
+<h1>AutoTrade — an autonomous AI trading bot, built to test itself</h1>
+<div class="tag">A self-running trading system for US equities &amp; defined-risk options, engineered around one
+unusual idea: don't assume the AI has an edge — <b>measure</b> whether it does, and distill the part that
+works into code.</div>
+
+<h2>What it is</h2>
+<p>A bot that trades on its own. Each qualifying cycle, an AI model (Claude) proposes <b>one</b> trade; a
+deterministic code layer can veto, resize, or override it — but can never invent a trade. It runs unattended
+on a schedule, manages its own positions, enforces its own risk limits, and reports to the operator by phone
+(Telegram). <b>Paper-traded only</b> — no live-money risk — while its edge is validated.</p>
+
+<h2>Design philosophy — the model picks, the code protects</h2>
+<p>Most AI-trading projects hand the model the keys. This one inverts the trust: the LLM is wrapped in layers
+of deterministic guardrails it cannot override.</p>
+<ul>
+<li><b>Regime gate</b> — market trend × volatility decide which strategies may even open (or force cash).</li>
+<li><b>Event router</b> — rides fresh catalysts; braces before scheduled binary events.</li>
+<li><b>Guardrails</b> — anti-chase, counter-trend blocks, per-name &amp; correlation caps, a hard daily-loss halt.</li>
+<li><b>Code-enforced exits</b> — trailing stops, breakeven locks, sector-confluence stops, <b>defined-risk only</b>.</li>
+</ul>
+<p>The model only fills in a decision inside a box the code has already drawn.</p>
+
+<h2>What makes it different — it measures itself</h2>
+<p>The hard question most projects skip: <i>does the AI's stock-picking actually add value, or is it expensive
+noise?</i> This bot is built to answer that with data:</p>
+<ul>
+<li>Every decision logs the <b>full choice set</b> — every candidate it saw, the features, the news it read, the pick, and the result.</li>
+<li>A research pipeline computes the <b>forward return of every candidate it passed on</b>, not just what it traded — the only honest way to measure selection skill.</li>
+<li>A <b>distillation</b> layer mines that data for a deterministic signal and tests whether the AI adds anything <i>beyond</i> the observable features.</li>
+</ul>
+<p>The endgame: <span class="em">distill the AI's useful behavior into deterministic code, and remove the AI
+wherever a rule reproduces it.</span> Model as <i>teacher</i>, not trader.</p>
+
+<h2>Honest status</h2>
+<ul class="status">
+<li>✅ &nbsp;It runs autonomously, safely, and exactly as designed — <b>the engineering works.</b></li>
+<li>⚠️ &nbsp;<b>Edge: unproven.</b> Three independent checks — a leak-free backtest, the academic literature, and the
+bot's <i>own</i> live decisions — so far show <b>no proven intraday selection edge</b>: the model's picks haven't
+beaten a random pick from the same candidate pool. The one durable signal found anywhere is long-only cross-sectional
+momentum — market <i>beta</i>, not alpha.</li>
+<li>🔬 &nbsp;It is therefore run as an <b>instrumented experiment</b> — to find and distill an edge, not as a proven
+money-maker. Knowing <i>whether</i> it works is the entire point.</li>
+</ul>
+
+<h2>Under the hood</h2>
+<table>
+<tr><td class="h">Stack</td><td>Python · Claude (LLM) · Alpaca (broker + data) · scheduler · Telegram control</td></tr>
+<tr><td class="h">Self-learning</td><td>a nightly evidence-weighted rulebook — held <i>on trial</i>, measured not trusted</td></tr>
+<tr><td class="h">Risk</td><td>defined-risk structures only · hard daily-loss halt · paper account hardcoded · let winners run</td></tr>
+<tr><td class="h">Observability</td><td>localhost dashboard (live equity, decisions, vetoes, learnings) + full per-cycle logs</td></tr>
+</table>
+
+<div class="foot">Research / validation phase. Paper-trading only. Built for rigor over hype — the goal is to
+know the truth about whether an LLM can trade, and to keep only the part that demonstrably works.</div>
+
+</body></html>
