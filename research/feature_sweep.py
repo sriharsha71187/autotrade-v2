@@ -70,10 +70,15 @@ def build_features(O, H, L, C, V):
     f["gapfreq"] = (on.abs() > 0.02).rolling(21).sum()
     ibs = ((C - L) / (H - L)).replace([np.inf, -np.inf], np.nan)
     f["ibs5"] = ibs.rolling(5).mean()
-    cov = r.rolling(60).cov(spy)
-    beta = cov / spy.rolling(60).var()
+    # beta/idio-vol: DataFrame.rolling().cov(Series) silently yields all-NaN (audit
+    # finding 2026-07-19) — compute the rolling covariance explicitly instead.
+    m_r, m_s = r.rolling(60).mean(), spy.rolling(60).mean()
+    cov = r.mul(spy, axis=0).rolling(60).mean() - m_r.mul(m_s, axis=0)
+    var_s = (spy**2).rolling(60).mean() - m_s**2
+    beta = cov.div(var_s, axis=0)
     f["beta60"] = beta
-    resid_var = r.rolling(60).var().sub(beta**2 * spy.rolling(60).var(), axis=0)
+    var_r = (r**2).rolling(60).mean() - m_r**2
+    resid_var = var_r - (beta**2).mul(var_s, axis=0)
     f["idio60"] = np.sqrt(resid_var.clip(lower=0) * 252)
     f["volt"] = V.rolling(20).mean() / V.rolling(120).mean()   # volume trend
     return f
@@ -85,6 +90,17 @@ def main():
     stocks = [c for c in C.columns if c not in ETFS]
     print(f"panel {C.shape}, stocks {len(stocks)}, {C.index.min().date()} -> {C.index.max().date()}")
     feats = build_features(O, H, L, C, V)
+    # coverage manifest — fail LOUDLY if any feature is unusably sparse (audit fix:
+    # beta60/idio60 were silently all-NaN and dropped the sweep from 24 to 22 features)
+    print("feature coverage (non-null %):")
+    bad = []
+    for k, F in feats.items():
+        covr = F[stocks].notna().mean().mean()
+        print(f"  {k:12s} {covr*100:5.1f}%")
+        if covr < 0.30:
+            bad.append(k)
+    if bad:
+        raise SystemExit(f"ABORT: features with <30% coverage: {bad}")
     C = C[stocks]
 
     macro = pd.read_csv(MACRO, parse_dates=["Date"]).set_index("Date")

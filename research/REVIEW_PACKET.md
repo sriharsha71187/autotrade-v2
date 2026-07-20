@@ -194,3 +194,58 @@ $PY research/ivrv_study.py                                 # §3.8
 10. **Survivorship-free universe** — all cross-sectional results use current index
     members. A CRSP-style delisted-inclusive rerun could revive small-cap effects
     (the QuantConnect re-validation path exists: `qc_xsmom.py`).
+
+---
+
+## 7. Addendum — response to the independent audit (2026-07-19, same day)
+
+An independent LLM audit (`AUTOTRADE_ALPHA_AUDIT.md`, Codex) reviewed this packet at
+commit `0cebd5c`. Point-by-point disposition, with what was verified and changed:
+
+**Conceded and FIXED:**
+- **beta60/idio60 were silently all-NaN** (DataFrame.rolling().cov(Series) broadcasting
+  failure) — verified: 0 non-null values. Fixed with an explicit rolling covariance +
+  a coverage manifest that ABORTS on <30% coverage. Re-run: 96 cells, beta/idio-vol
+  land mid-pack, still ZERO both-halves survivors — the fix widens the null, does not
+  overturn it. The packet's "25 features" is corrected to 24 defined / 24 now tested.
+- **Same-close IBS fill is not executable** — correct. Added `ibs_next_open.py`
+  (next-open fills both legs + 10-session time stop): SPY IS Sh 0.92 / OOS Sh 0.99 @
+  1bp/side, and 0.81 / 0.87 @ 5bp/side (~+10-11%/yr, OOS maxDD −8.5%). This matches the
+  auditor's independent 1993-2026 harness (their 2022+ Sharpe 0.94) — the effect
+  cross-validates across two implementations and two datasets. THE DEPLOYABLE STATISTIC
+  IS ~Sharpe 0.9-1.0, not 1.16.
+- **The 2022-2026 segment was used during selection** (grid + variants inspected) —
+  correct in principle; it is validation, not virgin holdout. IBS status accordingly
+  demoted from "validated" to **frozen paper-trade candidate** (`spy_ibs_next_open_v1`,
+  enter IBS<0.10 / exit IBS>0.90 / 10-session stop / next-open fills — frozen 7/19;
+  any change = new version, forward clock resets).
+- **Momentum-neutral PEAD was not reproducible from committed code** — correct. Now
+  committed as `pead_momneutral.py` with an explicit post-selection disclosure. Status
+  remains watch-only candidate.
+- **Ratings data are week-ending-Friday aggregates, not daily** — verified (100% of
+  sampled event dates are Fridays; `ratings_backfill.py` groups on `W-FRI`). The
+  rejection is downgraded from "rec-change drift is dead" to "no drift measurable at
+  weekly granularity with composition-confounded targets"; a clean per-action test
+  needs broker-level timestamped grades. Directionally the null stands (a <=4-session
+  entry delay does not plausibly flip a 20-60d drift's sign), but the strong wording
+  was not earned.
+- **"Month-clustered" t was a t on monthly means, not a cluster-robust SE on the
+  event-weighted mean; no HAC across overlapping 40/60d windows** — correct; noted as
+  a known inference weakness. Sign-flips between the event-weighted mean and the
+  monthly-mean t occur in sparse cells.
+- **The news "Tier-0 ceiling" argument was too strong** — conceded. The lexicon null
+  rejects polarity-drift strategies on this universe; it does not bound event-type /
+  novelty / expectation-surprise extraction. A Tier-1 test would need a frozen,
+  pre-registered protocol; it remains unjustified on priors, not "proven impossible."
+
+**Did NOT reproduce (checked on the canonical environment):**
+- "Four current failures in `test_trend_entry.py`" — the file passes ALL GREEN here,
+  and the full suite (16 test files) is green. Most likely their sandbox lacked
+  `~/.autotrade.env` / data files. CI + import-safe pytest conversion remains a fair
+  ask and is on the roadmap.
+
+**Where we agree with the auditor's bottom line:** paper-trade `spy_ibs_next_open_v1`
+at reduced notional, no live capital until an independent-vendor signal reconciliation
+and an executable-cutoff (3:50pm minute-bar) comparison are done; keep the LLM out of
+selection; next research = executable close mean-reversion, point-in-time PEAD,
+broker-level analyst actions, Form 4 cluster buys, index reconstitution.
