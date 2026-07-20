@@ -132,10 +132,10 @@ def main():
     report(ev[ev.entry >= OOS_START], "OUT-OF-SAMPLE 2023-2026")
 
     cov = coverage_map()
-    ev["cov"] = ev.sym.map(cov)
-    med = ev.drop_duplicates("sym")["cov"].median()
-    report(ev[ev.cov <= med], f"LOW-COVERAGE half (<= {med:.0f} rating-days)")
-    report(ev[ev.cov > med], "HIGH-COVERAGE half")
+    ev["covn"] = ev.sym.map(cov)
+    med = ev.drop_duplicates("sym")["covn"].median()
+    report(ev[ev["covn"] <= med], f"LOW-COVERAGE half (<= {med:.0f} rating-days)")
+    report(ev[ev["covn"] > med], "HIGH-COVERAGE half")
 
     # sign-only view: big beats vs big misses (|surprise| >= 10%)
     for lbl, sub in [("BIG BEAT >=+10%", ev[ev.surprise >= 10]),
