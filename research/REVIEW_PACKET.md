@@ -249,3 +249,38 @@ at reduced notional, no live capital until an independent-vendor signal reconcil
 and an executable-cutoff (3:50pm minute-bar) comparison are done; keep the LLM out of
 selection; next research = executable close mean-reversion, point-in-time PEAD,
 broker-level analyst actions, Form 4 cluster buys, index reconstitution.
+
+---
+
+## 8. Addendum 2 — counter-audit of the Codex greenfield candidates (2026-07-20)
+
+Codex delivered two further documents: an intraday pass (7 more families tested, ALL
+rejected — earnings continuation/reversal/fade, opening residual momentum, month-end
+rebalance, pre-FOMC, anti-FOMC; consistent with our nulls) proposing `closeflow_v1`
+(closing-auction imbalance continuation — a frozen SPEC, blocked on NYSE-imbalance/
+NOII/NBBO history we do not own), and a greenfield pass proposing
+`form4_cluster_reversal_v1` (SEC Form 4 officer/director cluster buys, 20-session
+hold, SPY-hedged; prototype dev 29.0%/Sh 0.96, test 18.7%/Sh 0.85, HAC t 2.42).
+
+Counter-audit of form4 (their artifacts, our clean panel):
+- **Their numbers REPRODUCE exactly** from `work/sec_cluster_daily_returns.csv`
+  (CAGR/Sharpe/DD match to the decimal; positive every year but 2024; max single day
+  <= 17% of period log-P&L).
+- **The drawdown-matched placebo — which their own doc calls the most important
+  unresolved test — FAILS on the liquid subset.** 623 of 2,975 events overlap our
+  split-adjusted panel. Cluster events: +0.48%/20d SPY-hedged. Placebo names matched
+  on prior-20-session excess return (+/-2pp, same month, no cluster): +0.77%. Paired
+  monthly difference: **-0.30%/20d (t -0.5)**, flat in both 2020-22 and 2023-26.
+  In large/mid caps, insider clusters add NOTHING beyond generic dip-buying.
+- **Therefore the prototype's entire P&L concentrates in the 79% of events outside
+  the liquid panel** — small caps, where their own caveats are sharpest: 46.6%
+  non-random price coverage, ticker-reuse/delisting risk, no 10b5-1 exclusion
+  pre-2023(?), and a 10bp cost model that is optimistic for $5M-ADV names.
+  This matches the literature (insider alpha is a small-firm effect) but means the
+  strategy is untestable-to-buildable on our current free data.
+
+Disposition: `form4_cluster_reversal` on the board as **contested** (not candidate) —
+promotion requires their own gates (CRSP/Norgate delisting-clean rerun, small-cap
+placebo, acceptance-timestamp reconstruction). `closeflow_v1` on the board as
+**queued/blocked-on-data**. Neither changes current deployment (momentum book live;
+`spy_ibs_next_open_v1` to paper).
