@@ -33,3 +33,11 @@ autotrade_dryrun_capture.log
 
 # event router cache (econ calendar + IV baseline)
 autotrade_events.json
+
+# research data caches (large, recreatable from Alpaca)
+research/.ohlcv_cache.pkl
+research/*.pkl
+
+# machine-local convenience scripts / dev-server config (contain local session ids & paths)
+phone-*.sh
+.claude/launch.json
