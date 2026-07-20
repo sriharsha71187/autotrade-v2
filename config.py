@@ -147,13 +147,22 @@ DAILY_PROFIT_TARGET  = 200.0
 DAILY_PROFIT_STRETCH = 400.0
 PER_TRADE_NOTIONAL_CAP = 5_000.0   # cap on a single stock entry (qty * price)
 PER_OPTION_NOTIONAL_CAP = 600.0    # HARD ceiling on ONE option structure's max-loss.
-                                   # At the live −$1,500 daily floor this is ~0.4x, so a
-                                   # single structure can't blow most of the day's loss
-                                   # budget. (The conviction-ITM book is exempt — it uses
-                                   #  its own CONVICTION_ITM_NOTIONAL_CAP.)
-OPTION_RISK_TARGET     = 900.0     # TARGET max-loss to SIZE each defined-risk options
-                                   # trade toward (wider wings / more contracts) — stops
-                                   # the model trading teaspoon-sized $50-risk condors
+                                   # CONFIG HAS TWO LAYERS: the defaults here are the
+                                   # conservative committed values; ~/autotrade_overrides.json
+                                   # (RUNTIME_SETTABLE keys only) is the live layer — it sets
+                                   # DAILY_LOSS_HALT to −$1,500, which is the "live floor"
+                                   # this $600 is 0.4x of. Against the committed −$300
+                                   # default it reads inconsistent (2x the daily budget);
+                                   # the override is the operative number. (The
+                                   # conviction-ITM book is exempt — it uses its own
+                                   # CONVICTION_ITM_NOTIONAL_CAP.)
+OPTION_RISK_TARGET     = PER_OPTION_NOTIONAL_CAP   # TARGET max-loss to SIZE each
+                                   # defined-risk options trade toward (wider wings / more
+                                   # contracts) — stops teaspoon-sized $50-risk condors.
+                                   # Must NEVER exceed the hard cap: the old $900 target
+                                   # vs $600 cap had the engine size structures past the
+                                   # cap then auto-reject them, and told the model to aim
+                                   # at an impossible number.
 # Stock sizing is a RISK budget, not a notional cap (AUDIT_ROADMAP #6). The model
 # emits a qty + stop; we re-size in code so $-at-risk (qty * |entry-stop|) is the
 # constant — not the dollars deployed. A wide-stop trade gets fewer shares, a tight-
