@@ -11,6 +11,7 @@
  * Leave both blank to run fully offline with device-local progress.
  */
 window.GBQ_CONFIG = {
-  supabaseUrl: "",      // e.g. "https://abcdefgh.supabase.co"
-  supabaseAnonKey: "",  // e.g. "eyJhbGciOi..."
+  supabaseUrl: "https://baeqrrjlpylramvzufxw.supabase.co",
+  // Publishable key — safe to ship in frontend code; data is guarded by RLS.
+  supabaseAnonKey: "sb_publishable_tRIhkVg--VCPvcjXH6xeWA_FnIZanhn",
 };
