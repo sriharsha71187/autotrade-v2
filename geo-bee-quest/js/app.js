@@ -555,7 +555,7 @@
           ? `<div class="fact" style="font-size:1.05rem;margin-bottom:6px">${esc(fact.teachQ)}</div><div class="teach-main">${esc(fact.teachA)}</div>`
           : `<div class="teach-main">${esc(fact.teachText)}</div>`}
         ${fact.fact ? `<div class="fact">💡 ${esc(fact.fact)}</div>` : ""}
-        <button class="big green" id="btn-gotit">Got it! Quiz me 💪</button>
+        <button class="big green" id="btn-gotit">Got it! ➜</button>
       </div>`;
     decorateMap($("#screen-quiz"));
     $("#btn-gotit").onclick = nextStep;
@@ -594,6 +594,7 @@
       if (q.flags.reask) modeChip = `<span class="mode-chip mode-reask">🔁 Try again!</span>`;
       else if (q.flags.review) modeChip = `<span class="mode-chip mode-review">🔔 Review</span>`;
       else if (q.flags.challenge) modeChip = `<span class="mode-chip mode-challenge">⚡ Challenge — 2× XP</span>`;
+      else if (q.flags.fresh) modeChip = `<span class="mode-chip mode-reask">🆕 Just learned!</span>`;
     }
     const media = q.media ? `<div class="qmedia">${mediaHTML(q.media, true)}</div>` : "";
     let body;

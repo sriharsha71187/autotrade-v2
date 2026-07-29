@@ -173,7 +173,8 @@ window.Engine = (function () {
       noTeach: !!(o && o.noTeach),
       asked: [], misses: [], reasks: 0, reviews: 0,
       i: 0, correct: 0, streak: 0, xp: 0, events: [], topicCursor: 0,
-      pendingQuiz: null, // fact just taught, quiz it next
+      shown: 0,     // everything displayed this round, teach cards included
+      taught: [],   // facts introduced this round, awaiting their delayed quiz
     };
   }
   function sessionTopics(s, sess) {
@@ -184,11 +185,20 @@ window.Engine = (function () {
   function nextQuestion(s, sess) {
     const now = Date.now();
     const askedSet = new Set(sess.asked);
+    sess.shown = (sess.shown || 0) + 1;
 
-    // 0. quiz the fact we just taught
-    if (sess.pendingQuiz) {
-      const f = sess.pendingQuiz; sess.pendingQuiz = null;
-      return makeQ(s, f, { fresh: true });
+    // 0. quiz a fact taught earlier this round — only after a few other
+    //    things in between, so it's real recall, never an instant echo
+    //    of the card just shown (flush unconditionally near round end)
+    if (sess.taught && sess.taught.length) {
+      const roomLeft = ROUND_LEN - sess.i;
+      const pick = sess.taught.find((t) => sess.shown - t.at >= 3) ||
+        (roomLeft <= sess.taught.length ? sess.taught[0] : null);
+      if (pick) {
+        sess.taught = sess.taught.filter((t) => t !== pick);
+        const f = Q.byId[pick.factId];
+        if (f) return makeQ(s, f, { fresh: true });
+      }
     }
     // 1. re-ask a fact missed >=3 questions ago this session
     const due = sess.misses.find((m) => sess.i - m.at >= 3);
@@ -222,9 +232,15 @@ window.Engine = (function () {
     const f = pickNew(s, askedSet, 0, sessionTopics(s, sess));
     if (f) {
       const r = s.facts[f.id];
-      if (sess.noTeach || (r && r.n)) return makeQ(s, f, { fresh: true });
-      sess.pendingQuiz = f;
-      return { teach: true, fact: f };
+      if (sess.noTeach || (r && r.n)) return makeQ(s, f, {});
+      // teach only while there's room to quiz it later this round,
+      // and never stack more than 3 unquizzed teach cards
+      if (sess.i < ROUND_LEN - 1 && sess.taught.length < 3) {
+        rec(s, f.id).n = 1;        // introduced — never re-teach, even next session
+        sess.asked.push(f.id);     // and never re-pick it as "new" this round
+        sess.taught.push({ factId: f.id, at: sess.shown });
+        return { teach: true, fact: f };
+      }
     }
     // 5. fallback: soonest-due or weakest fact
     let best = null, bestScore = Infinity;
