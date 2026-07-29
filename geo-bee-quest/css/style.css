@@ -369,3 +369,17 @@ textarea { background: var(--surface-low); color: var(--on-surface); border: 1px
   #print-sheet ul { margin-left: 20px; }
   #print-sheet li { margin: 3px 0; font-size: 11pt; }
 }
+
+/* ---- learn mode ---- */
+.learn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.learn-tile {
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  background: var(--surface-high); border: 1px solid var(--surface-highest);
+  border-radius: var(--r-md); padding: 16px 10px; min-height: 100px;
+}
+.learn-tile:hover { border-color: var(--gold); opacity: 1; }
+.learn-tile .lt-emoji { font-size: 2rem; }
+.learn-tile .lt-name { font-weight: 700; font-size: 0.92rem; text-align: center; }
+.learn-tile .lt-count { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--gold); }
+.learn-nav { margin-top: 4px; }
+.learn-nav .big { margin: 4px 0; }

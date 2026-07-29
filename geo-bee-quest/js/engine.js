@@ -62,6 +62,7 @@ window.Engine = (function () {
       totals: { answered: 0, correct: 0, bestStreak: 0 },
       log: [], placementDone: false,
       stickers: [], questDone: null, lastBee: null,
+      learnPos: {},
     };
   }
 
@@ -130,12 +131,16 @@ window.Engine = (function () {
   }
 
   // --- session -------------------------------------------------------------
-  function newSession(mode) {
+  function newSession(mode, topicId) {
     return {
-      mode: mode || "practice", asked: [], misses: [], reasks: 0, reviews: 0,
+      mode: mode || "practice", topic: topicId || null,
+      asked: [], misses: [], reasks: 0, reviews: 0,
       i: 0, correct: 0, streak: 0, xp: 0, events: [], topicCursor: 0,
       pendingQuiz: null, // fact just taught, quiz it next
     };
+  }
+  function sessionTopics(s, sess) {
+    return enabledTopics(s).filter((t) => !sess || !sess.topic || t.id === sess.topic);
   }
 
   // Choose the next thing to show: {teach:fact} or a question object.
@@ -158,7 +163,7 @@ window.Engine = (function () {
     // 2. overdue scheduled reviews (cap 4 per round)
     if (sess.reviews < 4) {
       const dueFacts = [];
-      for (const t of enabledTopics(s)) {
+      for (const t of sessionTopics(s, sess)) {
         for (const f of Q.byTopic[t.id] || []) {
           const r = s.facts[f.id];
           if (r && r.b >= 1 && r.due && r.due <= now && !askedSet.has(f.id)) dueFacts.push([r.due, f]);
@@ -172,18 +177,18 @@ window.Engine = (function () {
     }
     // 3. occasional challenge preview from one tier up
     if (Math.random() < 0.12) {
-      const f = pickNew(s, askedSet, +1);
+      const f = pickNew(s, askedSet, +1, sessionTopics(s, sess));
       if (f) return makeQ(s, f, { challenge: true });
     }
     // 4. new material at current tier → teach card first
-    const f = pickNew(s, askedSet, 0);
+    const f = pickNew(s, askedSet, 0, sessionTopics(s, sess));
     if (f) {
       sess.pendingQuiz = f;
       return { teach: true, fact: f };
     }
     // 5. fallback: soonest-due or weakest fact
     let best = null, bestScore = Infinity;
-    for (const t of enabledTopics(s)) {
+    for (const t of sessionTopics(s, sess)) {
       for (const fx of Q.byTopic[t.id] || []) {
         const r = s.facts[fx.id];
         if (!r || askedSet.has(fx.id)) continue;
@@ -194,8 +199,8 @@ window.Engine = (function () {
     return best ? makeQ(s, best, { review: true }) : null;
   }
 
-  function pickNew(s, askedSet, tierOffset) {
-    const topics = enabledTopics(s);
+  function pickNew(s, askedSet, tierOffset, topicList) {
+    const topics = topicList || enabledTopics(s);
     if (!topics.length) return null;
     // Round-robin over topics; within a topic take unseen facts,
     // lowest tier first, up to the topic's current tier (+offset).
@@ -473,6 +478,10 @@ window.Engine = (function () {
     out.stickers = Array.from(new Set([...(a.stickers || []), ...(b.stickers || [])]));
     out.lastBee = Math.max(a.lastBee || 0, b.lastBee || 0) || null;
     out.questDone = [a.questDone, b.questDone].filter(Boolean).sort().pop() || null;
+    out.learnPos = out.learnPos || {};
+    for (const [k, v] of Object.entries({ ...(a.learnPos || {}), ...(b.learnPos || {}) })) {
+      out.learnPos[k] = Math.max(v, (a.learnPos || {})[k] || 0, (b.learnPos || {})[k] || 0);
+    }
     // log: union by day, keep larger counts
     const byDay = {};
     for (const e of [...(a.log || []), ...(b.log || [])]) {

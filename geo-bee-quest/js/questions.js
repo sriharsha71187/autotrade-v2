@@ -78,13 +78,17 @@ window.QBank = (function () {
       fact: s.x || `${s.c} is the capital of ${s.n}, in the ${s.r} region. Its nickname is "${s.nick}".`,
     });
   }
+  // Countries whose names take "the" mid-sentence
+  const NEEDS_THE = new Set(["United States", "United Kingdom", "Netherlands", "Philippines", "United Arab Emirates", "Democratic Republic of the Congo"]);
+  const art = (n) => (NEEDS_THE.has(n) ? "the " + n : n);
+
   // World capitals
   for (const c of D.COUNTRIES) {
     addFact({
       id: "cc:" + c.n, topic: "capitals", tier: c.ct || c.t, src: c,
       forms: ["cap", "rev"], label: c.n,
-      teachText: `${c.c} is the capital of ${c.n} ${c.f}`,
-      fact: c.x || `${c.c} is the capital of ${c.n}, a country in ${c.k}.`,
+      teachText: `${c.c} is the capital of ${art(c.n)} ${c.f}`,
+      fact: c.x || `${c.c} is the capital of ${art(c.n)}, a country in ${c.k}.`,
     });
   }
   // Flags
@@ -92,8 +96,8 @@ window.QBank = (function () {
     addFact({
       id: "fl:" + c.n, topic: "flags", tier: c.t, src: c,
       forms: ["flag", "flagrev"], label: c.n,
-      teachText: `This is the flag of ${c.n} ${c.f}`,
-      fact: `${c.f} is the flag of ${c.n}, in ${c.k}. Its capital is ${c.c}.`,
+      teachText: `This is the flag of ${art(c.n)} ${c.f}`,
+      fact: `${c.f} is the flag of ${art(c.n)}, in ${c.k}. Its capital is ${c.c}.`,
     });
   }
   // Map topics (need js/maps.js — skipped gracefully if absent)
@@ -206,7 +210,7 @@ window.QBank = (function () {
       const cont = countriesByCont[s.k].filter((c) => c.n !== s.n);
       const near = cont.filter((c) => Math.abs((c.ct || c.t) - (s.ct || s.t)) <= 1);
       if (form === "cap") {
-        prompt = `What is the capital of ${s.n}?`;
+        prompt = `What is the capital of ${art(s.n)}?`;
         answer = s.c;
         pools = [near.map((c) => c.c), cont.map((c) => c.c), allCountries.map((c) => c.c)];
         accept = [s.c];
@@ -232,7 +236,7 @@ window.QBank = (function () {
         pools = [near.map((c) => c.n), cont.map((c) => c.n), allCountries.map((c) => c.n)];
         accept = countryAccept(s.n);
       } else {
-        prompt = `Which of these is the flag of ${s.n}?`;
+        prompt = `Which of these is the flag of ${art(s.n)}?`;
         answer = s.f;
         optionMedia = (label) => {
           const c = allCountries.find((x) => x.f === label);
@@ -252,7 +256,7 @@ window.QBank = (function () {
 
     const q = {
       factId: fact.id, topic: fact.topic, tier: fact.tier, form,
-      fact: fact.fact, media,
+      prompt, fact: fact.fact, media,
       speak: prompt,
     };
 

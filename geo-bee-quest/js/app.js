@@ -272,6 +272,7 @@
         </div>
       </div>
       <button class="big green" id="btn-play">▶️ &nbsp;Play Adventure</button>
+      <button class="big ghost" id="btn-learn">📚 &nbsp;Learn — explore the world</button>
       <div class="row">
         <button class="big violet" id="btn-bee-written">📝 Written Bee</button>
         <button class="big amber" id="btn-bee-oral">🎤 Oral Bee</button>
@@ -281,7 +282,8 @@
         <button class="big ghost" id="btn-progress">📊 Progress</button>
         <button class="big ghost" id="btn-settings">⚙️</button>
       </div>`;
-    $("#btn-play").onclick = startPractice;
+    $("#btn-play").onclick = () => startPractice();
+    $("#btn-learn").onclick = renderLearnTopics;
     $("#btn-bee-written").onclick = () => startBee("written");
     $("#btn-bee-oral").onclick = () => startBee("oral");
     $("#btn-progress").onclick = renderProgress;
@@ -306,9 +308,87 @@
     document.body.appendChild(el);
   }
 
+  // ---------- learn mode (curriculum browser) ----------
+  function learnFacts(topicId) {
+    return (Q.byTopic[topicId] || []).slice().sort((a, b) => a.tier - b.tier);
+  }
+  function renderLearnTopics() {
+    const topics = E.enabledTopics(S);
+    show("#screen-learn");
+    $("#screen-learn").innerHTML = `
+      <div class="quiz-top">
+        <button class="icon-btn" id="btn-back">← Back</button>
+        <span class="stat">📚 Learn</span>
+      </div>
+      <div class="card">
+        <h2>Pick an adventure</h2>
+        <p class="muted" style="margin-bottom:12px">Flip through fact cards at your own pace — no scores, no timers. Quiz yourself whenever you're ready!</p>
+        <div class="learn-grid">
+          ${topics.map((t) => {
+            const total = (Q.byTopic[t.id] || []).length;
+            const seen = Math.min(S.learnPos[t.id] || 0, total);
+            return `<button class="learn-tile" data-id="${t.id}">
+              <span class="lt-emoji">${t.emoji}</span>
+              <span class="lt-name">${esc(t.name)}</span>
+              <span class="lt-count">${seen}/${total} explored</span>
+            </button>`;
+          }).join("")}
+        </div>
+      </div>`;
+    $("#btn-back").onclick = renderHome;
+    document.querySelectorAll(".learn-tile").forEach((b) => {
+      b.onclick = () => renderLearnDeck(b.dataset.id, S.learnPos[b.dataset.id] || 0);
+    });
+  }
+  function renderLearnDeck(topicId, idx) {
+    const facts = learnFacts(topicId);
+    if (!facts.length) return renderLearnTopics();
+    idx = Math.max(0, Math.min(idx, facts.length - 1));
+    S.learnPos[topicId] = Math.max(S.learnPos[topicId] || 0, idx + 1);
+    S.metaUpdated = Date.now();
+    save();
+    const f = facts[idx];
+    const m = topicMeta(topicId);
+    let media = "";
+    if (topicId === "flags") {
+      media = `<div class="qmedia">${mediaHTML({ type: "flag", code: Q.flagCode(f.src.f), emoji: f.src.f }, true)}</div>`;
+    } else if (f.teachMap) {
+      media = `<div class="qmedia">${mapHTML(f.teachMap)}</div>`;
+    }
+    show("#screen-learn");
+    $("#screen-learn").innerHTML = `
+      <div class="quiz-top">
+        <button class="icon-btn" id="btn-back">← Topics</button>
+        <span class="stat">${m.emoji} ${idx + 1} / ${facts.length}</span>
+        <span class="stat">${tierStars(f.tier).slice(0, 5)}</span>
+      </div>
+      <div class="card teach">
+        <span class="topic-chip">${m.emoji} ${esc(m.name)}</span>
+        ${media}
+        ${f.teachQ
+          ? `<div class="fact" style="font-size:1.05rem;margin-bottom:6px">${esc(f.teachQ)}</div><div class="teach-main">${esc(f.teachA)}</div>`
+          : `<div class="teach-main">${esc(f.teachText)}</div>`}
+        ${f.fact ? `<div class="fact">💡 ${esc(f.fact)}</div>` : ""}
+        <button class="icon-btn small" id="btn-say" aria-label="read aloud">🔊 Read to me</button>
+      </div>
+      <div class="row learn-nav">
+        <button class="big ghost" id="btn-prev" ${idx === 0 ? "disabled" : ""}>◀ Back</button>
+        <button class="big green" id="btn-next-card">${idx === facts.length - 1 ? "Done! 🎉" : "Next ▶"}</button>
+      </div>
+      <button class="big violet" id="btn-quiz-topic">🎯 Quiz me on ${esc(m.name)}!</button>`;
+    decorateMap($("#screen-learn"));
+    $("#btn-back").onclick = renderLearnTopics;
+    $("#btn-say").onclick = () => forceSpeak(f.teachText + (f.fact ? ". " + f.fact : ""));
+    $("#btn-prev").onclick = () => renderLearnDeck(topicId, idx - 1);
+    $("#btn-next-card").onclick = () =>
+      idx === facts.length - 1 ? renderLearnTopics() : renderLearnDeck(topicId, idx + 1);
+    $("#btn-quiz-topic").onclick = () => startPractice(topicId);
+    speak(f.teachText);
+  }
+
   // ---------- activities ----------
-  function startPractice() {
-    act = { kind: "practice", sess: E.newSession("practice") };
+  function startPractice(topicId) {
+    act = { kind: "practice", sess: E.newSession("practice", topicId), topicFilter: topicId || null };
     nextStep();
   }
   function startPlacement() {
@@ -478,7 +558,9 @@
       const skip = $("#btn-skip");
       if (skip) skip.onclick = () => resolveAnswer("skip");
     }
-    speak(q.prompt);
+    // oral rounds are moderator-read in a real bee — always speak the question
+    if (act.kind === "oral") forceSpeak(q.speak);
+    else speak(q.prompt);
   }
 
   // Voice answers via the browser's built-in speech recognition (no AI service).
@@ -636,8 +718,8 @@
         <button class="big green" id="btn-again">Play again ▶️</button>
         <button class="big ghost" id="btn-home">Home 🏠</button>
       </div>`;
-    const kind = act.kind;
-    $("#btn-again").onclick = () => (kind === "practice" ? startPractice() : startBee(kind));
+    const kind = act.kind, tf = act.topicFilter;
+    $("#btn-again").onclick = () => (kind === "practice" ? startPractice(tf) : startBee(kind));
     $("#btn-home").onclick = renderHome;
     act = null;
   }
