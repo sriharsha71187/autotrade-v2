@@ -96,6 +96,39 @@ window.QBank = (function () {
       fact: `${c.f} is the flag of ${c.n}, in ${c.k}. Its capital is ${c.c}.`,
     });
   }
+  // Map topics (need js/maps.js — skipped gracefully if absent)
+  if (window.GEO_MAPS) {
+    const MU = window.GEO_MAPS.us.states;
+    const bySize = Object.entries(MU).sort((a, b) => b[1].area - a[1].area).map(([n]) => n);
+    const famous = new Set(["Washington", "California", "Texas", "Florida", "Alaska", "Hawaii", "New York"]);
+    for (const s of D.STATES) {
+      const m = MU[s.n];
+      if (!m) continue;
+      const tier = famous.has(s.n) ? 1 : Math.min(5, Math.floor(bySize.indexOf(s.n) / 10) + 1);
+      addFact({
+        id: "um:" + s.n, topic: "usmap", tier, src: s,
+        // tiny states can't be tapped reliably — identify-only for them
+        forms: m.area >= 900 ? ["find", "which"] : ["which"],
+        label: s.n, teachQ: "Here it is on the map:", teachA: s.n,
+        teachText: "This is " + s.n + " on the map!",
+        teachMap: { kind: "us", highlight: s.n },
+        fact: `${s.n} is in the ${s.r} region. Its capital is ${s.c}.`,
+      });
+    }
+    const MW = window.GEO_MAPS.world.countries;
+    for (const c of D.COUNTRIES) {
+      if (!MW[c.n]) continue;
+      addFact({
+        id: "wm:" + c.n, topic: "worldmap", tier: c.t, src: c,
+        forms: ["which"], label: c.n,
+        teachQ: "Here it is on the map:", teachA: c.n + " " + c.f,
+        teachText: "This is " + c.n + " on the map!",
+        teachMap: { kind: "world", highlight: c.n },
+        fact: `${c.n} is in ${c.k}. Its capital is ${c.c}.`,
+      });
+    }
+  }
+
   // Curated item topics
   for (const t of D.TOPICS) {
     if (t.kind !== "items") continue;
@@ -133,7 +166,26 @@ window.QBank = (function () {
     const s = fact.src;
     let prompt, answer, accept = [], media = null, optionMedia = null, pools = [];
 
-    if (fact.topic === "states") {
+    if (fact.topic === "usmap" && form === "find") {
+      return {
+        factId: fact.id, topic: fact.topic, tier: fact.tier, form,
+        kind: "mapclick", prompt: `Find ${s.n}! Tap it on the map.`,
+        map: { kind: "us", target: s.n }, answerText: s.n,
+        fact: fact.fact, speak: `Find ${s.n} on the map.`,
+      };
+    }
+    if (fact.topic === "usmap") {
+      prompt = "Which state is highlighted on the map?";
+      media = { type: "map", kind: "us", highlight: s.n };
+      answer = s.n; accept = [s.n];
+      pools = [stateNamesByRegion[s.r].filter((n) => n !== s.n), allStateNames];
+    } else if (fact.topic === "worldmap") {
+      prompt = "Which country is highlighted on the map?";
+      media = { type: "map", kind: "world", highlight: s.n };
+      answer = s.n; accept = countryAccept(s.n);
+      const cont = countriesByCont[s.k].filter((c) => c.n !== s.n && window.GEO_MAPS.world.countries[c.n]);
+      pools = [cont.map((c) => c.n), allCountries.map((c) => c.n)];
+    } else if (fact.topic === "states") {
       const sameRegion = stateCapsByRegion[s.r].filter((c) => c !== s.c);
       const sameRegionNames = stateNamesByRegion[s.r].filter((n) => n !== s.n);
       if (form === "cap") {

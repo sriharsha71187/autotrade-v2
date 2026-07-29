@@ -55,13 +55,62 @@ window.Engine = (function () {
     const enabled = {};
     for (const t of window.GEO_DATA.TOPICS) { topics[t.id] = { tier: 1 }; enabled[t.id] = true; }
     return {
-      v: 1, name: "", created: Date.now(), metaUpdated: Date.now(),
-      settings: { sound: true, speech: false, typed: false, topics: enabled },
+      v: 1, name: "", avatar: "🌍", created: Date.now(), metaUpdated: Date.now(),
+      settings: { sound: true, speech: false, typed: false, topics: enabled, beeDate: null, beeName: "" },
       topics, facts: {},
       xp: 0, badges: [], best: { written: null, oral: null },
       totals: { answered: 0, correct: 0, bestStreak: 0 },
       log: [], placementDone: false,
+      stickers: [], questDone: null, lastBee: null,
     };
+  }
+
+  const STICKERS = ["🦁","🐼","🦊","🐨","🦉","🐬","🦋","🐢","🦜","🐙","🦒","🦘","🐧","🦅","🐳","🦭","🐆","🦩","🦔","🐫",
+    "🗽","🗼","🏰","🌋","🗻","🏝️","🌈","⛩️","🎡","🚀","⛵","🎢","🛶","🚂","🎠","🌟","🍦","🧁","🏆","🎪"];
+  const QUEST_TARGET = 20;
+  function awardSticker(s) {
+    const left = STICKERS.filter((x) => !(s.stickers || []).includes(x));
+    if (!left.length) return null;
+    const pick = left[Math.floor(Math.random() * left.length)];
+    (s.stickers = s.stickers || []).push(pick);
+    return pick;
+  }
+  function dayStreak(s) {
+    if (!s.log || !s.log.length) return 0;
+    let streak = 0;
+    const d = new Date();
+    for (;;) {
+      const key = d.toISOString().slice(0, 10);
+      if (s.log.some((e) => e.d === key && e.a > 0)) { streak++; d.setDate(d.getDate() - 1); }
+      else break;
+    }
+    return streak;
+  }
+  function questProgress(s) {
+    const day = new Date().toISOString().slice(0, 10);
+    const e = (s.log || []).find((x) => x.d === day);
+    return { done: e ? Math.min(QUEST_TARGET, e.a) : 0, target: QUEST_TARGET, claimed: s.questDone === day };
+  }
+  // The study coach: what should today look like, given the bee date?
+  function coach(s) {
+    const dueN = dueCount(s);
+    let unseen = 0;
+    for (const t of enabledTopics(s)) {
+      for (const f of Q.byTopic[t.id] || []) {
+        const r = s.facts[f.id];
+        if (!r || r.b === 0) unseen++;
+      }
+    }
+    let days = null, perDay = null;
+    if (s.settings.beeDate) {
+      const bd = new Date(s.settings.beeDate + "T12:00:00");
+      days = Math.max(0, Math.ceil((bd - Date.now()) / 86400000));
+      // aim to see everything with ~10 days to spare for pure review
+      const learnDays = Math.max(1, days - 10);
+      perDay = Math.min(60, Math.ceil(unseen / learnDays));
+    }
+    const mockDue = !s.lastBee || Date.now() - s.lastBee > 6.5 * 86400000;
+    return { days, dueN, unseen, perDay, mockDue };
   }
 
   function rank(s) {
@@ -246,6 +295,14 @@ window.Engine = (function () {
         events.push({ type: "badge", badge: b });
       }
     }
+    // daily quest complete?
+    const qp = questProgress(s);
+    if (qp.done >= qp.target && !qp.claimed) {
+      s.questDone = day;
+      s.xp += 30;
+      const sticker = awardSticker(s);
+      events.push({ type: "quest", sticker });
+    }
     s.metaUpdated = now;
     return events;
   }
@@ -312,7 +369,10 @@ window.Engine = (function () {
             plan.cursor = (plan.cursor + k + 1) % plan.topics.length;
             const f = pool[Math.floor(Math.random() * pool.length)];
             plan.asked.add(f.id);
-            return Q.buildQuestion(f, { form: Q.nextForm(f, (s.facts[f.id] || {}).forms), typed: plan.kind === "oral" });
+            // oral rounds are spoken — use identify-the-map form, never tap-the-map
+            let form = Q.nextForm(f, (s.facts[f.id] || {}).forms);
+            if (plan.kind === "oral" && form === "find") form = "which";
+            return Q.buildQuestion(f, { form, typed: plan.kind === "oral" });
           }
         }
       }
@@ -337,6 +397,7 @@ window.Engine = (function () {
     for (const b of BADGES) {
       if (!s.badges.includes(b.id) && b.test(s)) { s.badges.push(b.id); events.push({ type: "badge", badge: b }); }
     }
+    s.lastBee = Date.now();
     s.metaUpdated = Date.now();
     return events;
   }
@@ -409,6 +470,9 @@ window.Engine = (function () {
       bestStreak: Math.max(a.totals.bestStreak, b.totals.bestStreak),
     };
     out.placementDone = a.placementDone || b.placementDone;
+    out.stickers = Array.from(new Set([...(a.stickers || []), ...(b.stickers || [])]));
+    out.lastBee = Math.max(a.lastBee || 0, b.lastBee || 0) || null;
+    out.questDone = [a.questDone, b.questDone].filter(Boolean).sort().pop() || null;
     // log: union by day, keep larger counts
     const byDay = {};
     for (const e of [...(a.log || []), ...(b.log || [])]) {
@@ -425,10 +489,11 @@ window.Engine = (function () {
   }
 
   return {
-    ROUND_LEN, RANKS, BADGES, defaultState, rank, enabledTopics,
+    ROUND_LEN, RANKS, BADGES, STICKERS, defaultState, rank, enabledTopics,
     newSession, nextQuestion, record,
     placementPlan, placementNext, placementRecord, placementFinish,
     beePlan, beeNext, beeRecord, beeFinish,
     topicSummary, dueCount, mergeState, factLabel, topicKnown,
+    awardSticker, dayStreak, questProgress, coach,
   };
 })();

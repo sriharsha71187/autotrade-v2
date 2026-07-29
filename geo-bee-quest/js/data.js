@@ -436,6 +436,8 @@ const CONCEPTS = [
 
 const TOPICS = [
   { id: "maps",       name: "Maps & Globes",        emoji: "🧭", kind: "items", items: MAPS },
+  { id: "usmap",      name: "US Map Challenge",     emoji: "🗺️", kind: "usmap" },
+  { id: "worldmap",   name: "World Map Challenge",  emoji: "🌐", kind: "worldmap" },
   { id: "continents", name: "Continents & Oceans",  emoji: "🌍", kind: "items", items: CONTINENTS },
   { id: "states",     name: "US States & Capitals", emoji: "🗽", kind: "states" },
   { id: "usphys",     name: "US Rivers & Mountains", emoji: "🏞️", kind: "items", items: US_PHYSICAL },

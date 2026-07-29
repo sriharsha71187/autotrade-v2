@@ -12,10 +12,13 @@ Question styles are modeled on the two main elementary geography bees:
 | **IAC / International Geography Bee** (elementary) | 50-MCQ qualifying exam with **+2 / −1 / 0** scoring + buzzer-style recall rounds |
 
 All questions are original, generated from a **hand-curated fact bank**
-(`js/data.js`) — ~450 facts across 11 topics: maps & globes, continents &
+(`js/data.js`) — 660+ facts across 13 topics: maps & globes, continents &
 oceans, all 50 US states & capitals, US rivers/mountains/landmarks, ~120 world
 capitals and flags, world physical geography, world landmarks, India geography,
-and geography concepts. Every fact is reviewable and editable in one file.
+geography concepts, and **real map identification** (tap-the-state and
+which-is-highlighted questions on accurate US & world maps, generated offline
+from public-domain Natural Earth / US Census data — see `tools/generate-maps.js`).
+Every fact is reviewable and editable in one file.
 
 ## How it teaches (not just quizzes)
 
@@ -35,10 +38,26 @@ and geography concepts. Every fact is reviewable and editable in one file.
   memorization.
 - **Bee simulations** — a Written Bee (25 MCQs, +2/−1/0 scoring) and an Oral
   Bee (typed recall, 3 strikes), mirroring real formats.
+- **Map challenges** — "Find Texas! Tap it on the map" (click questions,
+  size-gated so tiny states get identify-only forms) and "which
+  state/country is highlighted?", with a pulsing locator ring for small
+  countries.
+- **Voice answers** — oral-bee and spelling-mode questions accept spoken
+  answers via the browser's built-in speech recognition (Chrome/Safari;
+  falls back to typing). Read-aloud uses built-in speech synthesis. No AI
+  services involved.
+- **Countdown coach** — set the competition date in Settings and the home
+  screen becomes a study plan: days remaining, today's review count, a
+  new-facts-per-day pace that finishes the syllabus ~10 days early, and a
+  weekly "mock bee day" reminder.
 - **Parent dashboard** — per-topic coverage bars (mastered / solid / learning /
-  not-yet-covered), current weak spots, accuracy, and activity history.
-- **Fun layer** — XP, ranks, streaks, badges, confetti, sounds, and optional
-  read-aloud (browser speech, no AI service).
+  not-yet-covered), current weak spots, accuracy, activity history, and a
+  **printable review sheet** (🖨️ button) listing everything missed and not
+  yet re-mastered — a coach's drill list.
+- **Multi-kid profiles** — each explorer has their own name, avatar, progress,
+  and Supabase sync row; switch from the avatar button on the home screen.
+- **Fun layer** — XP, ranks, day-streaks, daily quests, a 40-sticker
+  collection book, badges, confetti, rank-up celebrations, sounds.
 
 ## Running it
 

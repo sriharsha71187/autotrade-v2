@@ -1,12 +1,12 @@
-/* GeoBee Quest — persistence & sync.
+/* GeoBee Quest — persistence & sync (multi-profile).
  * localStorage is the source of truth (offline-first). If Supabase is
- * configured and a parent account is signed in, state is merged with the
- * cloud copy on load and pushed (debounced) after changes, so every device
- * shares one memory of what's been learned. Minimal REST client — no SDK,
- * no external scripts.
+ * configured and a parent account is signed in, each profile's state is
+ * merged with its cloud row on load and pushed (debounced) after changes.
+ * Minimal REST client — no SDK, no external scripts.
  */
 window.Sync = (function () {
-  const LS_STATE = "gbq.state.v1";
+  const LS_META = "gbq.meta.v1";       // { profiles: [{id,name,avatar}], active }
+  const LS_STATE = "gbq.state.v1";     // legacy/default profile; others: gbq.state.v1.<id>
   const LS_SESSION = "gbq.auth.v1";
   const cfg = window.GBQ_CONFIG || {};
   let pushTimer = null;
@@ -15,19 +15,39 @@ window.Sync = (function () {
 
   function onChange(fn) { listeners.push(fn); }
   function emit() { listeners.forEach((fn) => fn(getStatus())); }
-  function getStatus() {
-    return { ...status, email: (auth() || {}).email || null };
+  function getStatus() { return { ...status, email: (auth() || {}).email || null }; }
+
+  // --- profiles meta -------------------------------------------------------
+  function meta() {
+    try {
+      const m = JSON.parse(localStorage.getItem(LS_META) || "null");
+      if (m && m.profiles && m.profiles.length) return m;
+    } catch (e) {}
+    // migrate a legacy single-profile install
+    const legacy = readState("default");
+    if (legacy) {
+      const m = { profiles: [{ id: "default", name: legacy.name || "Explorer", avatar: legacy.avatar || "🌍" }], active: "default" };
+      saveMeta(m);
+      return m;
+    }
+    return { profiles: [], active: null };
+  }
+  function saveMeta(m) {
+    try { localStorage.setItem(LS_META, JSON.stringify(m)); } catch (e) {}
+  }
+  function stateKey(profileId) {
+    return profileId === "default" ? LS_STATE : LS_STATE + "." + profileId;
   }
 
   // --- local ---------------------------------------------------------------
-  function loadLocal() {
+  function readState(profileId) {
     try {
-      const raw = localStorage.getItem(LS_STATE);
+      const raw = localStorage.getItem(stateKey(profileId));
       return raw ? JSON.parse(raw) : null;
     } catch (e) { return null; }
   }
-  function saveLocal(state) {
-    try { localStorage.setItem(LS_STATE, JSON.stringify(state)); } catch (e) {}
+  function writeState(state, profileId) {
+    try { localStorage.setItem(stateKey(profileId), JSON.stringify(state)); } catch (e) {}
   }
 
   // --- auth ----------------------------------------------------------------
@@ -82,13 +102,12 @@ window.Sync = (function () {
       storeSession(data, a.email);
       return data.access_token;
     } catch (e) {
-      // refresh token rejected → force re-login
       if (/refresh/i.test(e.message) || /invalid/i.test(e.message)) setAuth(null);
       throw e;
     }
   }
 
-  // --- cloud state ---------------------------------------------------------
+  // --- cloud ---------------------------------------------------------------
   async function rest(method, query, token, body) {
     const res = await fetch(cfg.supabaseUrl + "/rest/v1/progress" + query, {
       method,
@@ -104,34 +123,44 @@ window.Sync = (function () {
     if (method === "GET") return res.json();
     return null;
   }
-  async function fetchCloud() {
+  async function fetchCloud(profileId) {
     const token = await freshToken();
     if (!token) return null;
-    const rows = await rest("GET", "?profile=eq.default&select=state,updated_at", token);
+    const rows = await rest("GET", "?profile=eq." + encodeURIComponent(profileId) + "&select=state", token);
     return rows && rows[0] ? rows[0].state : null;
   }
-  async function pushCloud(state) {
+  async function pushCloud(state, profileId) {
     const token = await freshToken();
     if (!token) return;
     const a = auth();
     await rest("POST", "", token, [{
-      user_id: a.uid, profile: "default", state, updated_at: new Date().toISOString(),
+      user_id: a.uid, profile: profileId, state, updated_at: new Date().toISOString(),
     }]);
     status.lastSync = Date.now();
     status.error = null;
     emit();
   }
+  // All cloud profiles for this account (used to discover profiles on a new device).
+  async function fetchCloudProfiles() {
+    const token = await freshToken();
+    if (!token) return [];
+    const rows = await rest("GET", "?select=profile,state", token);
+    return (rows || []).map((r) => ({
+      id: r.profile,
+      name: (r.state && r.state.name) || r.profile,
+      avatar: (r.state && r.state.avatar) || "🌍",
+    }));
+  }
 
   // --- public API ----------------------------------------------------------
-  // Load: local state merged with cloud (if signed in). Returns state.
-  async function load() {
-    let state = loadLocal();
+  async function load(profileId) {
+    let state = readState(profileId);
     if (status.configured && auth()) {
       status.signedIn = true;
       try {
-        const cloud = await fetchCloud();
+        const cloud = await fetchCloud(profileId);
         if (cloud) state = window.Engine.mergeState(state, cloud);
-        if (state) { saveLocal(state); pushCloud(state).catch(() => {}); }
+        if (state) { writeState(state, profileId); pushCloud(state, profileId).catch(() => {}); }
         status.error = null;
       } catch (e) {
         status.error = "offline";
@@ -140,20 +169,18 @@ window.Sync = (function () {
     emit();
     return state;
   }
-
-  // Save locally now; push to cloud debounced.
-  function save(state) {
-    saveLocal(state);
+  function save(state, profileId) {
+    writeState(state, profileId);
     if (status.configured && auth()) {
       clearTimeout(pushTimer);
       pushTimer = setTimeout(() => {
-        pushCloud(state).catch(() => { status.error = "offline"; emit(); });
+        pushCloud(state, profileId).catch(() => { status.error = "offline"; emit(); });
       }, 2500);
     }
   }
-  function flush(state) {
-    saveLocal(state);
-    if (status.configured && auth()) pushCloud(state).catch(() => {});
+  function flush(state, profileId) {
+    writeState(state, profileId);
+    if (status.configured && auth()) pushCloud(state, profileId).catch(() => {});
   }
 
   // Manual backup codes (works with no account at all)
@@ -165,9 +192,16 @@ window.Sync = (function () {
   }
 
   window.addEventListener("online", () => {
-    const s = loadLocal();
-    if (s && status.configured && auth()) pushCloud(s).catch(() => {});
+    const m = meta();
+    if (m.active && status.configured && auth()) {
+      const s = readState(m.active);
+      if (s) pushCloud(s, m.active).catch(() => {});
+    }
   });
 
-  return { load, save, flush, signUp, signIn, signOut, getStatus, onChange, exportCode, importCode, loadLocal };
+  return {
+    meta, saveMeta, load, save, flush, readState,
+    signUp, signIn, signOut, getStatus, onChange,
+    fetchCloudProfiles, exportCode, importCode,
+  };
 })();
