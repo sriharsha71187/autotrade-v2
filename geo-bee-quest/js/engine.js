@@ -156,6 +156,14 @@ window.Engine = (function () {
     return s.facts[id] || (s.facts[id] = { b: 0, c: 0, w: 0, last: 0, due: 0, forms: {} });
   }
 
+  // Called when a fact card is viewed in Learn mode: mark it introduced so
+  // practice quizzes it directly instead of re-teaching it.
+  function noteSeen(s, factId) {
+    const r = rec(s, factId);
+    if (r.b === 0) { r.n = 1; r.last = Date.now(); }
+    s.metaUpdated = Date.now();
+  }
+
   // --- session -------------------------------------------------------------
   function newSession(mode, topicId) {
     return {
@@ -206,9 +214,12 @@ window.Engine = (function () {
       const f = pickNew(s, askedSet, +1, sessionTopics(s, sess));
       if (f) return makeQ(s, f, { challenge: true });
     }
-    // 4. new material at current tier → teach card first
+    // 4. new material at current tier → teach card first, unless the fact
+    //    was already studied in Learn mode (no redundant re-teaching)
     const f = pickNew(s, askedSet, 0, sessionTopics(s, sess));
     if (f) {
+      const r = s.facts[f.id];
+      if (r && r.n) return makeQ(s, f, { fresh: true });
       sess.pendingQuiz = f;
       return { teach: true, fact: f };
     }
@@ -243,9 +254,12 @@ window.Engine = (function () {
         .sort((a, b) => a.tier - b.tier);
       if (pool.length) {
         if (tierOffset === 0) pickNew._cursor = (pickNew._cursor + k + 1) % topics.length;
-        // small shuffle within the lowest tier so ordering isn't alphabetical
+        // small shuffle within the lowest tier so ordering isn't alphabetical;
+        // facts studied in Learn mode come first — quiz what was just studied
         const lowest = pool.filter((f) => f.tier === pool[0].tier);
-        return lowest[Math.floor(Math.random() * lowest.length)];
+        const noted = lowest.filter((f) => { const r = s.facts[f.id]; return r && r.n; });
+        const pickFrom = noted.length ? noted : lowest;
+        return pickFrom[Math.floor(Math.random() * pickFrom.length)];
       }
     }
     return null;
@@ -579,6 +593,6 @@ window.Engine = (function () {
     placementPlan, placementNext, placementRecord, placementFinish,
     beePlan, beeNext, beeRecord, beeFinish,
     topicSummary, dueCount, mergeState, factLabel, topicKnown, topicFacts, migrate,
-    awardSticker, dayStreak, questProgress, coach,
+    awardSticker, dayStreak, questProgress, coach, noteSeen,
   };
 })();

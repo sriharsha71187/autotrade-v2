@@ -345,9 +345,9 @@
     if (!facts.length) return renderLearnTopics();
     idx = Math.max(0, Math.min(idx, facts.length - 1));
     S.learnPos[topicId] = Math.max(S.learnPos[topicId] || 0, idx + 1);
-    S.metaUpdated = Date.now();
-    save();
     const f = facts[idx];
+    E.noteSeen(S, f.id);
+    save();
     const m = topicMeta(topicId);
     let media = "";
     if (topicId === "flags") {
