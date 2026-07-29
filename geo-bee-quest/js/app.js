@@ -18,7 +18,47 @@
       if ("#" + el.id !== id) el.innerHTML = "";
     });
     $(id).classList.add("active");
+    document.body.dataset.screen = id.slice(1);
+    renderSidebar();
     window.scrollTo(0, 0);
+  }
+
+  // ---------- desktop sidebar (TollyPlay shell pattern) ----------
+  const NAV_FOR_SCREEN = {
+    "screen-home": "home", "screen-learn": "learn",
+    "screen-progress": "progress", "screen-settings": "settings",
+  };
+  function renderSidebar() {
+    const sb = $("#sidebar");
+    if (!sb || !S) return;
+    const r = E.rank(S);
+    const active = NAV_FOR_SCREEN[document.body.dataset.screen] || "";
+    sb.innerHTML = `
+      <div class="sb-logo"><span class="title-sheen">GeoBee Quest</span>
+        <div class="sb-sub">Night Expedition</div></div>
+      <nav class="sb-nav">
+        <button data-nav="home" class="${active === "home" ? "active" : ""}">🏠 Home</button>
+        <button data-nav="learn" class="${active === "learn" ? "active" : ""}">📚 Learn</button>
+        <button data-nav="written">📝 Written Bee</button>
+        <button data-nav="oral">🎤 Oral Bee</button>
+        <button data-nav="stickers">🎒 Stickers (${(S.stickers || []).length})</button>
+        <button data-nav="progress" class="${active === "progress" ? "active" : ""}">📊 Progress</button>
+        <button data-nav="settings" class="${active === "settings" ? "active" : ""}">⚙️ Settings</button>
+      </nav>
+      <button class="sb-play big green">▶ Play Adventure</button>
+      <button class="sb-profile" title="Switch explorer">
+        <span class="sb-avatar">${esc(S.avatar || "🌍")}</span>
+        <span><b>${esc(S.name || "Explorer")}</b><br><small>${r.emoji} ${r.name}</small></span>
+      </button>`;
+    const navTo = (fn) => () => { stopBeeTimer(); stopOralTimer(); fn(); };
+    const routes = {
+      home: renderHome, learn: renderLearnTopics, written: writtenBeePicker,
+      oral: () => startBee("oral"), stickers: stickersOverlay,
+      progress: renderProgress, settings: renderSettings,
+    };
+    sb.querySelectorAll("[data-nav]").forEach((b) => (b.onclick = navTo(routes[b.dataset.nav])));
+    sb.querySelector(".sb-play").onclick = navTo(() => startPractice());
+    sb.querySelector(".sb-profile").onclick = profileOverlay;
   }
   function save() { window.Sync.save(S, PID); }
   function flush() { window.Sync.flush(S, PID); }
@@ -867,6 +907,7 @@
       </div>
       <div class="card">
         <h2>Topic coverage</h2>
+        <div class="coverage-grid">
         ${topics.map((t) => `
           <div class="topic-row">
             <div class="topic-head">
@@ -882,6 +923,7 @@
             ${t.weakest.length ? `<ul class="weak-list">${t.weakest.map((w) =>
               `<li>${esc(w.label)} <span style="opacity:.7">(${w.c}✓ ${w.w}✗)</span></li>`).join("")}</ul>` : ""}
           </div>`).join("")}
+        </div>
         <p class="note">Green = mastered (long-term memory) · light green = solid · yellow = still learning. "Weak spots" list what the app is currently re-teaching. Use 🖨️ Review sheet for a printable miss list.</p>
       </div>
       <div class="card">
