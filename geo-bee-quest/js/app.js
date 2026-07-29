@@ -179,7 +179,7 @@
     $("#screen-welcome").innerHTML = `
       <div class="card hero">
         <div class="mascot bounce">🌍</div>
-        <h1>GeoBee Quest</h1>
+        <h1 class="title-sheen">GeoBee Quest</h1>
         <p class="muted">Your geography adventure — get ready for the bee!</p>
         <div class="field" style="text-align:left;margin-top:16px">
           <label for="name-input">What's your explorer name?</label>
