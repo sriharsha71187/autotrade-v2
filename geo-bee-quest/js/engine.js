@@ -36,7 +36,7 @@ window.Engine = (function () {
     { id: "flags25", emoji: "🚩", name: "Flag Finder", desc: "Know 25 flags", test: (s) => topicKnown(s, "flags") >= 25 },
     { id: "world40", emoji: "🏙️", name: "Capital Cruiser", desc: "Know 40 world capitals", test: (s) => topicKnown(s, "capitals") >= 40 },
     { id: "india15", emoji: "🐯", name: "India Explorer", desc: "Know 15 India facts", test: (s) => topicKnown(s, "india") >= 15 },
-    { id: "written40", emoji: "📝", name: "Written-Round Ace", desc: "Score 40+ in a written bee", test: (s) => (s.best.written || 0) >= 40 },
+    { id: "written40", emoji: "📝", name: "Written-Round Ace", desc: "Ace a written mock (22+/25 NSF or 70+ IAC)", test: (s) => (s.best.nsf || 0) >= 22 || (s.best.iac || 0) >= 70 || (s.best.written || 0) >= 40 },
     { id: "oral10", emoji: "🎤", name: "Oral-Round Ace", desc: "Get 10+ in an oral bee", test: (s) => (s.best.oral || 0) >= 10 },
     { id: "summit", emoji: "🏔️", name: "Summit!", desc: "Reach tier 5 in any topic", test: (s) => Object.values(s.topics).some((t) => t.tier >= 5) },
   ];
@@ -63,7 +63,7 @@ window.Engine = (function () {
       v: 1, name: "", avatar: "🌍", created: Date.now(), metaUpdated: Date.now(),
       settings: { sound: true, speech: false, typed: false, advanced: false, topics: enabled, beeDate: null, beeName: "" },
       topics, facts: {},
-      xp: 0, badges: [], best: { written: null, oral: null },
+      xp: 0, badges: [], best: { written: null, oral: null, nsf: null, iac: null },
       totals: { answered: 0, correct: 0, bestStreak: 0 },
       log: [], placementDone: false,
       stickers: [], questDone: null, lastBee: null,
@@ -132,6 +132,9 @@ window.Engine = (function () {
     if (s.settings.advanced === undefined) s.settings.advanced = false;
     s.learnPos = s.learnPos || {};
     s.stickers = s.stickers || [];
+    s.best = s.best || {};
+    if (s.best.nsf === undefined) s.best.nsf = null;
+    if (s.best.iac === undefined) s.best.iac = null;
     return s;
   }
 
@@ -374,16 +377,40 @@ window.Engine = (function () {
   }
 
   // --- bee simulations -----------------------------------------------------
+  // Three honest formats:
+  //   nsf  — NSF Junior Phase I style: 25 MCQs, +1 per correct, NO negative
+  //          marking (always guess!), tops out around tier 4 like the real exam
+  //   iac  — IAC/IGB qualifying-exam style: 50 MCQs, +2/−1/0 with skip,
+  //          30-minute timer (enforced by the UI)
+  //   oral — spoken-round practice: typed/spoken answers, 3 strikes,
+  //          with progressive-clue "pyramid" questions mixed in (buzzer style)
+  const PYRAMID_SLOTS = [2, 6, 10, 14];
   function beePlan(kind, s) {
     const topics = enabledTopics(s).map((t) => t.id);
-    const tiers = kind === "written"
-      ? [1,1,1,2,2,2,2,2,3,3,3,3,3,3,4,4,4,4,4,4,4,5,5,5,5]
-      : [1,1,2,2,2,3,3,3,3,4,4,4,5,5,5];
-    return { kind, tiers, i: 0, score: 0, correct: 0, strikes: 0, asked: new Set(), topics, cursor: 0 };
+    let tiers;
+    if (kind === "nsf") tiers = [1,1,1,2,2,2,2,2,2,3,3,3,3,3,3,3,3,4,4,4,4,4,4,5,5];
+    else if (kind === "iac") tiers = [1,1,1,1,1,1,2,2,2,2,2,2,2,2,2,2,3,3,3,3,3,3,3,3,3,3,3,3,3,3,4,4,4,4,4,4,4,4,4,4,4,4,5,5,5,5,5,5,5,5];
+    else tiers = [1,1,2,2,2,3,3,3,3,4,4,4,5,5,5];
+    return {
+      kind, tiers, i: 0, score: 0, correct: 0, strikes: 0,
+      asked: new Set(), topics, cursor: 0,
+      pyUsed: new Set(), clueBonus: 0,
+      timeLimit: kind === "iac" ? 30 * 60 : null,
+    };
   }
   function beeNext(s, plan) {
     if (plan.i >= plan.tiers.length) return null;
     if (plan.kind === "oral" && plan.strikes >= 3) return null;
+    // oral: mystery pyramid questions at fixed slots
+    if (plan.kind === "oral" && PYRAMID_SLOTS.includes(plan.i)) {
+      const pool = window.GEO_DATA.PYRAMIDS.map((p, i) => i).filter((i) => !plan.pyUsed.has(i));
+      if (pool.length) {
+        const idx = pool[Math.floor(Math.random() * pool.length)];
+        plan.pyUsed.add(idx);
+        return Q.buildPyramid(window.GEO_DATA.PYRAMIDS[idx], idx);
+      }
+    }
+    const written = plan.kind === "nsf" || plan.kind === "iac";
     const tier = plan.tiers[plan.i];
     for (let dt = 0; dt <= 4; dt++) {
       for (const off of [0, -dt, dt]) {
@@ -392,14 +419,15 @@ window.Engine = (function () {
         for (let k = 0; k < plan.topics.length; k++) {
           const tid = plan.topics[(plan.cursor + k) % plan.topics.length];
           let pool = topicFacts(s, tid).filter((f) => f.tier === want && !plan.asked.has(f.id));
-          if (plan.kind === "oral") pool = pool.filter((f) => f.topic !== "flags");
+          // flag ID isn't a written-exam category in either bee, nor spoken-round material
+          if (written || plan.kind === "oral") pool = pool.filter((f) => f.topic !== "flags");
           if (pool.length) {
             plan.cursor = (plan.cursor + k + 1) % plan.topics.length;
             const f = pool[Math.floor(Math.random() * pool.length)];
             plan.asked.add(f.id);
-            // oral rounds are spoken — use identify-the-map form, never tap-the-map
+            // tap-the-map isn't an exam form; highlighted-map ID is fine
             let form = Q.nextForm(f, (s.facts[f.id] || {}).forms);
-            if (plan.kind === "oral" && form === "find") form = "which";
+            if (form === "find") form = "which";
             return Q.buildQuestion(f, { form, typed: plan.kind === "oral" });
           }
         }
@@ -408,20 +436,24 @@ window.Engine = (function () {
     return null;
   }
   function beeRecord(s, plan, q, result) {
-    // result: 'correct' | 'wrong' | 'skip'
+    // result: 'correct' | 'wrong' | 'skip' (skip only exists in iac)
     plan.i++;
-    if (result === "correct") { plan.correct++; plan.score += 2; }
-    else if (result === "wrong") { plan.score -= 1; plan.strikes++; }
-    if (result !== "skip") record(s, null, q, result === "correct");
+    if (result === "correct") {
+      plan.correct++;
+      plan.score += plan.kind === "iac" ? 2 : 1;
+    } else if (result === "wrong") {
+      if (plan.kind === "iac") plan.score -= 1;
+      plan.strikes++;
+    }
+    // pyramid questions aren't facts in the learner model
+    if (result !== "skip" && q.kind !== "clues") record(s, null, q, result === "correct");
     return plan;
   }
   function beeFinish(s, plan) {
     const events = [];
-    if (plan.kind === "written") {
-      if (s.best.written == null || plan.score > s.best.written) { s.best.written = plan.score; events.push({ type: "best" }); }
-    } else {
-      if (s.best.oral == null || plan.correct > s.best.oral) { s.best.oral = plan.correct; events.push({ type: "best" }); }
-    }
+    const key = plan.kind === "oral" ? "oral" : plan.kind;
+    const val = plan.kind === "oral" ? plan.correct : plan.score;
+    if (s.best[key] == null || val > s.best[key]) { s.best[key] = val; events.push({ type: "best" }); }
     for (const b of BADGES) {
       if (!s.badges.includes(b.id) && b.test(s)) { s.badges.push(b.id); events.push({ type: "badge", badge: b }); }
     }
@@ -491,6 +523,8 @@ window.Engine = (function () {
     out.best = {
       written: maxOrNull(a.best && a.best.written, b.best && b.best.written),
       oral: maxOrNull(a.best && a.best.oral, b.best && b.best.oral),
+      nsf: maxOrNull(a.best && a.best.nsf, b.best && b.best.nsf),
+      iac: maxOrNull(a.best && a.best.iac, b.best && b.best.iac),
     };
     out.totals = {
       answered: Math.max(a.totals.answered, b.totals.answered),

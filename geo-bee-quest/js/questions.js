@@ -91,10 +91,10 @@ window.QBank = (function () {
       fact: c.x || `${c.c} is the capital of ${art(c.n)}, a country in ${c.k}.`,
     });
   }
-  // Flags
+  // Flags (ft overrides tier: flag recognizability ≠ country fame)
   for (const c of D.COUNTRIES) {
     addFact({
-      id: "fl:" + c.n, topic: "flags", tier: c.t, src: c,
+      id: "fl:" + c.n, topic: "flags", tier: c.ft || c.t, src: c,
       forms: ["flag", "flagrev"], label: c.n,
       teachText: `This is the flag of ${art(c.n)} ${c.f}`,
       fact: `${c.f} is the flag of ${art(c.n)}, in ${c.k}. Its capital is ${c.c}.`,
@@ -251,7 +251,8 @@ window.QBank = (function () {
       prompt = it.q;
       answer = it.a;
       pools = [it.d];
-      accept = [it.a].concat(it.alt || []);
+      // odd-item-out only makes sense with visible options — never typed
+      accept = it.odd ? [] : [it.a].concat(it.alt || []);
     }
 
     const q = {
@@ -266,7 +267,9 @@ window.QBank = (function () {
       q.accept = accept.map(normalize);
     } else {
       q.kind = "mcq";
-      const distractors = pickDistinct(pools, 3, [answer]);
+      // vs = two-option comparative; odd = three-option odd-item-out
+      const nOpts = fact.item && fact.item.vs ? 1 : fact.item && fact.item.odd ? 2 : 3;
+      const distractors = pickDistinct(pools, nOpts, [answer]);
       const options = shuffle(
         [answer].concat(distractors).map((label) => {
           const o = { label };
@@ -295,6 +298,19 @@ window.QBank = (function () {
     return [name].concat(extra[name] || []);
   }
 
+  // Progressive-clue pyramid question (IAC buzzer-round style).
+  function buildPyramid(p, idx) {
+    return {
+      factId: null, topic: "pyramid", tier: p.t, form: "clues",
+      kind: "clues", clues: p.clues,
+      prompt: "Mystery place! Answer as early as you dare…",
+      speak: p.clues[0],
+      answerText: p.a,
+      accept: [p.a].concat(p.alt || []).map(normalize),
+      fact: null, pyIdx: idx,
+    };
+  }
+
   // Pick the least-practiced form for variety, preferring recall directions
   // the learner hasn't seen lately.
   function nextForm(fact, seenForms) {
@@ -306,5 +322,5 @@ window.QBank = (function () {
     return best;
   }
 
-  return { facts, byId, byTopic, buildQuestion, nextForm, normalize, flagCode };
+  return { facts, byId, byTopic, buildQuestion, buildPyramid, nextForm, normalize, flagCode };
 })();

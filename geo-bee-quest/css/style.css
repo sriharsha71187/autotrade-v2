@@ -383,3 +383,8 @@ textarea { background: var(--surface-low); color: var(--on-surface); border: 1px
 .learn-tile .lt-count { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--gold); }
 .learn-nav { margin-top: 4px; }
 .learn-nav .big { margin: 4px 0; }
+
+/* ---- pyramid clue questions ---- */
+.clue-list { margin: 0 0 4px 20px; }
+.clue-list .clue { margin: 8px 0; font-size: 1.02rem; line-height: 1.45; animation: pop-in 0.25s ease; }
+.clue-list .clue.hidden-clue { display: none; }

@@ -284,7 +284,7 @@
       </div>`;
     $("#btn-play").onclick = () => startPractice();
     $("#btn-learn").onclick = renderLearnTopics;
-    $("#btn-bee-written").onclick = () => startBee("written");
+    $("#btn-bee-written").onclick = writtenBeePicker;
     $("#btn-bee-oral").onclick = () => startBee("oral");
     $("#btn-progress").onclick = renderProgress;
     $("#btn-settings").onclick = renderSettings;
@@ -386,6 +386,42 @@
     speak(f.teachText);
   }
 
+  function writtenBeePicker() {
+    const el = document.createElement("div");
+    el.className = "celebrate-overlay";
+    el.innerHTML = `<div class="celebrate-box">
+      <h2>📝 Pick your mock exam</h2>
+      <div class="profile-list">
+        <button class="green profile-btn" data-kind="nsf">🏫 NSF Mock — 25 questions<br><span class="note" style="color:inherit">+1 per correct, no penalty. Always guess!</span></button>
+        <button class="violet profile-btn" data-kind="iac">🌎 IAC Mock — 50 questions<br><span class="note" style="color:inherit">+2 / −1 / 0 skip · 30-minute timer</span></button>
+      </div>
+      <p class="muted" style="margin-top:10px">tap outside to cancel</p></div>`;
+    el.onclick = (e) => {
+      const b = e.target.closest(".profile-btn");
+      el.remove();
+      if (b) startBee(b.dataset.kind);
+    };
+    document.body.appendChild(el);
+  }
+
+  // ---------- bee timer (IAC mock) ----------
+  let beeTimerId = null;
+  function stopBeeTimer() { if (beeTimerId) { clearInterval(beeTimerId); beeTimerId = null; } }
+  function startBeeTimer() {
+    stopBeeTimer();
+    beeTimerId = setInterval(() => {
+      if (!act || !act.deadline) return stopBeeTimer();
+      const left = Math.max(0, act.deadline - Date.now());
+      const el = $("#bee-timer");
+      if (el) {
+        const m = Math.floor(left / 60000), s2 = Math.floor((left % 60000) / 1000);
+        el.textContent = `⏱ ${m}:${String(s2).padStart(2, "0")}`;
+        if (left < 5 * 60000) el.style.color = "var(--urgent-soft)";
+      }
+      if (left <= 0) { stopBeeTimer(); if (act && act.kind === "iac") renderSummary(); }
+    }, 1000);
+  }
+
   // ---------- activities ----------
   function startPractice(topicId) {
     act = { kind: "practice", sess: E.newSession("practice", topicId), topicFilter: topicId || null };
@@ -397,6 +433,10 @@
   }
   function startBee(kind) {
     act = { kind, plan: E.beePlan(kind, S) };
+    if (act.plan.timeLimit) {
+      act.deadline = Date.now() + act.plan.timeLimit * 1000;
+      startBeeTimer();
+    }
     nextStep();
   }
 
@@ -471,9 +511,12 @@
       progress = `${act.plan.i + 1}/${act.plan.n}`;
     } else {
       progress = `${act.plan.i + 1}/${act.plan.tiers.length}`;
-      extra = act.kind === "written"
-        ? `<span class="stat">🏅 ${act.plan.score}</span>`
-        : `<span class="stat">${"❤️".repeat(Math.max(0, 3 - act.plan.strikes)) || "💔"}</span>`;
+      if (act.kind === "oral") {
+        extra = `<span class="stat">${"❤️".repeat(Math.max(0, 3 - act.plan.strikes)) || "💔"}</span>`;
+      } else {
+        extra = `<span class="stat">🏅 ${act.plan.score}</span>` +
+          (act.kind === "iac" ? `<span class="stat" id="bee-timer">⏱ --:--</span>` : "");
+      }
     }
     return `<div class="quiz-top">
       <button class="icon-btn" id="btn-quit" aria-label="quit">✖</button>
@@ -493,7 +536,21 @@
     }
     const media = q.media ? `<div class="qmedia">${mediaHTML(q.media, true)}</div>` : "";
     let body;
-    if (q.kind === "mapclick") {
+    if (q.kind === "clues") {
+      act.cluesShown = 1;
+      const hasMic = !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+      body = `
+        <ol class="clue-list" id="clue-list">
+          ${q.clues.map((c, i) => `<li class="clue ${i === 0 ? "" : "hidden-clue"}" data-i="${i}">${esc(c)}</li>`).join("")}
+        </ol>
+        <button class="ghost small" id="btn-more-clue">🔍 Next clue (worth less!)</button>
+        <div class="typed-row" style="margin-top:10px">
+          <input id="typed-input" type="text" autocomplete="off" autocapitalize="off" placeholder="${hasMic ? "Say or type your answer" : "Type your answer"}" />
+          ${hasMic ? `<button class="amber" id="btn-mic" aria-label="answer by voice">🎙️</button>` : ""}
+          <button class="green" id="btn-typed-go">Go</button>
+        </div>
+        <button class="ghost small" id="btn-dontknow" style="margin-top:10px">I don't know 🤷</button>`;
+    } else if (q.kind === "mapclick") {
       body = `<div class="qmedia">${mapHTML({ ...q.map, clickable: true })}</div>`;
     } else if (q.kind === "typed") {
       const hasMic = !!(window.SpeechRecognition || window.webkitSpeechRecognition);
@@ -503,6 +560,7 @@
           ${hasMic ? `<button class="amber" id="btn-mic" aria-label="answer by voice">🎙️</button>` : ""}
           <button class="green" id="btn-typed-go">Go</button>
         </div>
+        ${act.kind === "oral" ? `<div class="note" id="oral-timer" style="font-weight:800">⏳ 30s — just like the real bee!</div>` : ""}
         <button class="ghost small" id="btn-dontknow" style="margin-top:10px">I don't know 🤷</button>`;
     } else {
       const flagOpts = q.options.some((o) => o.media);
@@ -512,7 +570,8 @@
             ${o.media ? mediaHTML(o.media, false) : esc(o.label)}
           </button>`).join("")}
       </div>
-      ${act.kind === "written" ? `<button class="ghost small" id="btn-skip" style="margin-top:10px">Skip (0 points) ⏭️</button>` : ""}`;
+      ${act.kind === "iac" ? `<button class="ghost small" id="btn-skip" style="margin-top:10px">Skip (0 points) ⏭️</button>` : ""}
+      ${act.kind === "nsf" ? `<p class="note">No penalty for wrong answers — always pick something!</p>` : ""}`;
     }
     show("#screen-quiz");
     $("#screen-quiz").innerHTML = `
@@ -529,7 +588,24 @@
     decorateMap($("#screen-quiz"));
     $("#btn-quit").onclick = quitActivity;
     $("#btn-say").onclick = () => forceSpeak(q.speak);
-    if (q.kind === "mapclick") {
+    if (q.kind === "clues") {
+      const input = $("#typed-input");
+      input.focus();
+      $("#btn-typed-go").onclick = () => submitTyped(input.value);
+      input.onkeydown = (e) => { if (e.key === "Enter") submitTyped(input.value); };
+      $("#btn-dontknow").onclick = () => submitTyped(null);
+      const mic = $("#btn-mic");
+      if (mic) mic.onclick = () => listen(input, mic);
+      $("#btn-more-clue").onclick = () => {
+        if (act.answered || act.cluesShown >= q.clues.length) return;
+        const next = document.querySelector(`.clue[data-i="${act.cluesShown}"]`);
+        if (next) next.classList.remove("hidden-clue");
+        act.cluesShown++;
+        forceSpeak(q.clues[act.cluesShown - 1]);
+        if (act.cluesShown >= q.clues.length) $("#btn-more-clue").disabled = true;
+      };
+      forceSpeak(q.clues[0]);
+    } else if (q.kind === "mapclick") {
       const svg = $(".map-svg");
       svg.addEventListener("click", (e) => {
         if (act.answered) return;
@@ -559,9 +635,24 @@
       if (skip) skip.onclick = () => resolveAnswer("skip");
     }
     // oral rounds are moderator-read in a real bee — always speak the question
-    if (act.kind === "oral") forceSpeak(q.speak);
-    else speak(q.prompt);
+    if (q.kind !== "clues") {
+      if (act.kind === "oral") forceSpeak(q.speak);
+      else speak(q.prompt);
+    }
+    // NSF oral rule: 30 seconds to answer
+    stopOralTimer();
+    if (act.kind === "oral" && q.kind === "typed") {
+      let left = 30;
+      oralTimerId = setInterval(() => {
+        left--;
+        const el = $("#oral-timer");
+        if (el) el.textContent = `⏳ ${left}s`;
+        if (left <= 0) { stopOralTimer(); if (!act.answered) submitTyped(null); }
+      }, 1000);
+    }
   }
+  let oralTimerId = null;
+  function stopOralTimer() { if (oralTimerId) { clearInterval(oralTimerId); oralTimerId = null; } }
 
   // Voice answers via the browser's built-in speech recognition (no AI service).
   function listen(input, mic) {
@@ -615,6 +706,7 @@
 
   function resolveAnswer(result) {
     act.answered = true;
+    stopOralTimer();
     const q = act.q;
     const rankBefore = E.rank(S).name;
     let events = [], xpGain = 0;
@@ -626,6 +718,12 @@
       E.placementRecord(S, act.plan, q, result === "correct");
     } else {
       E.beeRecord(S, act.plan, q, result);
+      // pyramid bonus: answering on earlier clues is worth more
+      if (q.kind === "clues" && result === "correct") {
+        const bonus = (5 - Math.min(4, act.cluesShown || 4)) * 5;
+        act.plan.clueBonus = (act.plan.clueBonus || 0) + bonus;
+        xpGain = bonus;
+      }
     }
     save();
     if (result === "correct") sndGood(); else if (result === "wrong") sndBad();
@@ -661,6 +759,8 @@
   }
 
   function quitActivity() {
+    stopBeeTimer();
+    stopOralTimer();
     if (act && act.kind === "practice" && act.sess.i > 0) return renderSummary();
     renderHome();
   }
@@ -684,30 +784,45 @@
         <div class="stars">${"⭐".repeat(stars)}${"▫️".repeat(3 - stars)}</div>
         <p class="summary-line">${s.correct} / ${s.i} correct &nbsp;·&nbsp; +${s.xp} XP</p>
         ${stickerLine}`;
-    } else if (act.kind === "written") {
+    } else if (act.kind === "nsf") {
+      stopBeeTimer();
+      const p = act.plan;
+      const bonus = p.score * 2;
+      S.xp += bonus;
+      const events = E.beeFinish(S, p); save();
+      if (p.score >= 22) { confetti(30); sndLevel(); }
+      html = `
+        <div class="mascot">🏫</div>
+        <h1>NSF Mock done!</h1>
+        <p class="summary-line">Score: ${p.score} / 25</p>
+        <p class="muted">Real NSF Phase I scoring: +1 per correct, no penalty for wrong answers — never leave a blank!</p>
+        <p class="summary-line">🏅 Best: ${S.best.nsf} &nbsp;·&nbsp; +${bonus} XP</p>
+        ${events.some((e) => e.type === "badge") ? `<span class="event-chip">🎖️ New badge earned!</span>` : ""}`;
+    } else if (act.kind === "iac") {
+      stopBeeTimer();
       const p = act.plan;
       const bonus = Math.max(0, p.score);
       S.xp += bonus;
       const events = E.beeFinish(S, p); save();
-      if (p.score >= 40) { confetti(30); sndLevel(); }
+      if (p.score >= 70) { confetti(30); sndLevel(); }
       html = `
-        <div class="mascot">📝</div>
-        <h1>Written Bee done!</h1>
-        <p class="summary-line">Score: ${p.score} / 50</p>
-        <p class="muted">Bee scoring: +2 correct, −1 wrong, 0 skipped — just like the real qualifying exam.</p>
-        <p class="summary-line">🏅 Best: ${S.best.written} &nbsp;·&nbsp; +${bonus} XP</p>
+        <div class="mascot">🌎</div>
+        <h1>IAC Mock done!</h1>
+        <p class="summary-line">Score: ${p.score} / 100</p>
+        <p class="muted">Real IAC qualifying-exam scoring: +2 correct, −1 wrong, 0 skipped, 30-minute limit. Skip only when you truly don't know!</p>
+        <p class="summary-line">🏅 Best: ${S.best.iac} &nbsp;·&nbsp; +${bonus} XP</p>
         ${events.some((e) => e.type === "badge") ? `<span class="event-chip">🎖️ New badge earned!</span>` : ""}`;
     } else if (act.kind === "oral") {
       const p = act.plan;
-      const bonus = p.correct * 8;
+      const bonus = p.correct * 8 + (p.clueBonus || 0);
       S.xp += bonus;
       const events = E.beeFinish(S, p); save();
       if (p.correct >= 12) { confetti(30); sndLevel(); }
       html = `
         <div class="mascot">🎤</div>
         <h1>${p.strikes >= 3 ? "Three strikes — good try!" : "Oral Bee done!"}</h1>
-        <p class="summary-line">${p.correct} correct answers</p>
-        <p class="muted">Oral rounds are spoken in a real bee — say or type the answer, no choices to lean on.</p>
+        <p class="summary-line">${p.correct} correct answers${p.clueBonus ? ` &nbsp;·&nbsp; 🕵️ +${p.clueBonus} mystery bonus` : ""}</p>
+        <p class="muted">Spoken answers with a 30-second clock, plus mystery-clue questions — answer early for bigger bonuses, just like the buzzer rounds.</p>
         <p class="summary-line">🏅 Best: ${S.best.oral} &nbsp;·&nbsp; +${bonus} XP</p>
         ${events.some((e) => e.type === "badge") ? `<span class="event-chip">🎖️ New badge earned!</span>` : ""}`;
     }
@@ -747,7 +862,7 @@
       <div class="card">
         <h2>${esc(S.name || "Explorer")} — ${r.emoji} ${r.name}</h2>
         <div class="counts">${S.xp} XP · ${S.totals.answered} questions answered · ${acc}% correct overall · best streak ${S.totals.bestStreak}</div>
-        <div class="counts">Bee bests: written ${S.best.written == null ? "—" : S.best.written + "/50"} · oral ${S.best.oral == null ? "—" : S.best.oral}</div>
+        <div class="counts">Bee bests: NSF ${S.best.nsf == null ? "—" : S.best.nsf + "/25"} · IAC ${S.best.iac == null ? "—" : S.best.iac + "/100"} · oral ${S.best.oral == null ? "—" : S.best.oral}</div>
         <div style="margin-top:6px">${syncLine}</div>
       </div>
       <div class="card">

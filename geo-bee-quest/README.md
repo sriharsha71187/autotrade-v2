@@ -36,8 +36,16 @@ Every fact is reviewable and editable in one file.
 - **Varied forms** — the same fact appears as capital→state, state→capital,
   flag→country, nickname→state, and typed-recall, so there's no pattern
   memorization.
-- **Bee simulations** — a Written Bee (25 MCQs, +2/−1/0 scoring) and an Oral
-  Bee (typed recall, 3 strikes), mirroring real formats.
+- **Bee simulations, format-faithful** — an NSF Mock (25 MCQs, +1 per
+  correct, no negative marking — guessing encouraged, like the real
+  Phase I), an IAC Mock (50 MCQs, +2/−1/0 with skip and a 30-minute
+  timer, like the real qualifying exam), and an Oral Bee (spoken/typed
+  answers on a 30-second clock with progressive-clue "mystery place"
+  questions, like the real buzzer rounds).
+- **Real bee question styles** — relational stems ("Which state lies
+  directly south of Washington?", city-cluster questions), NatGeo-style
+  two-option comparatives ("Which is farther north — X or Y?"), and
+  odd-item-out questions, alongside recall and map identification.
 - **Map challenges** — "Find Texas! Tap it on the map" (click questions,
   size-gated so tiny states get identify-only forms) and "which
   state/country is highlighted?", with a pulsing locator ring for small
