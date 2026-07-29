@@ -165,9 +165,12 @@ window.Engine = (function () {
   }
 
   // --- session -------------------------------------------------------------
-  function newSession(mode, topicId) {
+  function newSession(mode, topicId, o) {
     return {
       mode: mode || "practice", topic: topicId || null,
+      // noTeach: the learner just browsed these facts in Learn mode —
+      // quiz directly instead of re-showing each fact as a teach card
+      noTeach: !!(o && o.noTeach),
       asked: [], misses: [], reasks: 0, reviews: 0,
       i: 0, correct: 0, streak: 0, xp: 0, events: [], topicCursor: 0,
       pendingQuiz: null, // fact just taught, quiz it next
@@ -219,7 +222,7 @@ window.Engine = (function () {
     const f = pickNew(s, askedSet, 0, sessionTopics(s, sess));
     if (f) {
       const r = s.facts[f.id];
-      if (r && r.n) return makeQ(s, f, { fresh: true });
+      if (sess.noTeach || (r && r.n)) return makeQ(s, f, { fresh: true });
       sess.pendingQuiz = f;
       return { teach: true, fact: f };
     }

@@ -401,6 +401,7 @@
         <button class="icon-btn" id="btn-back">← Topics</button>
         <span class="stat">${m.emoji} ${idx + 1} / ${facts.length}</span>
         <span class="stat">${tierStars(f.tier).slice(0, 5)}</span>
+        <button class="icon-btn" id="btn-quiz-topic" title="Quiz this whole topic">🎯 Quiz</button>
       </div>
       <div class="card teach">
         <span class="topic-chip">${m.emoji} ${esc(m.name)}</span>
@@ -414,16 +415,32 @@
       <div class="row learn-nav">
         <button class="big ghost" id="btn-prev" ${idx === 0 ? "disabled" : ""}>◀ Back</button>
         <button class="big green" id="btn-next-card">${idx === facts.length - 1 ? "Done! 🎉" : "Next ▶"}</button>
-      </div>
-      <button class="big violet" id="btn-quiz-topic">🎯 Quiz me on ${esc(m.name)}!</button>`;
+      </div>`;
     decorateMap($("#screen-learn"));
     $("#btn-back").onclick = renderLearnTopics;
     $("#btn-say").onclick = () => forceSpeak(f.teachText + (f.fact ? ". " + f.fact : ""));
     $("#btn-prev").onclick = () => renderLearnDeck(topicId, idx - 1);
     $("#btn-next-card").onclick = () =>
-      idx === facts.length - 1 ? renderLearnTopics() : renderLearnDeck(topicId, idx + 1);
-    $("#btn-quiz-topic").onclick = () => startPractice(topicId);
+      idx === facts.length - 1 ? renderLearnDone(topicId, facts.length) : renderLearnDeck(topicId, idx + 1);
+    $("#btn-quiz-topic").onclick = () => startPractice(topicId, true);
     speak(f.teachText);
+  }
+  // End of a deck: celebrate, then offer the topic-level quiz.
+  function renderLearnDone(topicId, count) {
+    const m = topicMeta(topicId);
+    confetti(20);
+    show("#screen-learn");
+    $("#screen-learn").innerHTML = `
+      <div class="card hero">
+        <div class="mascot">🎓</div>
+        <h1>Topic explored!</h1>
+        <p class="summary-line">${m.emoji} You flipped through all ${count} cards of ${esc(m.name)}.</p>
+        <p class="muted">Ready to prove it? The quiz mixes the whole topic — no card order to lean on.</p>
+        <button class="big green" id="btn-quiz-done">🎯 Quiz me on ${esc(m.name)}!</button>
+        <button class="big ghost" id="btn-back-topics">📚 Back to topics</button>
+      </div>`;
+    $("#btn-quiz-done").onclick = () => startPractice(topicId, true);
+    $("#btn-back-topics").onclick = renderLearnTopics;
   }
 
   function writtenBeePicker() {
@@ -463,8 +480,12 @@
   }
 
   // ---------- activities ----------
-  function startPractice(topicId) {
-    act = { kind: "practice", sess: E.newSession("practice", topicId), topicFilter: topicId || null };
+  function startPractice(topicId, noTeach) {
+    act = {
+      kind: "practice",
+      sess: E.newSession("practice", topicId, { noTeach }),
+      topicFilter: topicId || null, noTeach: !!noTeach,
+    };
     nextStep();
   }
   function startPlacement() {
@@ -873,8 +894,8 @@
         <button class="big green" id="btn-again">Play again ▶️</button>
         <button class="big ghost" id="btn-home">Home 🏠</button>
       </div>`;
-    const kind = act.kind, tf = act.topicFilter;
-    $("#btn-again").onclick = () => (kind === "practice" ? startPractice(tf) : startBee(kind));
+    const kind = act.kind, tf = act.topicFilter, nt = act.noTeach;
+    $("#btn-again").onclick = () => (kind === "practice" ? startPractice(tf, nt) : startBee(kind));
     $("#btn-home").onclick = renderHome;
     act = null;
   }
