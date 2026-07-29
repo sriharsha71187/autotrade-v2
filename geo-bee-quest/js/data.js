@@ -286,6 +286,8 @@ const US_PHYSICAL = [
   { q: "Which mountain has the faces of four presidents carved into it?", a: "Mount Rushmore", d: ["Mount Rainier", "Pikes Peak", "Stone Mountain"], t: 1, alt: ["rushmore", "mount rushmore"], x: "Washington, Jefferson, Theodore Roosevelt, and Lincoln — each face is 60 feet tall." },
   { q: "In which state is Mount Rushmore?", a: "South Dakota", d: ["North Dakota", "Wyoming", "Colorado"], t: 2 },
   { q: "Which US state has an active volcano called Kilauea?", a: "Hawaii", d: ["Alaska", "Washington", "California"], t: 3, x: "Kilauea is one of the most active volcanoes on Earth." },
+  { q: "Lake Pontchartrain lies just north of New Orleans in which state famous for its cargo ports?", a: "Louisiana", d: ["Texas", "Mississippi", "Georgia"], t: 3, x: "The Lake Pontchartrain Causeway is one of the longest bridges over water in the world — nearly 24 miles." },
+  { q: "The Chesapeake Bay, the largest estuary in the United States, is shared by Virginia and which other state?", a: "Maryland", d: ["Delaware", "New Jersey", "North Carolina"], t: 4, x: "An estuary is where a river's fresh water mixes with the salty sea." },
 ];
 
 const US_LANDMARKS = [
@@ -343,6 +345,12 @@ const WORLD_PHYSICAL = [
   { q: "The 'Ring of Fire,' where most volcanoes and earthquakes happen, circles which ocean?", a: "The Pacific Ocean", d: ["The Atlantic Ocean", "The Indian Ocean", "The Arctic Ocean"], t: 3, alt: ["pacific", "pacific ocean"], x: "About 3 out of 4 of Earth's volcanoes sit on the Ring of Fire." },
   { q: "What giant red rock rises from the middle of Australia?", a: "Uluru", d: ["Table Mountain", "El Capitan", "The Devils Tower"], t: 4, alt: ["uluru", "ayers rock"], x: "Uluru is taller than the Eiffel Tower and sacred to Aboriginal Australians." },
   { q: "Which African river is the deepest in the world?", a: "The Congo River", d: ["The Nile", "The Zambezi", "The Niger"], t: 5, alt: ["congo", "congo river"], x: "The Congo plunges more than 700 feet deep in places." },
+  { q: "The East Siberian Sea, off Russia's icy northern coast, is part of which ocean?", a: "The Arctic Ocean", d: ["The Pacific Ocean", "The Atlantic Ocean", "The Indian Ocean"], t: 2, alt: ["arctic", "arctic ocean"], x: "Seas along the edge of an ocean, like the East Siberian Sea, are called marginal seas." },
+  { q: "The Caribbean Sea is part of which ocean?", a: "The Atlantic Ocean", d: ["The Pacific Ocean", "The Indian Ocean", "The Southern Ocean"], t: 3, alt: ["atlantic", "atlantic ocean"] },
+  { q: "Which European capital city, once the center of the ancient Roman Empire, sits on the Tiber River?", a: "Rome", d: ["Athens", "Madrid", "Vienna"], t: 4, alt: ["rome"], x: "Legend says Rome was founded on the Tiber's banks by the twins Romulus and Remus." },
+  { q: "Lake Geneva lies on the border between France and which mountainous country?", a: "Switzerland", d: ["Austria", "Italy", "Germany"], t: 3, x: "The city of Geneva sits at the lake's western tip and hosts many international organizations." },
+  { q: "Luzon, the large island where the capital Manila is located, belongs to which country?", a: "The Philippines", d: ["Indonesia", "Japan", "Malaysia"], t: 3, alt: ["philippines", "the philippines"], x: "Luzon is the biggest and most crowded of the Philippines' 7,000-plus islands." },
+  { q: "The high Altiplano plateau of the Andes is shared by Peru and which landlocked country with two capitals?", a: "Bolivia", d: ["Chile", "Paraguay", "Ecuador"], t: 4, x: "Altiplano is Spanish for 'high plain' — it sits over 12,000 feet up." },
   // --- advanced (senior-bee level) ---
   { q: "Which strait separates Alaska from Russia?", a: "The Bering Strait", d: ["The Strait of Gibraltar", "The Strait of Hormuz", "The English Channel"], t: 4, adv: 1, alt: ["bering strait", "bering"], x: "At its narrowest, Russia and Alaska are only 55 miles apart." },
   { q: "Which strait separates Spain from Morocco?", a: "The Strait of Gibraltar", d: ["The Bering Strait", "The Bosporus", "The Strait of Malacca"], t: 4, adv: 1, alt: ["strait of gibraltar", "gibraltar"], x: "It's the gateway between the Atlantic Ocean and the Mediterranean Sea." },
@@ -420,6 +428,12 @@ const INDIA = [
   { q: "Which island country lies just off India's southern tip?", a: "Sri Lanka", d: ["Maldives", "Madagascar", "Indonesia"], t: 3, alt: ["sri lanka"], x: "Sri Lanka is shaped like a teardrop falling from India." },
   { q: "Kolkata sits on which river, a branch of the Ganga?", a: "The Hooghly", d: ["The Yamuna", "The Brahmaputra", "The Godavari"], t: 5, alt: ["hooghly", "hooghly river", "hugli"] },
   { q: "Which Indian city is famous for its Pink Palaces and is called the Pink City?", a: "Jaipur", d: ["Jodhpur", "Udaipur", "Agra"], t: 4, alt: ["jaipur"], x: "Jaipur's old city was painted pink in 1876 to welcome a royal visit." },
+  { q: "Mumbai, home of the Gateway of India, is the capital of which large Indian state?", a: "Maharashtra", d: ["Gujarat", "Tamil Nadu", "Punjab"], t: 4, alt: ["maharashtra"], x: "Maharashtra means 'great state' — and it has India's biggest city." },
+  { q: "The Rann of Kutch salt marsh and the city of Surat are in which Indian state on the Arabian Sea?", a: "Gujarat", d: ["Rajasthan", "Maharashtra", "Kerala"], t: 5, alt: ["gujarat"], x: "The white salt desert of the Rann of Kutch glows under the full moon." },
+  { q: "Kolkata is the capital of which Indian state, near the delta of the Ganga?", a: "West Bengal", d: ["Bihar", "Odisha", "Assam"], t: 4, alt: ["west bengal", "bengal"] },
+  { q: "Chennai, a big port city on the Bay of Bengal, is the capital of which southern Indian state?", a: "Tamil Nadu", d: ["Kerala", "Karnataka", "Andhra Pradesh"], t: 4, alt: ["tamil nadu"] },
+  { q: "Bengaluru, India's 'Silicon Valley,' is the capital of which state?", a: "Karnataka", d: ["Tamil Nadu", "Telangana", "Maharashtra"], t: 5, alt: ["karnataka"] },
+  { q: "The Golden Temple in Amritsar, the holiest shrine of the Sikhs, is in which Indian state?", a: "Punjab", d: ["Haryana", "Rajasthan", "Uttar Pradesh"], t: 4, alt: ["punjab"], x: "Punjab means 'land of five rivers.'" },
 ];
 
 const CONCEPTS = [
@@ -453,6 +467,13 @@ const CONCEPTS = [
   { q: "Earth's outer shell is broken into huge slow-moving slabs called what?", a: "Tectonic plates", d: ["Crust sheets", "Rock rafts", "Mantle lids"], t: 4, alt: ["tectonic plates", "plates", "plate tectonics"], x: "When plates bump and slide, we get earthquakes, volcanoes, and new mountains." },
   { q: "What is a deep valley with steep rocky walls, often carved by a river, called?", a: "A canyon", d: ["A delta", "A plateau", "A fjord"], t: 2, alt: ["canyon"] },
   { q: "What is a part of the ocean that reaches into the land, usually smaller than a gulf?", a: "A bay", d: ["A strait", "A lagoon", "A channel"], t: 3, alt: ["bay"], x: "A gulf is like a bay's big brother — the Gulf of Mexico is huge." },
+  { q: "What is the term for a body of water completely surrounded by land?", a: "A lake", d: ["A bay", "A sea", "A strait"], t: 1, alt: ["lake"], x: "The Great Lakes are so big they look like seas — but land surrounds them, so they're lakes." },
+  { q: "Carbon dioxide, a greenhouse gas that traps heat in the atmosphere, is the main cause of which — global warming or El Niño?", a: "Global warming", d: ["El Niño"], t: 2, vs: 1, alt: ["global warming"], x: "Greenhouse gases work like a blanket, holding the Sun's heat close to Earth." },
+  { q: "Scientists find that high latitudes warm faster than mid-latitudes. Which is warming faster — the Arctic region or the regions between 35 and 45 degrees?", a: "The Arctic region", d: ["The regions between 35 and 45 degrees"], t: 3, vs: 1, alt: ["arctic", "the arctic", "arctic region"], x: "This is called Arctic amplification — melting ice makes the Arctic warm even faster." },
+  { q: "As glaciers and ice sheets melt in a warming world, what happens to the level of the oceans — does it rise or fall?", a: "It rises", d: ["It falls"], t: 2, vs: 1, alt: ["rises", "rise", "it rises"], x: "Melting land ice adds water to the sea, and warmer water also expands." },
+  { q: "Gases like carbon dioxide that trap the Sun's heat in Earth's atmosphere are called what?", a: "Greenhouse gases", d: ["Noble gases", "Ozone gases", "Trade winds"], t: 3, alt: ["greenhouse gases", "greenhouse gas"], x: "A greenhouse's glass traps heat for plants — these gases do the same for the whole planet." },
+  { q: "The usual pattern of weather a place has over many years is called its what?", a: "Climate", d: ["Forecast", "Season", "Atmosphere"], t: 2, alt: ["climate"], x: "Weather is what happens today; climate is what usually happens." },
+  { q: "El Niño is an unusual warming of the surface waters of which ocean?", a: "The Pacific Ocean", d: ["The Atlantic Ocean", "The Indian Ocean", "The Arctic Ocean"], t: 4, alt: ["pacific", "pacific ocean"], x: "El Niño can shuffle weather around the whole world for a year or more." },
   // --- advanced (senior-bee level) ---
   { q: "What is a narrow, deep sea inlet carved by glaciers, famous in Norway, called?", a: "A fjord", d: ["A delta", "A lagoon", "A sound"], t: 4, adv: 1, alt: ["fjord", "fiord"], x: "Norway's Sognefjord runs 127 miles inland between towering cliffs." },
   { q: "What is a ring-shaped coral island around a lagoon called?", a: "An atoll", d: ["An archipelago", "A reef bank", "A cay chain"], t: 5, adv: 1, alt: ["atoll"], x: "Atolls form on the rims of sunken volcanoes in warm oceans." },
@@ -504,6 +525,13 @@ const RELATE = [
   { q: "Which country is closer to the equator — Mexico or Canada?", a: "Mexico", d: ["Canada"], t: 1, vs: 1 },
   { q: "Which mountain range is longer — the Andes or the Alps?", a: "The Andes", d: ["The Alps"], t: 3, vs: 1, alt: ["andes"] },
   { q: "Which state is bigger — Washington or Rhode Island?", a: "Washington", d: ["Rhode Island"], t: 1, vs: 1 },
+  { q: "Guantanamo Bay, a US naval base, is on which Caribbean island country, the focus of the 1962 Cuban Missile Crisis?", a: "Cuba", d: ["Puerto Rico", "Jamaica", "Dominican Republic"], t: 3, alt: ["cuba"], x: "In October 1962 the US and the Soviet Union faced off over missiles in Cuba — the closest the Cold War came to war." },
+  { q: "During the Cold War, a famous wall split which German city into a free west side and a communist east side?", a: "Berlin", d: ["Munich", "Hamburg", "Frankfurt"], t: 3, alt: ["berlin"], x: "The Berlin Wall stood from 1961 until joyful crowds tore it down in 1989." },
+  { q: "Russia was the largest part of which huge country that broke apart into 15 nations in 1991?", a: "The Soviet Union", d: ["Yugoslavia", "The Ottoman Empire", "Prussia"], t: 4, alt: ["soviet union", "ussr", "the ussr"], x: "Its full name was the Union of Soviet Socialist Republics — the USSR." },
+  { q: "The headquarters of the United Nations, where countries meet to solve world problems, is in which US city?", a: "New York City", d: ["Washington, D.C.", "Geneva", "Los Angeles"], t: 3, alt: ["new york", "new york city", "nyc"], x: "The UN also has major offices in Geneva, Switzerland — on the shore of Lake Geneva." },
+  { q: "Which landlocked South American country has two capital cities — La Paz and Sucre?", a: "Bolivia", d: ["Paraguay", "Ecuador", "Peru"], t: 4, alt: ["bolivia"], x: "La Paz is the seat of government; Sucre is the constitutional capital." },
+  { q: "Which state is farther west — California or Colorado?", a: "California", d: ["Colorado"], t: 1, vs: 1 },
+  { q: "Which ocean is colder — the Arctic or the Indian?", a: "The Arctic", d: ["The Indian"], t: 2, vs: 1, alt: ["arctic", "arctic ocean"] },
   // --- odd-item-out (GeoBee championship category: 3 options, pick the misfit) ---
   { q: "Which of these is NOT in Europe?", a: "Egypt", d: ["France", "Italy"], t: 2, odd: 1 },
   { q: "Which of these cities is NOT a state capital?", a: "Seattle", d: ["Olympia", "Sacramento"], t: 2, odd: 1, x: "Seattle is Washington's biggest city — but little Olympia is the capital." },
@@ -580,6 +608,17 @@ const PYRAMIDS = [
     "It sits on the border of Nepal and China.",
     "Hillary and Tenzing Norgay first reached its top in 1953.",
     "It is the tallest mountain in the world." ] },
+];
+
+// Subnational regions — a signature NSF clue vein (Transylvania, Algarve...).
+const WORLD_REGIONS = [
+  { q: "The region of Transylvania is in which European country that has Bucharest as its capital?", a: "Romania", d: ["Bulgaria", "Serbia", "Hungary"], t: 4, x: "Transylvania's mountains and castles inspired the story of Dracula." },
+  { q: "The city of Porto and the beaches of the Algarve are in which country bordering Spain, with Lisbon as its capital?", a: "Portugal", d: ["Italy", "France", "Greece"], t: 3, alt: ["portugal"], x: "The Algarve is Portugal's sunny southern coast; Porto, in the north, gave the country its name." },
+  { q: "Siberia, a vast cold region stretching to the Pacific, makes up most of which country's land?", a: "Russia", d: ["Canada", "Kazakhstan", "Mongolia"], t: 2, alt: ["russia"], x: "Siberia is bigger than the entire United States — but home to far fewer people." },
+  { q: "Patagonia, a wild, windy region at the southern tip of South America, is shared by Chile and which other country?", a: "Argentina", d: ["Peru", "Uruguay", "Bolivia"], t: 4, alt: ["argentina"], x: "Patagonia has glaciers, grasslands, and penguins near the bottom of the world." },
+  { q: "Bavaria, a region famous for castles and its city of Munich, is in the south of which European country?", a: "Germany", d: ["Austria", "Switzerland", "Belgium"], t: 4, alt: ["germany"] },
+  { q: "Catalonia, the region around the city of Barcelona, is in which European country?", a: "Spain", d: ["Portugal", "Italy", "France"], t: 4, alt: ["spain"] },
+  { q: "The cities of Geneva and Zurich are in which European country whose capital is Bern?", a: "Switzerland", d: ["Austria", "Sweden", "Netherlands"], t: 3, alt: ["switzerland"], x: "Zurich is the largest city, Geneva hosts world organizations — but small Bern is the capital." },
 ];
 
 const ANIMALS = [
@@ -691,6 +730,7 @@ const TOPICS = [
   { id: "capitals",   name: "World Capitals",       emoji: "🏛️", kind: "capitals" },
   { id: "flags",      name: "Flags of the World",   emoji: "🚩", kind: "flags" },
   { id: "worldphys",  name: "World Rivers & Mountains", emoji: "🏔️", kind: "items", items: WORLD_PHYSICAL },
+  { id: "regions",    name: "Regions of the World",  emoji: "🌄", kind: "items", items: WORLD_REGIONS },
   { id: "landmarks",  name: "World Landmarks",      emoji: "🗿", kind: "items", items: WORLD_LANDMARKS },
   { id: "animals",    name: "Animals & Habitats",   emoji: "🐾", kind: "items", items: ANIMALS },
   { id: "culture",    name: "Food, Money & Festivals", emoji: "🎉", kind: "items", items: CULTURE },

@@ -193,11 +193,12 @@ window.QBank = (function () {
       const sameRegion = stateCapsByRegion[s.r].filter((c) => c !== s.c);
       const sameRegionNames = stateNamesByRegion[s.r].filter((n) => n !== s.n);
       if (form === "cap") {
-        prompt = `What is the capital of ${s.n}?`;
+        // rich stems (bee mode) embed a locating clue, NSF-style
+        prompt = opts.rich ? `What is the capital of ${s.n}, a state in the ${s.r}?` : `What is the capital of ${s.n}?`;
         answer = s.c; pools = [sameRegion, allStateCaps];
         accept = [s.c];
       } else if (form === "rev") {
-        prompt = `${s.c} is the capital of which state?`;
+        prompt = opts.rich ? `${s.c} is the capital of which state in the ${s.r}?` : `${s.c} is the capital of which state?`;
         answer = s.n; pools = [sameRegionNames, allStateNames];
         accept = [s.n];
       } else {
@@ -210,7 +211,7 @@ window.QBank = (function () {
       const cont = countriesByCont[s.k].filter((c) => c.n !== s.n);
       const near = cont.filter((c) => Math.abs((c.ct || c.t) - (s.ct || s.t)) <= 1);
       if (form === "cap") {
-        prompt = `What is the capital of ${art(s.n)}?`;
+        prompt = opts.rich ? `What is the capital of ${art(s.n)}, a country in ${s.k}?` : `What is the capital of ${art(s.n)}?`;
         answer = s.c;
         pools = [near.map((c) => c.c), cont.map((c) => c.c), allCountries.map((c) => c.c)];
         accept = [s.c];
@@ -221,7 +222,7 @@ window.QBank = (function () {
         if (s.c === "Kyiv") accept.push("kiev");
         if (s.c === "Nukuʻalofa") accept.push("nukualofa");
       } else {
-        prompt = `${s.c} is the capital of which country?`;
+        prompt = opts.rich ? `${s.c} is the capital of which country in ${s.k}?` : `${s.c} is the capital of which country?`;
         answer = s.n;
         pools = [near.map((c) => c.n), cont.map((c) => c.n), allCountries.map((c) => c.n)];
         accept = countryAccept(s.n);
@@ -267,8 +268,10 @@ window.QBank = (function () {
       q.accept = accept.map(normalize);
     } else {
       q.kind = "mcq";
-      // vs = two-option comparative; odd = three-option odd-item-out
-      const nOpts = fact.item && fact.item.vs ? 1 : fact.item && fact.item.odd ? 2 : 3;
+      // vs = two-option comparative; odd = three-option odd-item-out.
+      // opts.optionCount caps total options (NSF mocks use 3, like the real exam).
+      let nOpts = fact.item && fact.item.vs ? 1 : fact.item && fact.item.odd ? 2 : 3;
+      if (opts.optionCount && !(fact.item && fact.item.vs)) nOpts = Math.min(nOpts, opts.optionCount - 1);
       const distractors = pickDistinct(pools, nOpts, [answer]);
       const options = shuffle(
         [answer].concat(distractors).map((label) => {

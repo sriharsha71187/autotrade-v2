@@ -377,18 +377,22 @@ window.Engine = (function () {
   }
 
   // --- bee simulations -----------------------------------------------------
-  // Three honest formats:
-  //   nsf  — NSF Junior Phase I style: 25 MCQs, +1 per correct, NO negative
-  //          marking (always guess!), tops out around tier 4 like the real exam
-  //   iac  — IAC/IGB qualifying-exam style: 50 MCQs, +2/−1/0 with skip,
-  //          30-minute timer (enforced by the UI)
+  // Three honest formats, calibrated against the official 2024 JGB sample set:
+  //   nsf  — NSF Junior Phase I style: 25 questions, +1 per correct, NO
+  //          negative marking (always guess!). Mix mirrors the official
+  //          sample: ~12 three-option MCQs, ~8 open-ended (typed), ~5
+  //          two-option — with clue-rich stems.
+  //   iac  — IAC/IGB qualifying-exam style: 50 four-option MCQs, +2/−1/0
+  //          with skip, 30-minute timer (enforced by the UI)
   //   oral — spoken-round practice: typed/spoken answers, 3 strikes,
   //          with progressive-clue "pyramid" questions mixed in (buzzer style)
   const PYRAMID_SLOTS = [2, 6, 10, 14];
+  // m = 3-option MCQ, t = open-ended/typed, v = two-option (12/8/5, interleaved)
+  const NSF_SLOTS = ["m","t","m","v","m","t","m","m","t","v","m","t","m","m","t","v","m","t","m","v","m","t","t","v","m"];
   function beePlan(kind, s) {
     const topics = enabledTopics(s).map((t) => t.id);
     let tiers;
-    if (kind === "nsf") tiers = [1,1,1,2,2,2,2,2,2,3,3,3,3,3,3,3,3,4,4,4,4,4,4,5,5];
+    if (kind === "nsf") tiers = [1,1,1,2,2,2,2,2,3,3,3,3,3,3,3,3,3,4,4,4,4,4,4,5,5];
     else if (kind === "iac") tiers = [1,1,1,1,1,1,2,2,2,2,2,2,2,2,2,2,3,3,3,3,3,3,3,3,3,3,3,3,3,3,4,4,4,4,4,4,4,4,4,4,4,4,5,5,5,5,5,5,5,5];
     else tiers = [1,1,2,2,2,3,3,3,3,4,4,4,5,5,5];
     return {
@@ -412,28 +416,43 @@ window.Engine = (function () {
     }
     const written = plan.kind === "nsf" || plan.kind === "iac";
     const tier = plan.tiers[plan.i];
-    for (let dt = 0; dt <= 4; dt++) {
-      for (const off of [0, -dt, dt]) {
-        const want = tier + off;
-        if (want < 1 || want > 5) continue;
-        for (let k = 0; k < plan.topics.length; k++) {
-          const tid = plan.topics[(plan.cursor + k) % plan.topics.length];
-          let pool = topicFacts(s, tid).filter((f) => f.tier === want && !plan.asked.has(f.id));
-          // flag ID isn't a written-exam category in either bee, nor spoken-round material
-          if (written || plan.kind === "oral") pool = pool.filter((f) => f.topic !== "flags");
-          if (pool.length) {
-            plan.cursor = (plan.cursor + k + 1) % plan.topics.length;
-            const f = pool[Math.floor(Math.random() * pool.length)];
-            plan.asked.add(f.id);
-            // tap-the-map isn't an exam form; highlighted-map ID is fine
-            let form = Q.nextForm(f, (s.facts[f.id] || {}).forms);
-            if (form === "find") form = "which";
-            return Q.buildQuestion(f, { form, typed: plan.kind === "oral" });
+    const search = (slot) => {
+      for (let dt = 0; dt <= 4; dt++) {
+        for (const off of [0, -dt, dt]) {
+          const want = tier + off;
+          if (want < 1 || want > 5) continue;
+          for (let k = 0; k < plan.topics.length; k++) {
+            const tid = plan.topics[(plan.cursor + k) % plan.topics.length];
+            let pool = topicFacts(s, tid).filter((f) => f.tier === want && !plan.asked.has(f.id));
+            // flag ID isn't a written-exam category in either bee, nor spoken-round material
+            if (written || plan.kind === "oral") pool = pool.filter((f) => f.topic !== "flags");
+            if (slot === "v") pool = pool.filter((f) => f.item && f.item.vs);
+            else pool = pool.filter((f) => !(f.item && f.item.vs));
+            // typed slots need an acceptable typed answer (odd items have none)
+            if (slot === "t" || plan.kind === "oral") pool = pool.filter((f) => !(f.item && f.item.odd));
+            if (pool.length) {
+              plan.cursor = (plan.cursor + k + 1) % plan.topics.length;
+              const f = pool[Math.floor(Math.random() * pool.length)];
+              plan.asked.add(f.id);
+              // tap-the-map isn't an exam form; highlighted-map ID is fine
+              let form = Q.nextForm(f, (s.facts[f.id] || {}).forms);
+              if (form === "find") form = "which";
+              return Q.buildQuestion(f, {
+                form,
+                typed: plan.kind === "oral" || slot === "t",
+                optionCount: plan.kind === "nsf" ? 3 : undefined,
+                rich: written || plan.kind === "oral",
+              });
+            }
           }
         }
       }
-    }
-    return null;
+      return null;
+    };
+    // NSF: this slot's question style (3-option MCQ / typed / two-option),
+    // falling back to a regular MCQ if the two-option pool runs dry.
+    const slot = plan.kind === "nsf" ? NSF_SLOTS[plan.i] : null;
+    return search(slot) || (slot === "v" ? search("m") : null);
   }
   function beeRecord(s, plan, q, result) {
     // result: 'correct' | 'wrong' | 'skip' (skip only exists in iac)
