@@ -147,7 +147,7 @@
     m.active = id;
     window.Sync.saveMeta(m);
     PID = id;
-    S = (await window.Sync.load(PID)) || E.defaultState();
+    S = E.migrate((await window.Sync.load(PID)) || E.defaultState());
     const p = m.profiles.find((x) => x.id === id);
     if (p) { S.name = S.name || p.name; S.avatar = S.avatar || p.avatar; }
     if (!S.placementDone && S.totals.answered < 5) renderPlacementIntro();
@@ -310,7 +310,7 @@
 
   // ---------- learn mode (curriculum browser) ----------
   function learnFacts(topicId) {
-    return (Q.byTopic[topicId] || []).slice().sort((a, b) => a.tier - b.tier);
+    return E.topicFacts(S, topicId).slice().sort((a, b) => a.tier - b.tier);
   }
   function renderLearnTopics() {
     const topics = E.enabledTopics(S);
@@ -325,7 +325,7 @@
         <p class="muted" style="margin-bottom:12px">Flip through fact cards at your own pace — no scores, no timers. Quiz yourself whenever you're ready!</p>
         <div class="learn-grid">
           ${topics.map((t) => {
-            const total = (Q.byTopic[t.id] || []).length;
+            const total = E.topicFacts(S, t.id).length;
             const seen = Math.min(S.learnPos[t.id] || 0, total);
             return `<button class="learn-tile" data-id="${t.id}">
               <span class="lt-emoji">${t.emoji}</span>
@@ -851,6 +851,8 @@
         <div class="toggle-row"><span class="t-label">🔊 Sounds</span><label class="switch"><input type="checkbox" id="tg-sound" ${S.settings.sound ? "checked" : ""}/><span></span></label></div>
         <div class="toggle-row"><span class="t-label">🗣️ Read questions aloud</span><label class="switch"><input type="checkbox" id="tg-speech" ${S.settings.speech ? "checked" : ""}/><span></span></label></div>
         <div class="toggle-row"><span class="t-label">⌨️ Spelling mode (type answers you know well)</span><label class="switch"><input type="checkbox" id="tg-typed" ${S.settings.typed ? "checked" : ""}/><span></span></label></div>
+        <div class="toggle-row"><span class="t-label">🚀 Advanced mode (senior-bee level)</span><label class="switch"><input type="checkbox" id="tg-advanced" ${S.settings.advanced ? "checked" : ""}/><span></span></label></div>
+        <p class="note">Advanced mode unlocks the next competition levels: straits, ocean currents, peninsulas & capes, plus two whole topics — 🌾 Products & Trade and ⛵ Explorers & Journeys.</p>
       </div>
       <div class="card">
         <h2>My competition 🐝</h2>
@@ -860,8 +862,8 @@
       </div>
       <div class="card">
         <h2>Topics</h2>
-        ${topics.map((t) => `
-          <div class="toggle-row"><span class="t-label">${t.emoji} ${esc(t.name)}</span>
+        ${topics.filter((t) => !t.advOnly || S.settings.advanced).map((t) => `
+          <div class="toggle-row"><span class="t-label">${t.emoji} ${esc(t.name)}${t.advOnly ? " 🚀" : ""}</span>
           <label class="switch"><input type="checkbox" class="tg-topic" data-id="${t.id}" ${S.settings.topics[t.id] !== false ? "checked" : ""}/><span></span></label></div>`).join("")}
       </div>
       <div class="card"><h2>Family Sync ☁️</h2>${syncBody}</div>
@@ -892,6 +894,12 @@
     $("#tg-sound").onchange = (e) => { S.settings.sound = e.target.checked; save(); };
     $("#tg-speech").onchange = (e) => { S.settings.speech = e.target.checked; save(); };
     $("#tg-typed").onchange = (e) => { S.settings.typed = e.target.checked; save(); };
+    $("#tg-advanced").onchange = (e) => {
+      S.settings.advanced = e.target.checked;
+      S.metaUpdated = Date.now();
+      save();
+      renderSettings(); // reveal/hide the advanced-only topic rows
+    };
     document.querySelectorAll(".tg-topic").forEach((el) => {
       el.onchange = () => {
         const on = document.querySelectorAll(".tg-topic:checked").length;
@@ -916,7 +924,7 @@
           }
           window.Sync.saveMeta(m);
           const merged = await window.Sync.load(PID);
-          if (merged) S = merged;
+          if (merged) S = E.migrate(merged);
           flush();
           renderSettings();
         } catch (e) { msg(e.message, true); }
@@ -941,7 +949,7 @@
       try {
         const incoming = window.Sync.importCode($("#backup-box").value);
         if (!incoming || incoming.v !== 1) throw new Error("bad");
-        S = E.mergeState(S, incoming);
+        S = E.migrate(E.mergeState(S, incoming));
         flush();
         alert("Backup restored and merged! ✅");
         renderHome();
@@ -993,7 +1001,7 @@
     PID = m.active || m.profiles[0].id;
     let loaded = null;
     try { loaded = await window.Sync.load(PID); } catch (e) { loaded = window.Sync.readState(PID); }
-    S = loaded || E.defaultState();
+    S = E.migrate(loaded || E.defaultState());
     const p = m.profiles.find((x) => x.id === PID);
     if (p) { S.name = S.name || p.name; S.avatar = S.avatar || p.avatar; }
     if (!S.name) renderWelcome(false);

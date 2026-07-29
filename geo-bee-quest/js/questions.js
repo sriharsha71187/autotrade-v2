@@ -139,7 +139,7 @@ window.QBank = (function () {
     for (const it of t.items) {
       addFact({
         id: t.id + ":" + hash(it.q), topic: t.id, tier: it.t, src: it,
-        forms: ["item"], label: it.a,
+        forms: ["item"], label: it.a, adv: !!it.adv,
         teachQ: it.q, teachA: it.a,
         teachText: it.q + " " + it.a + "!",
         fact: it.x || null, item: it,

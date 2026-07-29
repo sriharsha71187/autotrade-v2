@@ -41,9 +41,14 @@ window.Engine = (function () {
     { id: "summit", emoji: "🏔️", name: "Summit!", desc: "Reach tier 5 in any topic", test: (s) => Object.values(s.topics).some((t) => t.tier >= 5) },
   ];
 
+  // Facts available for this learner: advanced content only in Advanced mode.
+  function topicFacts(s, topicId) {
+    const list = Q.byTopic[topicId] || [];
+    return s.settings.advanced ? list : list.filter((f) => !f.adv);
+  }
   function topicKnown(s, topicId) {
     let n = 0;
-    for (const f of Q.byTopic[topicId] || []) {
+    for (const f of topicFacts(s, topicId)) {
       const r = s.facts[f.id];
       if (r && r.b >= 3) n++;
     }
@@ -56,7 +61,7 @@ window.Engine = (function () {
     for (const t of window.GEO_DATA.TOPICS) { topics[t.id] = { tier: 1 }; enabled[t.id] = true; }
     return {
       v: 1, name: "", avatar: "🌍", created: Date.now(), metaUpdated: Date.now(),
-      settings: { sound: true, speech: false, typed: false, topics: enabled, beeDate: null, beeName: "" },
+      settings: { sound: true, speech: false, typed: false, advanced: false, topics: enabled, beeDate: null, beeName: "" },
       topics, facts: {},
       xp: 0, badges: [], best: { written: null, oral: null },
       totals: { answered: 0, correct: 0, bestStreak: 0 },
@@ -97,7 +102,7 @@ window.Engine = (function () {
     const dueN = dueCount(s);
     let unseen = 0;
     for (const t of enabledTopics(s)) {
-      for (const f of Q.byTopic[t.id] || []) {
+      for (const f of topicFacts(s, t.id)) {
         const r = s.facts[f.id];
         if (!r || r.b === 0) unseen++;
       }
@@ -114,6 +119,22 @@ window.Engine = (function () {
     return { days, dueN, unseen, perDay, mockDue };
   }
 
+  // Fill in anything a state saved by an older version is missing.
+  function migrate(s) {
+    if (!s) return s;
+    s.topics = s.topics || {};
+    s.settings = s.settings || {};
+    s.settings.topics = s.settings.topics || {};
+    for (const t of window.GEO_DATA.TOPICS) {
+      if (!s.topics[t.id]) s.topics[t.id] = { tier: 1 };
+      if (s.settings.topics[t.id] === undefined) s.settings.topics[t.id] = true;
+    }
+    if (s.settings.advanced === undefined) s.settings.advanced = false;
+    s.learnPos = s.learnPos || {};
+    s.stickers = s.stickers || [];
+    return s;
+  }
+
   function rank(s) {
     let r = RANKS[0], next = null;
     for (let i = 0; i < RANKS.length; i++) {
@@ -123,7 +144,9 @@ window.Engine = (function () {
   }
 
   function enabledTopics(s) {
-    return window.GEO_DATA.TOPICS.filter((t) => s.settings.topics[t.id] !== false);
+    return window.GEO_DATA.TOPICS.filter(
+      (t) => s.settings.topics[t.id] !== false && (!t.advOnly || s.settings.advanced)
+    );
   }
 
   function rec(s, id) {
@@ -164,7 +187,7 @@ window.Engine = (function () {
     if (sess.reviews < 4) {
       const dueFacts = [];
       for (const t of sessionTopics(s, sess)) {
-        for (const f of Q.byTopic[t.id] || []) {
+        for (const f of topicFacts(s, t.id)) {
           const r = s.facts[f.id];
           if (r && r.b >= 1 && r.due && r.due <= now && !askedSet.has(f.id)) dueFacts.push([r.due, f]);
         }
@@ -189,7 +212,7 @@ window.Engine = (function () {
     // 5. fallback: soonest-due or weakest fact
     let best = null, bestScore = Infinity;
     for (const t of sessionTopics(s, sess)) {
-      for (const fx of Q.byTopic[t.id] || []) {
+      for (const fx of topicFacts(s, t.id)) {
         const r = s.facts[fx.id];
         if (!r || askedSet.has(fx.id)) continue;
         const score = (r.due || 0) - (r.w - r.c) * DAY;
@@ -208,7 +231,7 @@ window.Engine = (function () {
       const t = topics[(pickNew._cursor + k) % topics.length];
       const maxTier = Math.min(5, (s.topics[t.id].tier || 1) + tierOffset);
       if (tierOffset > 0 && maxTier <= s.topics[t.id].tier) continue;
-      const pool = (Q.byTopic[t.id] || [])
+      const pool = topicFacts(s, t.id)
         .filter((f) => {
           const r = s.facts[f.id];
           return (!r || r.b === 0) && !askedSet.has(f.id) &&
@@ -285,7 +308,7 @@ window.Engine = (function () {
 
     // tier promotion: 80% of this tier's facts known → move up
     const t = s.topics[f.topic];
-    const tierFacts = (Q.byTopic[f.topic] || []).filter((x) => x.tier === t.tier);
+    const tierFacts = topicFacts(s, f.topic).filter((x) => x.tier === t.tier);
     if (tierFacts.length) {
       const known = tierFacts.filter((x) => { const rr = s.facts[x.id]; return rr && rr.b >= 3; }).length;
       if (known / tierFacts.length >= 0.8 && t.tier < 5) {
@@ -321,7 +344,7 @@ window.Engine = (function () {
     if (p.i >= p.n) return null;
     for (let k = 0; k < p.topics.length * 2; k++) {
       const tid = p.topics[(p.cursor + k) % p.topics.length];
-      const pool = (Q.byTopic[tid] || []).filter((f) => f.tier === p.tier);
+      const pool = topicFacts(s, tid).filter((f) => f.tier === p.tier);
       if (pool.length) {
         p.cursor = (p.cursor + k + 1) % p.topics.length;
         const f = pool[Math.floor(Math.random() * pool.length)];
@@ -368,7 +391,7 @@ window.Engine = (function () {
         if (want < 1 || want > 5) continue;
         for (let k = 0; k < plan.topics.length; k++) {
           const tid = plan.topics[(plan.cursor + k) % plan.topics.length];
-          let pool = (Q.byTopic[tid] || []).filter((f) => f.tier === want && !plan.asked.has(f.id));
+          let pool = topicFacts(s, tid).filter((f) => f.tier === want && !plan.asked.has(f.id));
           if (plan.kind === "oral") pool = pool.filter((f) => f.topic !== "flags");
           if (pool.length) {
             plan.cursor = (plan.cursor + k + 1) % plan.topics.length;
@@ -411,7 +434,7 @@ window.Engine = (function () {
   function topicSummary(s) {
     const out = [];
     for (const t of enabledTopics(s)) {
-      const facts = Q.byTopic[t.id] || [];
+      const facts = topicFacts(s, t.id);
       let mastered = 0, known = 0, learning = 0, weak = 0, unseen = 0;
       const weakest = [];
       for (const f of facts) {
@@ -441,7 +464,7 @@ window.Engine = (function () {
     const now = Date.now();
     let n = 0;
     for (const t of enabledTopics(s)) {
-      for (const f of Q.byTopic[t.id] || []) {
+      for (const f of topicFacts(s, t.id)) {
         const r = s.facts[f.id];
         if (r && r.b >= 1 && r.due && r.due <= now) n++;
       }
@@ -502,7 +525,7 @@ window.Engine = (function () {
     newSession, nextQuestion, record,
     placementPlan, placementNext, placementRecord, placementFinish,
     beePlan, beeNext, beeRecord, beeFinish,
-    topicSummary, dueCount, mergeState, factLabel, topicKnown,
+    topicSummary, dueCount, mergeState, factLabel, topicKnown, topicFacts, migrate,
     awardSticker, dayStreak, questProgress, coach,
   };
 })();

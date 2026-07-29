@@ -225,6 +225,11 @@ const MAPS = [
   { q: "Which needle direction does a compass point to?", a: "North", d: ["South", "East", "West"], t: 2, x: "A compass needle is pulled toward Earth's magnetic north." },
   { q: "What is the latitude of the equator?", a: "0 degrees", d: ["90 degrees", "45 degrees", "180 degrees"], t: 4, alt: ["0", "zero", "zero degrees", "0°"] },
   { q: "The 90°N point on Earth is better known as what?", a: "The North Pole", d: ["The South Pole", "The equator", "The prime meridian"], t: 5, alt: ["north pole"] },
+  // --- advanced (senior-bee level) ---
+  { q: "Which imaginary line, near 180° longitude, is where each new day begins?", a: "The International Date Line", d: ["The prime meridian", "The equator", "The Tropic of Cancer"], t: 4, adv: 1, alt: ["international date line", "date line"], x: "Cross it sailing west and you skip a whole day!" },
+  { q: "Into roughly how many time zones is the world divided?", a: "24", d: ["12", "36", "100"], t: 4, adv: 1, alt: ["24", "twenty four", "twenty-four"], x: "One for each hour of the day — Earth spins 360° in 24 hours." },
+  { q: "How many degrees of longitude make a full circle around the Earth?", a: "360", d: ["180", "90", "100"], t: 5, adv: 1, alt: ["360", "three hundred sixty"] },
+  { q: "What does GPS stand for?", a: "Global Positioning System", d: ["General Path Scanner", "Geographic Point Signal", "Global Polar Survey"], t: 5, adv: 1, alt: ["global positioning system"], x: "GPS satellites orbit 12,000 miles up, telling your device exactly where it is." },
 ];
 
 const CONTINENTS = [
@@ -338,6 +343,24 @@ const WORLD_PHYSICAL = [
   { q: "The 'Ring of Fire,' where most volcanoes and earthquakes happen, circles which ocean?", a: "The Pacific Ocean", d: ["The Atlantic Ocean", "The Indian Ocean", "The Arctic Ocean"], t: 3, alt: ["pacific", "pacific ocean"], x: "About 3 out of 4 of Earth's volcanoes sit on the Ring of Fire." },
   { q: "What giant red rock rises from the middle of Australia?", a: "Uluru", d: ["Table Mountain", "El Capitan", "The Devils Tower"], t: 4, alt: ["uluru", "ayers rock"], x: "Uluru is taller than the Eiffel Tower and sacred to Aboriginal Australians." },
   { q: "Which African river is the deepest in the world?", a: "The Congo River", d: ["The Nile", "The Zambezi", "The Niger"], t: 5, alt: ["congo", "congo river"], x: "The Congo plunges more than 700 feet deep in places." },
+  // --- advanced (senior-bee level) ---
+  { q: "Which strait separates Alaska from Russia?", a: "The Bering Strait", d: ["The Strait of Gibraltar", "The Strait of Hormuz", "The English Channel"], t: 4, adv: 1, alt: ["bering strait", "bering"], x: "At its narrowest, Russia and Alaska are only 55 miles apart." },
+  { q: "Which strait separates Spain from Morocco?", a: "The Strait of Gibraltar", d: ["The Bering Strait", "The Bosporus", "The Strait of Malacca"], t: 4, adv: 1, alt: ["strait of gibraltar", "gibraltar"], x: "It's the gateway between the Atlantic Ocean and the Mediterranean Sea." },
+  { q: "What is the longest river in Europe?", a: "The Volga", d: ["The Danube", "The Rhine", "The Thames"], t: 4, adv: 1, alt: ["volga", "volga river"], x: "The Volga flows 2,200 miles through Russia to the Caspian Sea." },
+  { q: "Which great river of Southeast Asia flows through Laos, Cambodia, and Vietnam?", a: "The Mekong", d: ["The Yangtze", "The Ganges", "The Indus"], t: 5, adv: 1, alt: ["mekong", "mekong river"] },
+  { q: "What is the largest lake in Africa?", a: "Lake Victoria", d: ["Lake Tanganyika", "Lake Chad", "Lake Malawi"], t: 4, adv: 1, alt: ["victoria", "lake victoria"], x: "Lake Victoria is a source of the Nile and touches three countries." },
+  { q: "Which high lake in the Andes is the world's highest navigable lake?", a: "Lake Titicaca", d: ["Lake Victoria", "Crater Lake", "Lake Baikal"], t: 5, adv: 1, alt: ["titicaca", "lake titicaca"], x: "People live on floating islands made of reeds on Lake Titicaca." },
+  { q: "What is the largest island of Asia?", a: "Borneo", d: ["Sumatra", "Honshu", "Sri Lanka"], t: 5, adv: 1, alt: ["borneo"], x: "Borneo is shared by three countries: Indonesia, Malaysia, and Brunei." },
+  { q: "Spain and Portugal share which peninsula?", a: "The Iberian Peninsula", d: ["The Balkan Peninsula", "The Scandinavian Peninsula", "The Apennine Peninsula"], t: 4, adv: 1, alt: ["iberian peninsula", "iberia", "iberian"] },
+  { q: "Saudi Arabia sits on which huge peninsula?", a: "The Arabian Peninsula", d: ["The Iberian Peninsula", "The Sinai Peninsula", "The Korean Peninsula"], t: 4, adv: 1, alt: ["arabian peninsula", "arabia", "arabian"] },
+  { q: "The Yucatán Peninsula, land of the Maya, belongs mostly to which country?", a: "Mexico", d: ["Guatemala", "Panama", "Colombia"], t: 4, adv: 1 },
+  { q: "Which famous cape lies near the southern tip of Africa?", a: "The Cape of Good Hope", d: ["Cape Horn", "Cape Cod", "Cape Canaveral"], t: 4, adv: 1, alt: ["cape of good hope", "good hope"], x: "Sailors once had to round it to reach Asia from Europe." },
+  { q: "Which stormy cape lies at the southern tip of South America?", a: "Cape Horn", d: ["The Cape of Good Hope", "Cape Cod", "Cape of Storms"], t: 5, adv: 1, alt: ["cape horn", "horn"] },
+  { q: "Which warm Atlantic current helps keep western Europe mild?", a: "The Gulf Stream", d: ["El Niño", "The Humboldt Current", "The Jet Stream"], t: 5, adv: 1, alt: ["gulf stream"], x: "It carries warm water from the Gulf of Mexico all the way to Europe." },
+  { q: "Which desert covers much of Botswana and southern Africa?", a: "The Kalahari", d: ["The Sahara", "The Gobi", "The Atacama"], t: 5, adv: 1, alt: ["kalahari", "kalahari desert"], x: "Meerkats — like Timon! — live in the Kalahari." },
+  { q: "Which sea lies between Italy and the Balkan Peninsula?", a: "The Adriatic Sea", d: ["The Aegean Sea", "The Baltic Sea", "The Black Sea"], t: 5, adv: 1, alt: ["adriatic", "adriatic sea"], x: "Venice sits at the top of the Adriatic." },
+  { q: "Which plateau north of the Himalayas is called the 'Roof of the World'?", a: "The Tibetan Plateau", d: ["The Deccan Plateau", "The Colorado Plateau", "The Altiplano"], t: 4, adv: 1, alt: ["tibetan plateau", "tibet"], x: "It averages over 14,000 feet high — higher than most US mountains." },
+  { q: "The world's largest river delta is formed in Bangladesh and India by the Ganga and which other river?", a: "The Brahmaputra", d: ["The Indus", "The Mekong", "The Yamuna"], t: 5, adv: 1, alt: ["brahmaputra"] },
 ];
 
 const WORLD_LANDMARKS = [
@@ -430,6 +453,108 @@ const CONCEPTS = [
   { q: "Earth's outer shell is broken into huge slow-moving slabs called what?", a: "Tectonic plates", d: ["Crust sheets", "Rock rafts", "Mantle lids"], t: 4, alt: ["tectonic plates", "plates", "plate tectonics"], x: "When plates bump and slide, we get earthquakes, volcanoes, and new mountains." },
   { q: "What is a deep valley with steep rocky walls, often carved by a river, called?", a: "A canyon", d: ["A delta", "A plateau", "A fjord"], t: 2, alt: ["canyon"] },
   { q: "What is a part of the ocean that reaches into the land, usually smaller than a gulf?", a: "A bay", d: ["A strait", "A lagoon", "A channel"], t: 3, alt: ["bay"], x: "A gulf is like a bay's big brother — the Gulf of Mexico is huge." },
+  // --- advanced (senior-bee level) ---
+  { q: "What is a narrow, deep sea inlet carved by glaciers, famous in Norway, called?", a: "A fjord", d: ["A delta", "A lagoon", "A sound"], t: 4, adv: 1, alt: ["fjord", "fiord"], x: "Norway's Sognefjord runs 127 miles inland between towering cliffs." },
+  { q: "What is a ring-shaped coral island around a lagoon called?", a: "An atoll", d: ["An archipelago", "A reef bank", "A cay chain"], t: 5, adv: 1, alt: ["atoll"], x: "Atolls form on the rims of sunken volcanoes in warm oceans." },
+  { q: "What are the vast dry grasslands of Central Asia and eastern Europe called?", a: "Steppes", d: ["Savannas", "Prairies", "Pampas"], t: 5, adv: 1, alt: ["steppes", "steppe", "the steppes"], x: "Mongol horse riders ruled the steppes for centuries." },
+  { q: "The famous grasslands of Argentina are called what?", a: "The Pampas", d: ["The Steppes", "The Outback", "The Serengeti"], t: 5, adv: 1, alt: ["pampas", "the pampas"], x: "Argentine cowboys called gauchos herd cattle on the Pampas." },
+  { q: "What is a hot spring that shoots water and steam into the air called?", a: "A geyser", d: ["A volcano", "A fumarole", "A spring well"], t: 4, adv: 1, alt: ["geyser"], x: "Yellowstone and Iceland have the most famous geysers on Earth." },
+  { q: "The glowing northern lights near the Arctic are called what?", a: "The aurora borealis", d: ["The midnight sun", "The polar glow", "The zodiacal light"], t: 4, adv: 1, alt: ["aurora borealis", "aurora", "northern lights", "the northern lights"], x: "Near the South Pole they're called the aurora australis." },
+];
+
+const ANIMALS = [
+  { q: "Emperor penguins live on which icy continent?", a: "Antarctica", d: ["Asia", "Europe", "North America"], t: 1, x: "Penguin dads balance the egg on their feet all winter to keep it warm." },
+  { q: "Polar bears live near which pole?", a: "The North Pole", d: ["The South Pole", "The equator", "Both poles"], t: 1, alt: ["north pole", "north"], x: "Polar bears and penguins never meet — they live at opposite ends of the Earth!" },
+  { q: "Kangaroos and koalas are native to which country?", a: "Australia", d: ["Brazil", "South Africa", "India"], t: 1 },
+  { q: "Wild giant pandas live only in which country?", a: "China", d: ["Japan", "India", "Vietnam"], t: 2, x: "Pandas eat bamboo for up to 14 hours a day." },
+  { q: "Lions, zebras, and giraffes roam the savannas of which continent?", a: "Africa", d: ["South America", "Australia", "Europe"], t: 1 },
+  { q: "Which country is home to more than half of the world's wild tigers?", a: "India", d: ["China", "Indonesia", "Kenya"], t: 2 },
+  { q: "Llamas and alpacas come from which mountain range?", a: "The Andes", d: ["The Alps", "The Rockies", "The Himalayas"], t: 3, alt: ["andes", "the andes mountains"] },
+  { q: "Lemurs live in the wild only on which island?", a: "Madagascar", d: ["Borneo", "Sri Lanka", "New Guinea"], t: 3 },
+  { q: "The kiwi, a bird that cannot fly, is the symbol of which country?", a: "New Zealand", d: ["Australia", "Fiji", "Japan"], t: 3, alt: ["new zealand"], x: "New Zealanders even call themselves 'Kiwis.'" },
+  { q: "The bald eagle is the national bird of which country?", a: "United States", d: ["Canada", "Mexico", "Germany"], t: 1, alt: ["united states", "usa", "america", "the united states"] },
+  { q: "Orangutans live in the wild only on Borneo and which other island?", a: "Sumatra", d: ["Java", "Madagascar", "New Guinea"], t: 5, alt: ["sumatra"], x: "Orangutan means 'person of the forest' in Malay." },
+  { q: "What is the largest animal that has ever lived on Earth?", a: "The blue whale", d: ["The elephant", "The T. rex", "The giant squid"], t: 2, alt: ["blue whale"], x: "A blue whale's heart is the size of a small car." },
+  { q: "Millions of monarch butterflies fly south each winter to which country?", a: "Mexico", d: ["Brazil", "Canada", "Cuba"], t: 4, x: "They travel up to 3,000 miles — to forests they've never seen before." },
+  { q: "Which fish swims from the ocean back up Pacific Northwest rivers to lay its eggs?", a: "Salmon", d: ["Tuna", "Cod", "Swordfish"], t: 2, alt: ["salmon", "the salmon"], x: "Salmon can leap up waterfalls on their journey home." },
+  { q: "Orcas (killer whales) are famous in which waters near Seattle?", a: "Puget Sound", d: ["The Great Lakes", "The Gulf of Mexico", "Chesapeake Bay"], t: 2, alt: ["puget sound"], x: "Washington's southern resident orcas live in family groups called pods." },
+  { q: "Herds of bison graze in which famous national park?", a: "Yellowstone", d: ["The Everglades", "The Grand Canyon", "Yosemite"], t: 3, alt: ["yellowstone", "yellowstone national park"], x: "Bison are the largest land animals in North America." },
+  { q: "Alligators live wild in which US wetland?", a: "The Everglades", d: ["Puget Sound", "The Great Salt Lake", "Death Valley"], t: 2, alt: ["everglades", "the everglades", "florida"] },
+  { q: "Reindeer (caribou) live in which cold treeless lands?", a: "The Arctic tundra", d: ["The savanna", "The rainforest", "The desert"], t: 3, alt: ["tundra", "the tundra", "arctic tundra", "the arctic"] },
+  { q: "Toucans, sloths, and jaguars live in which huge forest?", a: "The Amazon Rainforest", d: ["The Black Forest", "The Congo Basin", "The Outback"], t: 2, alt: ["amazon", "the amazon", "amazon rainforest"] },
+  { q: "Giant tortoises made which islands of Ecuador famous?", a: "The Galápagos Islands", d: ["The Canary Islands", "Hawaii", "The Maldives"], t: 5, alt: ["galapagos", "the galapagos", "galapagos islands"], x: "Galápago is an old Spanish word for tortoise." },
+  { q: "The world's largest lizard, the Komodo dragon, lives in which country?", a: "Indonesia", d: ["Australia", "India", "Madagascar"], t: 5, x: "Komodo dragons can grow 10 feet long." },
+  { q: "Snow leopards prowl which high mountains?", a: "The Himalayas", d: ["The Andes", "The Alps", "The Appalachians"], t: 4, alt: ["himalayas", "the himalayas"] },
+  { q: "Mountain gorillas live in the misty mountains of which continent?", a: "Africa", d: ["Asia", "South America", "Australia"], t: 4, x: "Rwanda, Uganda, and DR Congo protect the last mountain gorillas." },
+  { q: "The cheetah, the fastest land animal, hunts mainly on which continent?", a: "Africa", d: ["Asia", "North America", "Australia"], t: 2, x: "Cheetahs can sprint 70 miles per hour — but only for a few seconds." },
+  { q: "Camels with two humps (Bactrian camels) live in which desert?", a: "The Gobi", d: ["The Sahara", "The Mojave", "The Atacama"], t: 4, alt: ["gobi", "gobi desert", "the gobi desert"], x: "One hump = Sahara (dromedary). Two humps = Gobi (Bactrian)." },
+];
+
+const CULTURE = [
+  { q: "What language do most people speak in Brazil?", a: "Portuguese", d: ["Spanish", "French", "Brazilian"], t: 3, x: "Brazil was a colony of Portugal — the rest of South America mostly speaks Spanish." },
+  { q: "What language do most people speak in Mexico?", a: "Spanish", d: ["Portuguese", "English", "Mexican"], t: 2 },
+  { q: "What is the most spoken language in China?", a: "Mandarin", d: ["Cantonese", "Japanese", "Korean"], t: 3, alt: ["mandarin", "mandarin chinese", "chinese"], x: "Mandarin has more native speakers than any other language on Earth." },
+  { q: "What language is spoken in Egypt?", a: "Arabic", d: ["Egyptian", "Turkish", "Persian"], t: 3 },
+  { q: "What money is used in the United States?", a: "The dollar", d: ["The euro", "The pound", "The peso"], t: 1, alt: ["dollar", "dollars", "us dollar"] },
+  { q: "What money is used in India?", a: "The rupee", d: ["The yen", "The dinar", "The baht"], t: 2, alt: ["rupee", "rupees", "indian rupee"] },
+  { q: "What money is used in Japan?", a: "The yen", d: ["The yuan", "The won", "The ringgit"], t: 3, alt: ["yen"] },
+  { q: "What money is shared by many countries of Europe?", a: "The euro", d: ["The pound", "The franc", "The europa"], t: 2, alt: ["euro", "euros"] },
+  { q: "What money is used in the United Kingdom?", a: "The pound", d: ["The euro", "The dollar", "The krona"], t: 3, alt: ["pound", "pounds", "british pound", "pound sterling"] },
+  { q: "What money is used in Mexico?", a: "The peso", d: ["The dollar", "The real", "The bolívar"], t: 3, alt: ["peso", "pesos"] },
+  { q: "Diwali, the festival of lights, comes from which country?", a: "India", d: ["China", "Thailand", "Egypt"], t: 2, x: "Families light little lamps called diyas and share sweets." },
+  { q: "Holi, the festival of colors, is celebrated in which country?", a: "India", d: ["Brazil", "Spain", "Japan"], t: 2, x: "People throw clouds of colored powder at each other for fun." },
+  { q: "The giant Carnival parade with samba dancing happens in which country?", a: "Brazil", d: ["Spain", "Italy", "Cuba"], t: 3, x: "Rio de Janeiro's Carnival is the biggest party on Earth." },
+  { q: "Oktoberfest is a famous festival from which country?", a: "Germany", d: ["Austria", "Belgium", "Switzerland"], t: 3, x: "It started in Munich in 1810 as a royal wedding party." },
+  { q: "The Day of the Dead (Día de los Muertos) is celebrated in which country?", a: "Mexico", d: ["Spain", "Peru", "Portugal"], t: 3, x: "Families decorate with marigolds and sugar skulls to remember loved ones." },
+  { q: "Chinese New Year gives each year an animal from a cycle of how many?", a: "12", d: ["10", "8", "20"], t: 3, alt: ["12", "twelve"], x: "Rat, ox, tiger, rabbit, dragon, snake, horse, goat, monkey, rooster, dog, pig." },
+  { q: "The Running of the Bulls happens in Pamplona, in which country?", a: "Spain", d: ["Mexico", "Portugal", "Argentina"], t: 4 },
+  { q: "La Tomatina, a giant tomato-throwing festival, is held in which country?", a: "Spain", d: ["Italy", "Mexico", "Greece"], t: 5, x: "About 120 tons of tomatoes get thrown in one hour!" },
+  { q: "Spring cherry blossom festivals are a beloved tradition of which country?", a: "Japan", d: ["China", "South Korea", "Thailand"], t: 3, x: "Japan even gave Washington, D.C. its famous cherry trees as a gift." },
+  { q: "Sushi comes from which country?", a: "Japan", d: ["China", "Thailand", "South Korea"], t: 1 },
+  { q: "Pizza and pasta come from which country?", a: "Italy", d: ["France", "Spain", "Greece"], t: 1 },
+  { q: "Tacos and burritos come from which country?", a: "Mexico", d: ["Spain", "Brazil", "Cuba"], t: 1 },
+  { q: "Croissants and baguettes come from which country?", a: "France", d: ["Italy", "Belgium", "Switzerland"], t: 2 },
+  { q: "Curry and naan bread come from which country?", a: "India", d: ["China", "Egypt", "Turkey"], t: 2 },
+  { q: "Kimchi, spicy pickled cabbage, comes from which country?", a: "South Korea", d: ["Japan", "China", "Vietnam"], t: 4, alt: ["south korea", "korea"] },
+  { q: "Paella, a famous rice dish, comes from which country?", a: "Spain", d: ["Italy", "Mexico", "Portugal"], t: 4 },
+  { q: "Poutine — fries with cheese curds and gravy — comes from which country?", a: "Canada", d: ["United States", "France", "Belgium"], t: 4, x: "Poutine was invented in Quebec, Canada's French-speaking province." },
+  { q: "Cricket is the most popular sport in which country?", a: "India", d: ["United States", "Brazil", "Russia"], t: 3, x: "Over a billion fans watch when India plays Pakistan." },
+  { q: "Which country has won the most soccer World Cups?", a: "Brazil", d: ["Germany", "Argentina", "France"], t: 4, x: "Brazil has won five — and it's the only team to play in every World Cup." },
+  { q: "Flamenco dancing comes from which country?", a: "Spain", d: ["Mexico", "Italy", "Argentina"], t: 4 },
+];
+
+const TRADE = [
+  { q: "Which country grows the most coffee in the world?", a: "Brazil", d: ["Colombia", "Kenya", "India"], t: 3, x: "Brazil has been the world's top coffee grower for over 150 years." },
+  { q: "Which country makes most of the world's maple syrup?", a: "Canada", d: ["United States", "Russia", "Norway"], t: 2, x: "Quebec alone makes about 70% of the world's maple syrup." },
+  { q: "Most of the world's rice is grown on which continent?", a: "Asia", d: ["Africa", "South America", "Europe"], t: 2, x: "Rice feeds more than half the people on Earth." },
+  { q: "Which desert country is famous for exporting oil?", a: "Saudi Arabia", d: ["Egypt", "Turkey", "Mongolia"], t: 3 },
+  { q: "Most of the world's cocoa for chocolate comes from which region?", a: "West Africa", d: ["Southeast Asia", "Central Europe", "The Caribbean"], t: 4, adv: 1, alt: ["west africa", "western africa"], x: "Ivory Coast and Ghana grow more than half the world's cocoa." },
+  { q: "Which South American country is the biggest exporter of bananas?", a: "Ecuador", d: ["Brazil", "Chile", "Argentina"], t: 5, adv: 1, x: "One in four bananas in the world comes from Ecuador." },
+  { q: "Which southern African country is famous for its diamonds?", a: "Botswana", d: ["Kenya", "Morocco", "Ethiopia"], t: 5, adv: 1, x: "Diamonds helped Botswana become one of Africa's success stories." },
+  { q: "Johannesburg, in which country, grew rich from gold mines?", a: "South Africa", d: ["Nigeria", "Ghana", "Egypt"], t: 5, adv: 1, alt: ["south africa"] },
+  { q: "Darjeeling and Assam teas come from which country?", a: "India", d: ["China", "Japan", "Kenya"], t: 3 },
+  { q: "Which country is famous for its millions of sheep and wool?", a: "Australia", d: ["Japan", "Brazil", "Canada"], t: 3, x: "Australia has more than twice as many sheep as people." },
+  { q: "Which European country is famous for cheese, chocolate, and watches?", a: "Switzerland", d: ["Norway", "Poland", "Portugal"], t: 2 },
+  { q: "Which country is famous for tulips and windmills?", a: "Netherlands", d: ["Denmark", "Belgium", "Germany"], t: 2, alt: ["netherlands", "the netherlands", "holland"] },
+  { q: "Which US state grows the most apples?", a: "Washington", d: ["California", "New York", "Michigan"], t: 1, x: "Your state! Washington grows over half of America's apples." },
+  { q: "Boeing builds giant airplanes near which US city?", a: "Seattle", d: ["Los Angeles", "Chicago", "Dallas"], t: 2, x: "The Boeing factory in Everett is the biggest building in the world by volume." },
+  { q: "Which US state is famous for growing potatoes?", a: "Idaho", d: ["Florida", "Texas", "Maine"], t: 2 },
+  { q: "Which US state is famous for its oranges?", a: "Florida", d: ["Washington", "Ohio", "Colorado"], t: 2 },
+  { q: "Detroit, the historic home of American car-making, is in which state?", a: "Michigan", d: ["Ohio", "Illinois", "Pennsylvania"], t: 4, adv: 1, x: "Detroit is nicknamed the Motor City." },
+  { q: "The tech companies of 'Silicon Valley' are in which state?", a: "California", d: ["Washington", "Texas", "New York"], t: 2 },
+];
+
+const EXPLORERS = [
+  { q: "In 1492, which explorer sailed from Spain and reached the Americas?", a: "Christopher Columbus", d: ["Ferdinand Magellan", "Marco Polo", "James Cook"], t: 3, alt: ["columbus", "christopher columbus"], x: "He was trying to reach Asia — and never knew he'd found different continents." },
+  { q: "Whose expedition was the first to sail all the way around the world?", a: "Ferdinand Magellan's", d: ["Columbus's", "Vasco da Gama's", "Captain Cook's"], t: 4, alt: ["magellan", "ferdinand magellan", "magellans"], x: "It took three years (1519–1522); only 18 of about 270 sailors made it home." },
+  { q: "Marco Polo traveled from Italy all the way to which country?", a: "China", d: ["India", "Egypt", "Japan"], t: 4, x: "His book about the journey amazed Europe for centuries." },
+  { q: "Lewis and Clark explored a route across America to which ocean?", a: "The Pacific Ocean", d: ["The Atlantic Ocean", "The Arctic Ocean", "The Gulf of Mexico"], t: 4, alt: ["pacific", "pacific ocean", "the pacific"], x: "Their two-year trek ended near the mouth of the Columbia River — in your state's neighborhood!" },
+  { q: "Which Shoshone woman guided and helped the Lewis and Clark expedition?", a: "Sacagawea", d: ["Pocahontas", "Sequoyah", "Winona"], t: 5, adv: 1, alt: ["sacagawea", "sacajawea"], x: "She crossed the Rockies carrying her baby son on her back." },
+  { q: "Who led the first expedition to reach the South Pole in 1911?", a: "Roald Amundsen", d: ["Robert Scott", "Ernest Shackleton", "Richard Byrd"], t: 5, adv: 1, alt: ["amundsen", "roald amundsen"], x: "Amundsen's team used sled dogs and beat Scott's team by a month." },
+  { q: "Edmund Hillary and Tenzing Norgay were first to the top of which mountain in 1953?", a: "Mount Everest", d: ["K2", "Denali", "Mount Kilimanjaro"], t: 4, alt: ["everest", "mount everest", "mt everest"] },
+  { q: "Vasco da Gama sailed around Africa to reach which country in 1498?", a: "India", d: ["China", "Japan", "Indonesia"], t: 5, adv: 1, x: "His route opened the spice trade between Europe and Asia by sea." },
+  { q: "Viking Erik the Red started the first European settlement on which icy island?", a: "Greenland", d: ["Iceland", "Newfoundland", "Svalbard"], t: 5, adv: 1, x: "He named it 'Greenland' to make it sound nicer so people would move there!" },
+  { q: "Captain James Cook explored and mapped which ocean, reaching Australia and Hawaii?", a: "The Pacific Ocean", d: ["The Atlantic Ocean", "The Indian Ocean", "The Arctic Ocean"], t: 5, adv: 1, alt: ["pacific", "pacific ocean", "the pacific"] },
 ];
 
 // ---------------------------------------------------------------------------
@@ -446,8 +571,13 @@ const TOPICS = [
   { id: "flags",      name: "Flags of the World",   emoji: "🚩", kind: "flags" },
   { id: "worldphys",  name: "World Rivers & Mountains", emoji: "🏔️", kind: "items", items: WORLD_PHYSICAL },
   { id: "landmarks",  name: "World Landmarks",      emoji: "🗿", kind: "items", items: WORLD_LANDMARKS },
+  { id: "animals",    name: "Animals & Habitats",   emoji: "🐾", kind: "items", items: ANIMALS },
+  { id: "culture",    name: "Food, Money & Festivals", emoji: "🎉", kind: "items", items: CULTURE },
   { id: "india",      name: "India Geography",      emoji: "🇮🇳", kind: "items", items: INDIA },
   { id: "concepts",   name: "Geography Words & Wonders", emoji: "💡", kind: "items", items: CONCEPTS },
+  // advanced-only topics: appear when 🚀 Advanced mode is on
+  { id: "trade",      name: "Products & Trade",     emoji: "🌾", kind: "items", items: TRADE, advOnly: true },
+  { id: "explorers",  name: "Explorers & Journeys", emoji: "⛵", kind: "items", items: EXPLORERS, advOnly: true },
 ];
 
 return { COUNTRIES, STATES, TOPICS };
