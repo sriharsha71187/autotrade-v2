@@ -173,33 +173,18 @@ window.Engine = (function () {
       noTeach: !!(o && o.noTeach),
       asked: [], misses: [], reasks: 0, reviews: 0,
       i: 0, correct: 0, streak: 0, xp: 0, events: [], topicCursor: 0,
-      shown: 0,     // everything displayed this round, teach cards included
-      taught: [],   // facts introduced this round, awaiting their delayed quiz
     };
   }
   function sessionTopics(s, sess) {
     return enabledTopics(s).filter((t) => !sess || !sess.topic || t.id === sess.topic);
   }
 
-  // Choose the next thing to show: {teach:fact} or a question object.
+  // Choose the next question. Adventure is quiz-first: new facts are asked
+  // cold, bee-style — a correct answer proves he knew it (no repetition),
+  // a miss teaches via the answer reveal and earns a later re-ask.
   function nextQuestion(s, sess) {
     const now = Date.now();
     const askedSet = new Set(sess.asked);
-    sess.shown = (sess.shown || 0) + 1;
-
-    // 0. quiz a fact taught earlier this round — only after a few other
-    //    things in between, so it's real recall, never an instant echo
-    //    of the card just shown (flush unconditionally near round end)
-    if (sess.taught && sess.taught.length) {
-      const roomLeft = ROUND_LEN - sess.i;
-      const pick = sess.taught.find((t) => sess.shown - t.at >= 3) ||
-        (roomLeft <= sess.taught.length ? sess.taught[0] : null);
-      if (pick) {
-        sess.taught = sess.taught.filter((t) => t !== pick);
-        const f = Q.byId[pick.factId];
-        if (f) return makeQ(s, f, { fresh: true });
-      }
-    }
     // 1. re-ask a fact missed >=3 questions ago this session
     const due = sess.misses.find((m) => sess.i - m.at >= 3);
     if (due) {
@@ -227,20 +212,12 @@ window.Engine = (function () {
       const f = pickNew(s, askedSet, +1, sessionTopics(s, sess));
       if (f) return makeQ(s, f, { challenge: true });
     }
-    // 4. new material at current tier → teach card first, unless the fact
-    //    was already studied in Learn mode (no redundant re-teaching)
+    // 4. new material at current tier, asked cold (marked 🆕 in the UI)
     const f = pickNew(s, askedSet, 0, sessionTopics(s, sess));
     if (f) {
       const r = s.facts[f.id];
-      if (sess.noTeach || (r && r.n)) return makeQ(s, f, {});
-      // teach only while there's room to quiz it later this round,
-      // and never stack more than 3 unquizzed teach cards
-      if (sess.i < ROUND_LEN - 1 && sess.taught.length < 3) {
-        rec(s, f.id).n = 1;        // introduced — never re-teach, even next session
-        sess.asked.push(f.id);     // and never re-pick it as "new" this round
-        sess.taught.push({ factId: f.id, at: sess.shown });
-        return { teach: true, fact: f };
-      }
+      const isNew = !r || (r.b === 0 && !r.c && !r.w);
+      return makeQ(s, f, isNew && !sess.noTeach ? { fresh: true } : {});
     }
     // 5. fallback: soonest-due or weakest fact
     let best = null, bestScore = Infinity;
@@ -307,7 +284,9 @@ window.Engine = (function () {
     if (correct) {
       r.c++;
       const fastGrad = r.b === 0 && f.tier < (s.topics[f.topic].tier || 1);
-      r.b = fastGrad ? 3 : Math.min(5, r.b + 1);
+      // knew a brand-new fact cold → strong evidence, skip the 4h re-check
+      const coldRight = r.b === 0 && r.c === 1 && r.w === 0;
+      r.b = fastGrad ? 3 : coldRight ? 2 : Math.min(5, r.b + 1);
       r.due = now + INTERVALS[Math.min(r.b, 5)];
     } else {
       r.w++;

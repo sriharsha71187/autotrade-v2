@@ -24,8 +24,10 @@ Every fact is reviewable and editable in one file.
 
 - **Placement first** — a 12-question adaptive diagnostic finds the right
   starting tier instead of starting from zero.
-- **Teach → test** — new facts are introduced with a "New fact!" card, then
-  quizzed immediately.
+- **Quiz-first, teach-on-miss** — new facts are asked cold, bee-style
+  (marked 🆕). A correct answer proves it's known — no repetition; a miss
+  teaches via the answer reveal + fun fact and earns one re-ask later in
+  the round. Learn mode is the dedicated browse-the-facts surface.
 - **Per-fact memory** — every fact has a Leitner-style strength (box 0–5).
   Correct answers push review further out (4h → 1d → 3d → 7d → 21d);
   misses come back within the same session, then again the next day.

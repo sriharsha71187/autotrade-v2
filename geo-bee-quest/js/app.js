@@ -594,7 +594,7 @@
       if (q.flags.reask) modeChip = `<span class="mode-chip mode-reask">🔁 Try again!</span>`;
       else if (q.flags.review) modeChip = `<span class="mode-chip mode-review">🔔 Review</span>`;
       else if (q.flags.challenge) modeChip = `<span class="mode-chip mode-challenge">⚡ Challenge — 2× XP</span>`;
-      else if (q.flags.fresh) modeChip = `<span class="mode-chip mode-reask">🆕 Just learned!</span>`;
+      else if (q.flags.fresh) modeChip = `<span class="mode-chip mode-reask">🆕 New one — take a shot!</span>`;
     }
     const media = q.media ? `<div class="qmedia">${mediaHTML(q.media, true)}</div>` : "";
     let body;
