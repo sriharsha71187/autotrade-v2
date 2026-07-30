@@ -35,7 +35,7 @@
     const active = NAV_FOR_SCREEN[document.body.dataset.screen] || "";
     sb.innerHTML = `
       <div class="sb-logo"><span class="title-sheen">GeoBee Quest</span>
-        <div class="sb-sub">Night Expedition</div></div>
+        <div class="sb-sub">Terra Explorer</div></div>
       <nav class="sb-nav">
         <button data-nav="home" class="${active === "home" ? "active" : ""}">🏠 Home</button>
         <button data-nav="learn" class="${active === "learn" ? "active" : ""}">📚 Learn</button>
