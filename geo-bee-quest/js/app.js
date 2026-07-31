@@ -349,8 +349,49 @@
   }
 
   // ---------- learn mode (curriculum browser) ----------
-  function learnFacts(topicId) {
-    return E.topicFacts(S, topicId).slice().sort((a, b) => a.tier - b.tier);
+  // A chapter is a "book": section divider pages followed by that section's
+  // fact pages. Grouped chapters section by region/continent; item chapters
+  // use authored index ranges; chapters without sections are plain decks.
+  function learnBook(topicId) {
+    const t = window.GEO_DATA.TOPICS.find((x) => x.id === topicId) || {};
+    const all = E.topicFacts(S, topicId);
+    const byTier = (arr) => arr.slice().sort((a, b) => a.tier - b.tier);
+    const pages = [], toc = [];
+    const pushSec = (sec, facts) => {
+      if (!facts.length) return;
+      toc.push({ name: sec.n, page: pages.length, count: facts.length });
+      pages.push({ sec, part: toc.length });
+      facts.forEach((f) => pages.push({ fact: f, sec }));
+    };
+    if (t.secBy && t.secMeta) {
+      const used = new Set();
+      for (const sec of t.secMeta) {
+        const facts = byTier(all.filter((f) => f.src && f.src[t.secBy] === sec.key));
+        facts.forEach((f) => used.add(f.id));
+        pushSec(sec, facts);
+      }
+      const rest = all.filter((f) => !used.has(f.id));
+      pushSec({ n: "More to Explore", scene: t.scene, intro: "A few more treasures that deserve a page of their own." }, byTier(rest));
+    } else if (t.secs && t.items) {
+      for (let i = 0; i < t.secs.length; i++) {
+        const from = t.secs[i].from;
+        const to = i + 1 < t.secs.length ? t.secs[i + 1].from : Infinity;
+        // curated narrative order within a section — no tier sort
+        const facts = all.filter((f) => {
+          const ix = t.items.indexOf(f.src);
+          return ix >= from && ix < to;
+        });
+        pushSec(t.secs[i], facts);
+      }
+    } else {
+      byTier(all).forEach((f) => pages.push({ fact: f }));
+    }
+    return { pages, toc };
+  }
+  // Section illustration, falling back to the chapter's art.
+  function secSceneHTML(sec, topicId) {
+    if (sec && sec.scene && window.GEO_SCENES && window.GEO_SCENES[sec.scene]) return window.GEO_SCENES[sec.scene];
+    return sceneHTML(topicId);
   }
   function renderLearnTopics() {
     const topics = E.enabledTopics(S);
@@ -358,19 +399,19 @@
     $("#screen-learn").innerHTML = `
       <div class="quiz-top">
         <button class="icon-btn" id="btn-back">← Back</button>
-        <span class="stat">📚 Learn</span>
+        <span class="stat">📚 Field Book</span>
       </div>
       <div class="card">
-        <h2>Pick an adventure</h2>
-        <p class="muted" style="margin-bottom:12px">Flip through fact cards at your own pace — no scores, no timers. Quiz yourself whenever you're ready!</p>
+        <h2>Pick a chapter</h2>
+        <p class="muted" style="margin-bottom:12px">Read the Field Book at your own pace — no scores, no timers. Quiz yourself whenever you're ready!</p>
         <div class="learn-grid">
-          ${topics.map((t) => {
-            const total = E.topicFacts(S, t.id).length;
+          ${topics.map((t, i) => {
+            const total = learnBook(t.id).pages.length;
             const seen = Math.min(S.learnPos[t.id] || 0, total);
             return `<button class="learn-tile" data-id="${t.id}">
               <span class="lt-emoji">${t.emoji}</span>
-              <span class="lt-name">${esc(t.name)}</span>
-              <span class="lt-count">${seen}/${total} explored</span>
+              <span class="lt-name">Ch. ${i + 1} · ${esc(t.name)}</span>
+              <span class="lt-count">${seen}/${total} pages</span>
             </button>`;
           }).join("")}
         </div>
@@ -387,12 +428,13 @@
     if (t.scene === "worldmap") return mapHTML({ kind: "world" });
     return (window.GEO_SCENES && window.GEO_SCENES[t.scene]) || "";
   }
-  // Chapter cover: illustration + a real explanation of the subject.
+  // Chapter cover: illustration, explanation, and a table of contents.
   function renderLearnCover(topicId) {
     const t = window.GEO_DATA.TOPICS.find((x) => x.id === topicId);
-    const facts = learnFacts(topicId);
+    const book = learnBook(topicId);
+    const total = book.pages.length;
     const chapterNo = E.enabledTopics(S).findIndex((x) => x.id === topicId) + 1;
-    const pos = Math.min(S.learnPos[topicId] || 0, facts.length);
+    const pos = Math.min(S.learnPos[topicId] || 0, total);
     show("#screen-learn");
     $("#screen-learn").innerHTML = `
       <div class="quiz-top">
@@ -405,65 +447,111 @@
         <div class="bc-kicker">Chapter ${chapterNo}</div>
         <h1>${esc(t.name)}</h1>
         <p class="bc-intro">${esc(t.intro || "")}</p>
+        ${book.toc.length ? `<div class="bc-toc">
+          <div class="bc-toc-title">In this chapter</div>
+          ${book.toc.map((s, i) => `<button class="toc-row" data-page="${s.page}">
+            <span class="toc-name">${i + 1}. ${esc(s.name)}</span>
+            <span class="toc-dots"></span>
+            <span class="toc-page">p. ${s.page + 1}</span>
+          </button>`).join("")}
+        </div>` : ""}
         <div class="bc-progress">
-          <div class="bar"><div class="seg-mastered" style="width:${facts.length ? (pos / facts.length) * 100 : 0}%"></div></div>
-          <span class="counts">${pos} of ${facts.length} pages read</span>
+          <div class="bar"><div class="seg-mastered" style="width:${total ? (pos / total) * 100 : 0}%"></div></div>
+          <span class="counts">${pos} of ${total} pages read</span>
         </div>
-        <button class="big green" id="btn-start-reading">${pos > 0 && pos < facts.length ? `Continue reading — page ${pos + 1} ▶` : pos >= facts.length ? "Read it again 📖" : "Start reading ▶"}</button>
+        <button class="big green" id="btn-start-reading">${pos > 0 && pos < total ? `Continue reading — page ${pos + 1} ▶` : pos >= total ? "Read it again 📖" : "Start reading ▶"}</button>
       </div>`;
     $("#btn-back").onclick = renderLearnTopics;
     $("#btn-quiz-topic").onclick = () => startPractice(topicId, true);
     $("#btn-start-reading").onclick = () =>
-      renderLearnDeck(topicId, pos >= facts.length ? 0 : pos);
+      renderLearnDeck(topicId, pos >= total ? 0 : pos);
+    document.querySelectorAll(".toc-row").forEach((b) => {
+      b.onclick = () => renderLearnDeck(topicId, parseInt(b.dataset.page, 10));
+    });
     speak(t.intro);
   }
   function renderLearnDeck(topicId, idx, dir) {
-    const facts = learnFacts(topicId);
-    if (!facts.length) return renderLearnTopics();
-    idx = Math.max(0, Math.min(idx, facts.length - 1));
+    const book = learnBook(topicId);
+    const pages = book.pages;
+    if (!pages.length) return renderLearnTopics();
+    idx = Math.max(0, Math.min(idx, pages.length - 1));
     S.learnPos[topicId] = Math.max(S.learnPos[topicId] || 0, idx + 1);
-    const f = facts[idx];
-    E.noteSeen(S, f.id);
+    const page = pages[idx];
+    const f = page.fact;
+    if (f) E.noteSeen(S, f.id);
     save();
     const m = topicMeta(topicId);
+    const turn = dir === "back" ? "turn-back" : "turn-fwd";
+    show("#screen-learn");
+
+    if (!f) {
+      // section divider page
+      const sec = page.sec;
+      $("#screen-learn").innerHTML = `
+        <div class="quiz-top">
+          <button class="icon-btn" id="btn-back">← Chapter</button>
+          <span class="stat">${m.emoji} ${idx + 1} / ${pages.length}</span>
+          <button class="icon-btn" id="btn-quiz-topic" title="Quiz this whole chapter">🎯 Quiz</button>
+        </div>
+        <div class="card book-page sec-page ${turn}">
+          <div class="bp-ribbon">${m.emoji} ${esc(m.name)}</div>
+          <div class="bp-scene">${secSceneHTML(sec, topicId)}</div>
+          <div class="bc-kicker">Part ${page.part}</div>
+          <h2 class="sec-title">${esc(sec.n)}</h2>
+          <p class="bc-intro">${esc(sec.intro || "")}</p>
+          <button class="icon-btn small" id="btn-say" aria-label="read aloud">🔊 Read to me</button>
+          <div class="bp-footer">— Page ${idx + 1} of ${pages.length} —</div>
+        </div>
+        <div class="row learn-nav">
+          <button class="big ghost" id="btn-prev" ${idx === 0 ? "disabled" : ""}>◀ Back</button>
+          <button class="big green" id="btn-next-card">Turn the page ▶</button>
+        </div>`;
+      $("#btn-back").onclick = () => renderLearnCover(topicId);
+      $("#btn-say").onclick = () => forceSpeak(sec.n + ". " + (sec.intro || ""));
+      $("#btn-prev").onclick = () => renderLearnDeck(topicId, idx - 1, "back");
+      $("#btn-next-card").onclick = () => renderLearnDeck(topicId, idx + 1);
+      $("#btn-quiz-topic").onclick = () => startPractice(topicId, true);
+      speak(sec.n + ". " + (sec.intro || ""));
+      return;
+    }
+
     // page illustration: the fact's own map/flag when it has one,
-    // otherwise the chapter's scene art
+    // otherwise the section's (or chapter's) scene art
     let media;
     if (topicId === "flags") {
       media = `<div class="qmedia">${mediaHTML({ type: "flag", code: Q.flagCode(f.src.f), emoji: f.src.f }, true)}</div>`;
     } else if (f.teachMap) {
       media = `<div class="qmedia">${mapHTML(f.teachMap)}</div>`;
     } else {
-      media = `<div class="bp-scene">${sceneHTML(topicId)}</div>`;
+      media = `<div class="bp-scene">${secSceneHTML(page.sec, topicId)}</div>`;
     }
-    show("#screen-learn");
     $("#screen-learn").innerHTML = `
       <div class="quiz-top">
         <button class="icon-btn" id="btn-back">← Chapter</button>
-        <span class="stat">${m.emoji} ${idx + 1} / ${facts.length}</span>
+        <span class="stat">${m.emoji} ${idx + 1} / ${pages.length}</span>
         <span class="stat">${tierStars(f.tier).slice(0, 5)}</span>
         <button class="icon-btn" id="btn-quiz-topic" title="Quiz this whole chapter">🎯 Quiz</button>
       </div>
-      <div class="card book-page ${dir === "back" ? "turn-back" : "turn-fwd"}">
-        <div class="bp-ribbon">${m.emoji} ${esc(m.name)}</div>
+      <div class="card book-page ${turn}">
+        <div class="bp-ribbon">${m.emoji} ${esc(page.sec ? page.sec.n : m.name)}</div>
         ${media}
         ${f.teachQ
           ? `<div class="bp-question">${esc(f.teachQ)}</div><div class="teach-main">${esc(f.teachA)}</div>`
           : `<div class="teach-main">${esc(f.teachText)}</div>`}
         ${f.fact ? `<div class="bp-note"><span class="bp-note-tag">🖋️ Field note</span>${esc(f.fact)}</div>` : ""}
         <button class="icon-btn small" id="btn-say" aria-label="read aloud">🔊 Read to me</button>
-        <div class="bp-footer">— Page ${idx + 1} of ${facts.length} —</div>
+        <div class="bp-footer">— Page ${idx + 1} of ${pages.length} —</div>
       </div>
       <div class="row learn-nav">
         <button class="big ghost" id="btn-prev" ${idx === 0 ? "disabled" : ""}>◀ Back</button>
-        <button class="big green" id="btn-next-card">${idx === facts.length - 1 ? "Finish chapter 🎉" : "Turn the page ▶"}</button>
+        <button class="big green" id="btn-next-card">${idx === pages.length - 1 ? "Finish chapter 🎉" : "Turn the page ▶"}</button>
       </div>`;
     decorateMap($("#screen-learn"));
     $("#btn-back").onclick = () => renderLearnCover(topicId);
     $("#btn-say").onclick = () => forceSpeak(f.teachText + (f.fact ? ". " + f.fact : ""));
     $("#btn-prev").onclick = () => renderLearnDeck(topicId, idx - 1, "back");
     $("#btn-next-card").onclick = () =>
-      idx === facts.length - 1 ? renderLearnDone(topicId, facts.length) : renderLearnDeck(topicId, idx + 1);
+      idx === pages.length - 1 ? renderLearnDone(topicId, pages.length) : renderLearnDeck(topicId, idx + 1);
     $("#btn-quiz-topic").onclick = () => startPractice(topicId, true);
     speak(f.teachText);
   }

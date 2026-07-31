@@ -159,5 +159,27 @@ window.GEO_SCENES = (function () {
       <path d="M96,38 L106,26 L117,39 L110,45 L105,38 L100,46 Z" fill="${SNOW}"/>
       <path d="M132,92 L172,50 L200,92 Z" fill="${TERRA2}" opacity="0.6"/>
       ${ground(SAGE, "M0,90 Q100,84 200,90 V110 H0 Z")}`),
+
+    canyon: wrap(`${sun(166, 18, 10)}
+      <rect y="34" width="200" height="76" fill="${SAND}"/>
+      <path d="M0,34 L36,34 L52,110 L0,110 Z" fill="${TERRA2}" opacity="0.85"/>
+      <path d="M200,34 L152,34 L138,110 L200,110 Z" fill="${TERRA2}" opacity="0.85"/>
+      <path d="M36,34 L52,110 M152,34 L138,110" stroke="${INK}" stroke-width="2" opacity="0.3"/>
+      <g stroke="${TERRA}" stroke-width="4" opacity="0.6">
+        <line x1="8" y1="56" x2="42" y2="56"/><line x1="158" y1="56" x2="194" y2="56"/>
+        <line x1="12" y1="76" x2="46" y2="76"/><line x1="154" y1="76" x2="190" y2="76"/></g>
+      <path d="M84,110 Q95,80 90,50 Q88,40 94,34 L102,34 Q96,44 98,54 Q104,84 96,110 Z" fill="#a9cede"/>`, SKY2),
+
+    ice: wrap(`${cloud(40, 18, 0.9)}${cloud(150, 26, 0.7)}
+      <rect y="64" width="200" height="46" fill="#a9cede"/>${waves(78)}
+      <path d="M28,64 L44,40 L66,64 Z" fill="${SNOW}"/>
+      <path d="M44,64 L58,52 L74,64 Z" fill="${SKY2}"/>
+      <path d="M120,64 L148,30 L182,64 Z" fill="${SNOW}"/>
+      <path d="M148,64 L166,46 L188,64 Z" fill="${SKY2}"/>
+      <g transform="translate(96,52)">
+        <ellipse cx="0" cy="6" rx="6" ry="9" fill="${INK}"/>
+        <ellipse cx="0" cy="8" rx="3.6" ry="6" fill="${SNOW}"/>
+        <circle cx="0" cy="-4" r="4" fill="${INK}"/>
+        <path d="M0,-3 l3,2 -3,2 Z" fill="${SUN}"/></g>`),
   };
 })();

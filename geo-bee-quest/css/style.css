@@ -524,3 +524,48 @@ textarea { background: var(--tile-low); color: var(--ink); border: 2px solid tra
 @media (prefers-reduced-motion: reduce) {
   .book-page.turn-fwd, .book-page.turn-back { animation: none; }
 }
+
+/* --- Field Book v14: table of contents + section divider pages --- */
+.bc-toc {
+  text-align: left;
+  background: var(--paper, #fcf9f8);
+  border-radius: 18px;
+  padding: 14px 16px;
+  margin: 14px 0 4px;
+}
+.bc-toc-title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--terra, #9f402d);
+  margin-bottom: 8px;
+}
+.toc-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 7px 2px;
+  font: inherit;
+  font-weight: 600;
+  color: inherit;
+  cursor: pointer;
+  border-radius: 10px;
+}
+.toc-row:hover { background: rgba(226, 114, 91, 0.09); }
+.toc-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.toc-dots {
+  flex: 1;
+  border-bottom: 2px dotted rgba(86, 66, 62, 0.3);
+  transform: translateY(-4px);
+  min-width: 16px;
+}
+.toc-page { color: var(--terra, #9f402d); font-weight: 700; white-space: nowrap; }
+
+.sec-page { text-align: center; }
+.sec-page .bp-scene .scene { height: 130px; }
+.sec-title { margin: 2px 0 6px; font-size: 1.5rem; }
+.sec-page .bc-intro { text-align: left; }
