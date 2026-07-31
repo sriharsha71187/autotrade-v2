@@ -604,3 +604,7 @@ textarea { background: var(--tile-low); color: var(--ink); border: 2px solid tra
 .retype-row input {
   border-color: var(--terra-soft, #e2725b);
 }
+
+/* teaching diagrams keep their full drawing (no crop — labels must show) */
+.bp-diagram { height: auto; }
+.bp-diagram .scene { height: auto; aspect-ratio: 200 / 110; }

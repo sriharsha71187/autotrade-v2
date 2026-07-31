@@ -349,6 +349,25 @@
   }
 
   // ---------- learn mode (curriculum browser) ----------
+  // Teaching diagrams on specific textbook pages: "topic|section|pageIndex"
+  // → scene key in js/scenes.js (labeled concept art, not decoration).
+  const PAGE_ART = {
+    "maps|The Big Picture|1": "poles",
+    "maps|Finding Your Way|1": "compass8",
+    "maps|Lines Around the Globe|0": "hemispheres",
+    "maps|Lines Around the Globe|1": "latlon",
+    "continents|How the World Fits Together|0": "hemispheres",
+    "usphys|Lakes & Coasts|0": "greatlakes",
+    "worldphys|Mountains & High Places|0": "plates",
+    "worldphys|Straits, Capes & Currents|0": "strait",
+    "concepts|Shapes of the Land|0": "landforms",
+    "concepts|River & Water Words|0": "riverparts",
+    "concepts|River & Water Words|1": "strait",
+    "concepts|Biomes: Hot, Cold & Wet|1": "biomestrip",
+    "concepts|Fire & Ice: A Restless Earth|0": "volcanocut",
+    "india|Mountains, Rivers & Monsoon|2": "monsoon",
+    "animals|Poles & Oceans|0": "poles",
+  };
   // A chapter is a "book": section divider pages followed by that section's
   // fact pages. Grouped chapters section by region/continent; item chapters
   // use authored index ranges; chapters without sections are plain decks.
@@ -373,7 +392,8 @@
       if (!reads.length) return false;
       toc.push({ name: sec.n, page: pages.length, count: reads.length });
       pages.push({ sec, part: toc.length });
-      reads.forEach((pg) => pages.push({ sec, prose: pg.p, art: pg.art, facts }));
+      reads.forEach((pg, pi) =>
+        pages.push({ sec, prose: pg.p, art: pg.art || PAGE_ART[`${t.id}|${sec.n}|${pi}`], facts }));
       return true;
     };
     if (t.secBy && t.secMeta) {
@@ -523,7 +543,7 @@
     const turn = dir === "back" ? "turn-back" : "turn-fwd";
     show("#screen-learn");
 
-    if (!f) {
+    if (!f && !page.prose) {
       // section divider page
       const sec = page.sec;
       $("#screen-learn").innerHTML = `
@@ -558,9 +578,8 @@
       // textbook page: written paragraphs, no Q&A
       (page.facts || []).forEach((pf) => E.noteSeen(S, pf.id));
       save();
-      const art = page.art && window.GEO_SCENES && window.GEO_SCENES[page.art]
-        ? window.GEO_SCENES[page.art]
-        : secSceneHTML(page.sec, topicId);
+      const hasDiagram = !!(page.art && window.GEO_SCENES && window.GEO_SCENES[page.art]);
+      const art = hasDiagram ? window.GEO_SCENES[page.art] : secSceneHTML(page.sec, topicId);
       $("#screen-learn").innerHTML = `
         <div class="quiz-top">
           <button class="icon-btn" id="btn-back">← Chapter</button>
@@ -569,7 +588,7 @@
         </div>
         <div class="card book-page ${turn}">
           <div class="bp-ribbon">${m.emoji} ${esc(page.sec.n)}</div>
-          <div class="bp-scene">${art}</div>
+          <div class="bp-scene ${hasDiagram ? "bp-diagram" : ""}">${art}</div>
           <div class="bp-prose teach-main">${esc(page.prose)}</div>
           <button class="icon-btn small" id="btn-say" aria-label="read aloud">🔊 Read to me</button>
           <div class="bp-footer">— Page ${idx + 1} of ${pages.length} —</div>
