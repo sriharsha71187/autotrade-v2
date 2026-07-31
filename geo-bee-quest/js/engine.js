@@ -46,11 +46,16 @@ window.Engine = (function () {
     const list = Q.byTopic[topicId] || [];
     return s.settings.advanced ? list : list.filter((f) => !f.adv);
   }
+  // "Known" must be earned, not guessed: box >= 3 AND either two correct
+  // answers or one produced (typed/spoken/map-click) correct, which a lucky
+  // multiple-choice tap can't fake.
+  function solidKnown(r) {
+    return !!(r && r.b >= 3 && (r.v || r.c >= 2));
+  }
   function topicKnown(s, topicId) {
     let n = 0;
     for (const f of topicFacts(s, topicId)) {
-      const r = s.facts[f.id];
-      if (r && r.b >= 3) n++;
+      if (solidKnown(s.facts[f.id])) n++;
     }
     return n;
   }
@@ -111,9 +116,10 @@ window.Engine = (function () {
     if (s.settings.beeDate) {
       const bd = new Date(s.settings.beeDate + "T12:00:00");
       days = Math.max(0, Math.ceil((bd - Date.now()) / 86400000));
-      // aim to see everything with ~10 days to spare for pure review
+      // aim to see everything with ~10 days to spare for pure review;
+      // ~20 new facts/day is the age-appropriate ceiling
       const learnDays = Math.max(1, days - 10);
-      perDay = Math.min(60, Math.ceil(unseen / learnDays));
+      perDay = Math.min(20, Math.ceil(unseen / learnDays));
     }
     const mockDue = !s.lastBee || Date.now() - s.lastBee > 6.5 * 86400000;
     return { days, dueN, unseen, perDay, mockDue };
@@ -171,6 +177,9 @@ window.Engine = (function () {
       // noTeach: the learner just browsed these facts in Learn mode —
       // quiz directly instead of re-showing each fact as a teach card
       noTeach: !!(o && o.noTeach),
+      // drill: fixed fact-id list (mock debrief / tricky-ones) — the session
+      // serves exactly these facts plus their in-session re-asks
+      drill: o && o.factIds ? o.factIds.slice() : null,
       asked: [], misses: [], reasks: 0, reviews: 0,
       i: 0, correct: 0, streak: 0, xp: 0, events: [], topicCursor: 0,
     };
@@ -185,20 +194,45 @@ window.Engine = (function () {
   function nextQuestion(s, sess) {
     const now = Date.now();
     const askedSet = new Set(sess.asked);
-    // 1. re-ask a fact missed >=3 questions ago this session
-    const due = sess.misses.find((m) => sess.i - m.at >= 3);
+    // 1. re-ask a fact missed >=3 questions ago — and at the end of the round
+    //    (overtime), re-ask remaining misses immediately so no round ends on
+    //    an uncorrected error
+    const overtime = sess.i >= ROUND_LEN;
+    const due = sess.misses.find((m) => overtime || sess.i - m.at >= 3);
     if (due) {
       sess.misses = sess.misses.filter((m) => m !== due);
       const f = Q.byId[due.factId];
       if (f) return makeQ(s, f, { reask: true });
     }
-    // 2. overdue scheduled reviews (cap 4 per round)
-    if (sess.reviews < 4) {
+    // drill session: fixed fact list (e.g. mock debrief), nothing else;
+    // once the list is done, immediately clear any remaining misses
+    if (sess.drill) {
+      const nextId = sess.drill.find((id) => !askedSet.has(id));
+      const f = nextId && Q.byId[nextId];
+      if (f) return makeQ(s, f, { review: true });
+      if (sess.reasks >= 8) return null; // safety: never trap the learner
+      const m = sess.misses.shift();
+      const mf = m && Q.byId[m.factId];
+      if (mf) sess.reasks++;
+      return mf ? makeQ(s, mf, { reask: true }) : null;
+    }
+    // taper: in the last 10 days before the bee, no new material — pure
+    // review; in the last 2 days, only confidence-polish (box >= 2)
+    let beeDays = null;
+    if (s.settings.beeDate) {
+      beeDays = Math.ceil((new Date(s.settings.beeDate + "T12:00:00") - now) / 86400000);
+    }
+    const taper = beeDays !== null && beeDays >= 0 && beeDays <= 10;
+    const polish = beeDays !== null && beeDays >= 0 && beeDays <= 2;
+    // 2. overdue scheduled reviews — cap grows with the backlog (4..8)
+    const dueN = dueCount(s);
+    const cap = Math.max(4, Math.min(8, Math.ceil(dueN / 5)));
+    if (sess.reviews < cap || taper) {
       const dueFacts = [];
       for (const t of sessionTopics(s, sess)) {
         for (const f of topicFacts(s, t.id)) {
           const r = s.facts[f.id];
-          if (r && r.b >= 1 && r.due && r.due <= now && !askedSet.has(f.id)) dueFacts.push([r.due, f]);
+          if (r && r.b >= (polish ? 2 : 1) && r.due && r.due <= now && !askedSet.has(f.id)) dueFacts.push([r.due, f]);
         }
       }
       if (dueFacts.length) {
@@ -207,17 +241,20 @@ window.Engine = (function () {
         return makeQ(s, dueFacts[0][1], { review: true });
       }
     }
-    // 3. occasional challenge preview from one tier up
-    if (Math.random() < 0.12) {
-      const f = pickNew(s, askedSet, +1, sessionTopics(s, sess));
-      if (f) return makeQ(s, f, { challenge: true });
-    }
-    // 4. new material at current tier, asked cold (marked 🆕 in the UI)
-    const f = pickNew(s, askedSet, 0, sessionTopics(s, sess));
-    if (f) {
-      const r = s.facts[f.id];
-      const isNew = !r || (r.b === 0 && !r.c && !r.w);
-      return makeQ(s, f, isNew && !sess.noTeach ? { fresh: true } : {});
+    // big backlog or bee taper → review-only rounds, no new material
+    if (!taper && dueN <= 25) {
+      // 3. occasional challenge preview from one tier up
+      if (Math.random() < 0.12) {
+        const f = pickNew(s, askedSet, +1, sessionTopics(s, sess));
+        if (f) return makeQ(s, f, { challenge: true });
+      }
+      // 4. new material at current tier, asked cold (marked 🆕 in the UI)
+      const f = pickNew(s, askedSet, 0, sessionTopics(s, sess));
+      if (f) {
+        const r = s.facts[f.id];
+        const isNew = !r || (r.b === 0 && !r.c && !r.w);
+        return makeQ(s, f, isNew && !sess.noTeach ? { fresh: true } : {});
+      }
     }
     // 5. fallback: soonest-due or weakest fact
     let best = null, bestScore = Infinity;
@@ -283,10 +320,14 @@ window.Engine = (function () {
     r.last = now;
     if (correct) {
       r.c++;
+      // produced answers (typed / spoken / map-click) can't be guessed —
+      // they verify real recall
+      if (q.kind === "typed" || q.kind === "mapclick") r.v = 1;
       const fastGrad = r.b === 0 && f.tier < (s.topics[f.topic].tier || 1);
       // knew a brand-new fact cold → strong evidence, skip the 4h re-check
+      // (but one exposure never jumps straight to "known" — that must be earned)
       const coldRight = r.b === 0 && r.c === 1 && r.w === 0;
-      r.b = fastGrad ? 3 : coldRight ? 2 : Math.min(5, r.b + 1);
+      r.b = fastGrad || coldRight ? 2 : Math.min(5, r.b + 1);
       r.due = now + INTERVALS[Math.min(r.b, 5)];
     } else {
       r.w++;
@@ -321,11 +362,11 @@ window.Engine = (function () {
     if (sess && correct) entry.xp += 10 * q.tier;
     if (s.log.length > 90) s.log = s.log.slice(-90);
 
-    // tier promotion: 80% of this tier's facts known → move up
+    // tier promotion: 80% of this tier's facts solidly known → move up
     const t = s.topics[f.topic];
     const tierFacts = topicFacts(s, f.topic).filter((x) => x.tier === t.tier);
     if (tierFacts.length) {
-      const known = tierFacts.filter((x) => { const rr = s.facts[x.id]; return rr && rr.b >= 3; }).length;
+      const known = tierFacts.filter((x) => solidKnown(s.facts[x.id])).length;
       if (known / tierFacts.length >= 0.8 && t.tier < 5) {
         t.tier++;
         events.push({ type: "levelup", topic: f.topic, tier: t.tier });
@@ -476,6 +517,12 @@ window.Engine = (function () {
       if (plan.kind === "iac") plan.score -= 1;
       plan.strikes++;
     }
+    // debrief list: every non-correct question, for the post-mock review
+    if (result !== "correct" && q.kind !== "clues") {
+      (plan.review = plan.review || []).push({
+        factId: q.factId, prompt: q.prompt, answer: q.answerText, fact: q.fact || null,
+      });
+    }
     // pyramid questions aren't facts in the learner model
     if (result !== "skip" && q.kind !== "clues") record(s, null, q, result === "correct");
     return plan;
@@ -503,8 +550,9 @@ window.Engine = (function () {
       for (const f of facts) {
         const r = s.facts[f.id];
         if (!r || r.b === 0) { unseen++; continue; }
-        if (r.b >= MASTERED_BOX) mastered++;
-        else if (r.b === 3) known++;
+        // dashboard honesty: box alone isn't "known" — it must be solid
+        if (r.b >= MASTERED_BOX && solidKnown(r)) mastered++;
+        else if (r.b >= 3 && solidKnown(r)) known++;
         else { learning++; if (r.w > 0) { weak++; weakest.push([r.w - r.c, f, r]); } }
       }
       weakest.sort((a, b) => b[0] - a[0]);

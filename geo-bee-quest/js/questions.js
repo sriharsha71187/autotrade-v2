@@ -205,12 +205,20 @@ window.QBank = (function () {
       const sameRegion = stateCapsByRegion[s.r].filter((c) => c !== s.c);
       const sameRegionNames = stateNamesByRegion[s.r].filter((n) => n !== s.n);
       if (form === "cap") {
-        // rich stems (bee mode) embed a locating clue, NSF-style
-        prompt = opts.rich ? `What is the capital of ${s.n}, a state in the ${s.r}?` : `What is the capital of ${s.n}?`;
+        // rich stems (bee mode) embed a concrete locating clue, NSF-style:
+        // official stems say "the state nicknamed X" / "whose largest city is Y",
+        // not just a region label
+        prompt = opts.rich
+          ? `What is the capital of ${s.n}, the state nicknamed "${s.nick}"?`
+          : `What is the capital of ${s.n}?`;
         answer = s.c; pools = [sameRegion, allStateCaps];
         accept = [s.c];
       } else if (form === "rev") {
-        prompt = opts.rich ? `${s.c} is the capital of which state in the ${s.r}?` : `${s.c} is the capital of which state?`;
+        prompt = opts.rich
+          ? (s.big
+            ? `${s.c} is the capital of which state whose largest city is ${s.big}?`
+            : `${s.c} is the capital of which state in the ${s.r}?`)
+          : `${s.c} is the capital of which state?`;
         answer = s.n; pools = [sameRegionNames, allStateNames];
         accept = [s.n];
       } else if (form === "big") {
@@ -230,7 +238,11 @@ window.QBank = (function () {
       const cont = countriesByCont[s.k].filter((c) => c.n !== s.n);
       const near = cont.filter((c) => Math.abs((c.ct || c.t) - (s.ct || s.t)) <= 1);
       if (form === "cap") {
-        prompt = opts.rich ? `What is the capital of ${art(s.n)}, a country in ${s.k}?` : `What is the capital of ${art(s.n)}?`;
+        prompt = opts.rich
+          ? (s.big
+            ? `What is the capital of ${art(s.n)}, the country whose largest city is ${s.big}?`
+            : `What is the capital of ${art(s.n)}, a country in ${s.k}?`)
+          : `What is the capital of ${art(s.n)}?`;
         answer = s.c;
         pools = [near.map((c) => c.c), cont.map((c) => c.c), allCountries.map((c) => c.c)];
         accept = [s.c];
@@ -258,11 +270,14 @@ window.QBank = (function () {
     } else if (fact.topic === "flags") {
       const cont = countriesByCont[s.k].filter((c) => c.n !== s.n);
       const near = cont.filter((c) => Math.abs(c.t - s.t) <= 1);
+      // classic confusable flags (Ireland/Ivory Coast, Poland/Indonesia, ...)
+      // listed in s.sim come first — real flag rounds are won on these pairs
+      const simCountries = (s.sim || []).map((n) => allCountries.find((c) => c.n === n)).filter(Boolean);
       if (form === "flag") {
         prompt = "Which country does this flag belong to?";
         media = { type: "flag", code: flagCode(s.f), emoji: s.f };
         answer = s.n;
-        pools = [near.map((c) => c.n), cont.map((c) => c.n), allCountries.map((c) => c.n)];
+        pools = [simCountries.map((c) => c.n), near.map((c) => c.n), cont.map((c) => c.n), allCountries.map((c) => c.n)];
         accept = countryAccept(s.n);
       } else {
         prompt = `Which of these is the flag of ${art(s.n)}?`;
@@ -271,7 +286,7 @@ window.QBank = (function () {
           const c = allCountries.find((x) => x.f === label);
           return { type: "flag", code: flagCode(label), emoji: label, alt: c ? c.n : "" };
         };
-        pools = [near.map((c) => c.f), cont.map((c) => c.f), allCountries.map((c) => c.f)];
+        pools = [simCountries.map((c) => c.f), near.map((c) => c.f), cont.map((c) => c.f), allCountries.map((c) => c.f)];
         accept = []; // never typed
       }
     } else {
@@ -296,6 +311,9 @@ window.QBank = (function () {
       q.accept = accept.map(normalize);
     } else {
       q.kind = "mcq";
+      // accept list rides along even on MCQ — the post-miss retype step
+      // (corrective retrieval) checks against it
+      if (accept.length) q.accept = accept.map(normalize);
       // vs = two-option comparative; odd = three-option odd-item-out.
       // opts.optionCount caps total options (NSF mocks use 3, like the real exam).
       let nOpts = fact.item && fact.item.vs ? 1 : fact.item && fact.item.odd ? 2 : 3;

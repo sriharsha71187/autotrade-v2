@@ -181,5 +181,192 @@ window.GEO_SCENES = (function () {
         <ellipse cx="0" cy="8" rx="3.6" ry="6" fill="${SNOW}"/>
         <circle cx="0" cy="-4" r="4" fill="${INK}"/>
         <path d="M0,-3 l3,2 -3,2 Z" fill="${SUN}"/></g>`),
+
+    // --- labeled teaching diagrams ---
+
+    landforms: wrap(`
+      <path d="M0,0 H200 V16 Q170,22 150,18 Q120,28 96,22 Q60,32 40,24 Q18,30 0,24 Z" fill="${SAGE}"/>
+      <path d="M38,24 Q46,17 53,24 L50,52 Q44,60 37,54 Z" fill="${SAGE}"/>
+      <path d="M146,18 L156,16 L162,74 L152,78 Z" fill="${SAGE}"/>
+      <path d="M136,110 Q138,86 156,76 Q184,68 200,72 V110 Z" fill="${SAND2}"/>
+      <ellipse cx="76" cy="82" rx="14" ry="8" fill="${SAND2}"/>
+      <text x="44" y="70" font-size="8" text-anchor="middle" fill="${INK}" font-weight="bold">peninsula</text>
+      <text x="76" y="101" font-size="8" text-anchor="middle" fill="${INK}" font-weight="bold">island</text>
+      <text x="138" y="49" font-size="8" text-anchor="end" fill="${INK}" font-weight="bold">isthmus</text>
+      <line x1="140" y1="46" x2="150" y2="46" stroke="${INK}" stroke-width="1.4"/>`, "#a9cede"),
+
+    riverparts: wrap(`
+      <rect x="154" y="0" width="46" height="110" fill="#a9cede"/>
+      <path d="M4,46 L30,10 L56,46 Z" fill="${INK}" opacity="0.85"/>
+      <path d="M24,17 L30,10 L37,18 L32,23 L29,18 L26,23 Z" fill="${SNOW}"/>
+      <path d="M140,70 L154,58 L154,88 Z" fill="${SAND2}" opacity="0.7"/>
+      <path d="M32,42 C42,60 64,60 88,64 C112,68 124,68 140,71" stroke="#a9cede" stroke-width="5" fill="none" stroke-linecap="round"/>
+      <path d="M108,8 C104,28 100,44 93,62" stroke="#a9cede" stroke-width="3" fill="none" stroke-linecap="round"/>
+      <g stroke="#a9cede" stroke-width="3.5" fill="none" stroke-linecap="round">
+        <path d="M140,71 L154,60"/><path d="M140,71 L155,73"/><path d="M140,71 L152,86"/></g>
+      <text x="60" y="20" font-size="7" fill="${INK}" font-weight="bold">source</text>
+      <line x1="58" y1="21" x2="45" y2="31" stroke="${INK}" stroke-width="1.2"/>
+      <text x="112" y="30" font-size="7" fill="${INK}" font-weight="bold">tributary</text>
+      <line x1="110" y1="29" x2="105" y2="31" stroke="${INK}" stroke-width="1.2"/>
+      <text x="140" y="52" font-size="7" text-anchor="middle" fill="${INK}" font-weight="bold">delta</text>
+      <text x="128" y="90" font-size="7" text-anchor="middle" fill="${INK}" font-weight="bold">mouth</text>
+      <line x1="132" y1="82" x2="139" y2="74" stroke="${INK}" stroke-width="1.2"/>
+      <text x="176" y="102" font-size="7" text-anchor="middle" fill="${INK}" font-weight="bold">sea</text>`, SAGE),
+
+    latlon: wrap(`
+      <circle cx="62" cy="56" r="42" fill="#a9cede" stroke="${INK}" stroke-width="2"/>
+      <ellipse cx="46" cy="36" rx="11" ry="6" fill="${SAGE}"/>
+      <ellipse cx="76" cy="72" rx="9" ry="5" fill="${SAGE}"/>
+      <g stroke="${CREAM}" stroke-width="2" fill="none">
+        <line x1="25" y1="38" x2="99" y2="38"/><line x1="25" y1="74" x2="99" y2="74"/>
+        <line x1="62" y1="14" x2="62" y2="98"/><ellipse cx="62" cy="56" rx="20" ry="42"/></g>
+      <line x1="20" y1="56" x2="104" y2="56" stroke="${TERRA2}" stroke-width="3"/>
+      <text x="122" y="41" font-size="8" fill="${INK}" font-weight="bold">latitude</text>
+      <line x1="100" y1="38" x2="118" y2="38" stroke="${INK}" stroke-width="1.4"/>
+      <text x="122" y="59" font-size="8" fill="${TERRA2}" font-weight="bold">equator</text>
+      <line x1="105" y1="56" x2="118" y2="56" stroke="${TERRA2}" stroke-width="2"/>
+      <text x="122" y="88" font-size="8" fill="${INK}" font-weight="bold">longitude</text>
+      <line x1="76" y1="89" x2="118" y2="85" stroke="${INK}" stroke-width="1.4"/>`, SKY2),
+
+    hemispheres: wrap(`
+      <circle cx="78" cy="56" r="40" fill="#a9cede" stroke="${INK}" stroke-width="2"/>
+      <ellipse cx="58" cy="40" rx="11" ry="7" fill="${SAGE}"/>
+      <ellipse cx="96" cy="70" rx="9" ry="6" fill="${SAGE}"/>
+      <line x1="38" y1="56" x2="118" y2="56" stroke="${TERRA2}" stroke-width="4"/>
+      <line x1="122" y1="56" x2="146" y2="56" stroke="${TERRA2}" stroke-width="2" stroke-dasharray="4 3"/>
+      <text x="78" y="32" font-size="9" text-anchor="middle" fill="${INK}" font-weight="bold">North</text>
+      <text x="76" y="88" font-size="9" text-anchor="middle" fill="${INK}" font-weight="bold">South</text>
+      <text x="149" y="59" font-size="8" fill="${TERRA2}" font-weight="bold">equator</text>`, SKY2),
+
+    volcanocut: wrap(`${cloud(36, 16, 0.8)}
+      <rect y="82" width="200" height="8" fill="${SAGE}"/>
+      <rect y="90" width="200" height="20" fill="${SAND2}"/>
+      <path d="M36,90 L92,24 L108,24 L164,90 Z" fill="${INK}" opacity="0.88"/>
+      <rect x="96" y="24" width="8" height="64" fill="${TERRA}"/>
+      <ellipse cx="100" cy="96" rx="20" ry="12" fill="${TERRA}"/>
+      <path d="M92,24 q8,6 16,0 l-2,8 q-6,4 -12,0 Z" fill="${TERRA}"/>
+      <path d="M92,26 Q84,42 74,50" stroke="${TERRA}" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+      <path d="M96,12 q4,-8 8,0 q4,8 -4,8 q-8,0 -4,-8 Z" fill="${TERRA2}"/>
+      <circle cx="84" cy="12" r="4" fill="${SAND2}" opacity="0.8"/><circle cx="116" cy="10" r="4.5" fill="${SAND2}" opacity="0.7"/>
+      <text x="126" y="17" font-size="8" fill="${INK}" font-weight="bold">lava</text>
+      <line x1="124" y1="15" x2="111" y2="15" stroke="${INK}" stroke-width="1.4"/>
+      <text x="144" y="101" font-size="8" fill="${INK}" font-weight="bold">magma</text>
+      <line x1="142" y1="98" x2="122" y2="96" stroke="${INK}" stroke-width="1.4"/>`),
+
+    plates: wrap(`
+      <rect y="94" width="200" height="16" fill="${TERRA2}"/>
+      <path d="M0,70 H80 L90,94 H0 Z" fill="${SAND2}" stroke="${INK}" stroke-width="2"/>
+      <path d="M200,70 H120 L110,94 H200 Z" fill="${TERRA}" opacity="0.85" stroke="${INK}" stroke-width="2"/>
+      <path d="M64,72 L82,40 L96,54 L112,38 L134,72 Z" fill="${SAGE2}"/>
+      <path d="M77,48 L82,40 L87,48 Z" fill="${SNOW}"/><path d="M107,46 L112,38 L117,46 Z" fill="${SNOW}"/>
+      <line x1="12" y1="58" x2="50" y2="58" stroke="${INK}" stroke-width="3" stroke-linecap="round"/>
+      <path d="M50,53 L60,58 L50,63 Z" fill="${INK}"/>
+      <line x1="188" y1="58" x2="150" y2="58" stroke="${INK}" stroke-width="3" stroke-linecap="round"/>
+      <path d="M150,53 L140,58 L150,63 Z" fill="${INK}"/>
+      <text x="99" y="30" font-size="7" text-anchor="middle" fill="${INK}" font-weight="bold">mountains</text>
+      <text x="38" y="85" font-size="8" text-anchor="middle" fill="${INK}" font-weight="bold">plate</text>
+      <text x="162" y="85" font-size="8" text-anchor="middle" fill="${CREAM}" font-weight="bold">plate</text>`, SKY2),
+
+    biomestrip: wrap(`
+      <rect width="66" height="110" fill="${SKY2}"/>
+      <rect y="66" width="66" height="44" fill="${SNOW}"/>
+      <g fill="${SNOW}"><circle cx="14" cy="26" r="1.8"/><circle cx="34" cy="16" r="1.5"/>
+        <circle cx="50" cy="30" r="1.8"/><circle cx="22" cy="44" r="1.5"/><circle cx="54" cy="50" r="1.8"/></g>
+      <ellipse cx="44" cy="74" rx="6" ry="2.6" fill="${SAND2}"/>
+      <text x="33" y="101" font-size="8" text-anchor="middle" fill="${INK}" font-weight="bold">tundra</text>
+      <rect x="66" width="67" height="110" fill="${SKY}"/>
+      <rect x="66" y="66" width="67" height="44" fill="${SAND2}"/>
+      <circle cx="80" cy="16" r="6" fill="${SUN}" opacity="0.9"/>
+      <line x1="101" y1="82" x2="101" y2="60" stroke="${INK}" stroke-width="3" stroke-linecap="round"/>
+      <path d="M85,60 Q101,46 117,60 Q101,55 85,60 Z" fill="${SAGE2}"/>
+      <path d="M101,68 L110,62" stroke="${INK}" stroke-width="2"/>
+      <g stroke="${SAGE2}" stroke-width="2" stroke-linecap="round">
+        <path d="M74,80 v-6"/><path d="M124,84 v-6"/><path d="M92,88 v-5"/></g>
+      <text x="99" y="101" font-size="8" text-anchor="middle" fill="${INK}" font-weight="bold">savanna</text>
+      <rect x="133" width="67" height="110" fill="${SAGE}"/>
+      <rect x="133" y="80" width="67" height="30" fill="${SAGE2}"/>
+      <line x1="150" y1="80" x2="150" y2="62" stroke="${INK}" stroke-width="2"/>
+      <line x1="170" y1="80" x2="170" y2="66" stroke="${INK}" stroke-width="2"/>
+      <g fill="${SAGE2}"><circle cx="146" cy="44" r="13"/><circle cx="166" cy="36" r="15"/>
+        <circle cx="188" cy="46" r="13"/><circle cx="154" cy="58" r="11"/><circle cx="178" cy="60" r="12"/></g>
+      <g fill="${SAGE}" opacity="0.7"><circle cx="160" cy="48" r="7"/><circle cx="184" cy="52" r="6"/></g>
+      <text x="166" y="101" font-size="8" text-anchor="middle" fill="${CREAM}" font-weight="bold">rainforest</text>
+      <line x1="66" y1="0" x2="66" y2="110" stroke="${CREAM}" stroke-width="2.5"/>
+      <line x1="133" y1="0" x2="133" y2="110" stroke="${CREAM}" stroke-width="2.5"/>`),
+
+    compass8: wrap(`
+      <circle cx="100" cy="56" r="34" fill="${CREAM}" stroke="${SAND2}" stroke-width="4"/>
+      <circle cx="100" cy="56" r="26" fill="none" stroke="${SAND2}" stroke-width="1.5"/>
+      <path d="M114,42 L105,56 L114,70 L100,61 L86,70 L95,56 L86,42 L100,51 Z" fill="${SAND2}"/>
+      <path d="M100,26 L105,51 L130,56 L105,61 L100,86 L95,61 L70,56 L95,51 Z" fill="${TERRA}"/>
+      <path d="M100,26 L105,51 L100,56 Z" fill="${TERRA2}"/>
+      <circle cx="100" cy="56" r="4" fill="${INK}"/>
+      <g fill="${INK}" font-weight="bold" text-anchor="middle">
+        <text x="100" y="14" font-size="9">N</text><text x="100" y="104" font-size="9">S</text>
+        <text x="144" y="59" font-size="9">E</text><text x="56" y="59" font-size="9">W</text>
+        <text x="132" y="28" font-size="7">NE</text><text x="132" y="90" font-size="7">SE</text>
+        <text x="68" y="90" font-size="7">SW</text><text x="68" y="28" font-size="7">NW</text></g>`, SKY2),
+
+    greatlakes: wrap(`
+      <path d="M24,32 Q34,14 68,18 Q102,22 98,34 Q86,44 56,40 Q30,42 24,32 Z" fill="#a9cede"/>
+      <path d="M58,48 Q66,42 72,50 Q78,66 74,82 Q68,90 62,82 Q54,62 58,48 Z" fill="#a9cede"/>
+      <path d="M88,44 Q104,36 112,48 Q118,62 104,68 Q90,64 86,52 Z" fill="#a9cede"/>
+      <path d="M110,72 Q134,64 152,70 Q144,84 112,82 Z" fill="#a9cede"/>
+      <path d="M146,54 Q168,48 180,54 Q172,66 148,64 Z" fill="#a9cede"/>
+      <g fill="${INK}" font-weight="bold" text-anchor="middle">
+        <text x="100" y="57" font-size="9">H</text>
+        <text x="163" y="62" font-size="8">O</text>
+        <text x="67" y="70" font-size="9">M</text>
+        <text x="131" y="78" font-size="8">E</text>
+        <text x="58" y="33" font-size="9">S</text></g>
+      <text x="10" y="103" font-size="8" fill="${INK}" font-weight="bold">HOMES!</text>`, SAGE),
+
+    strait: wrap(`
+      <path d="M0,0 H200 V22 Q166,24 134,32 Q108,40 100,48 Q92,40 66,32 Q34,24 0,22 Z" fill="${SAGE}"/>
+      <path d="M0,88 Q34,86 66,78 Q92,70 100,62 Q108,70 134,78 Q166,86 200,88 V110 H0 Z" fill="${SAND2}"/>
+      ${waves(40)}
+      <path d="M74,55 Q100,55 126,55" stroke="${CREAM}" stroke-width="2" fill="none" stroke-dasharray="4 3"/>
+      <text x="100" y="14" font-size="8" text-anchor="middle" fill="${INK}" font-weight="bold">strait</text>
+      <line x1="100" y1="17" x2="100" y2="40" stroke="${INK}" stroke-width="1.5"/>
+      <path d="M97,38 L100,45 L103,38 Z" fill="${INK}"/>
+      <text x="22" y="62" font-size="8" text-anchor="middle" fill="${INK}" font-weight="bold">sea</text>
+      <text x="178" y="62" font-size="8" text-anchor="middle" fill="${INK}" font-weight="bold">sea</text>`, "#a9cede"),
+
+    monsoon: wrap(`
+      <rect y="64" width="200" height="46" fill="#a9cede"/>
+      <path d="M112,0 H196 Q192,34 172,60 Q160,78 150,90 Q138,72 126,48 Q116,24 112,0 Z" fill="${SAGE}"/>
+      ${cloud(152, 16, 0.7)}
+      <g stroke="#a9cede" stroke-width="2.2" stroke-linecap="round">
+        <line x1="140" y1="28" x2="136" y2="38"/><line x1="152" y1="30" x2="148" y2="40"/>
+        <line x1="164" y1="28" x2="160" y2="38"/><line x1="146" y1="44" x2="142" y2="54"/>
+        <line x1="158" y1="46" x2="154" y2="56"/><line x1="170" y1="42" x2="166" y2="52"/></g>
+      <g stroke="${INK}" stroke-width="3" fill="none" stroke-linecap="round">
+        <path d="M12,88 Q52,84 88,62"/><path d="M8,66 Q48,60 82,40"/><path d="M24,102 Q66,98 104,78"/></g>
+      <g fill="${INK}">
+        <path d="M0,-4 L8,0 L0,4 Z" transform="translate(88,62) rotate(-31)"/>
+        <path d="M0,-4 L8,0 L0,4 Z" transform="translate(82,40) rotate(-30)"/>
+        <path d="M0,-4 L8,0 L0,4 Z" transform="translate(104,78) rotate(-28)"/></g>
+      <text x="12" y="22" font-size="8" fill="${INK}" font-weight="bold">monsoon winds</text>
+      <text x="150" y="66" font-size="7" text-anchor="middle" fill="${INK}" font-weight="bold">India</text>
+      <text x="14" y="78" font-size="7" fill="${INK}" font-weight="bold">sea</text>`),
+
+    poles: wrap(`
+      <circle cx="100" cy="56" r="34" fill="#a9cede" stroke="${INK}" stroke-width="2"/>
+      <ellipse cx="88" cy="54" rx="12" ry="7" fill="${SAGE}"/>
+      <ellipse cx="112" cy="66" rx="8" ry="5" fill="${SAGE}"/>
+      <path d="M78,30 A34,34 0 0 1 122,30 Q100,37 78,30 Z" fill="${SNOW}"/>
+      <path d="M122,82 A34,34 0 0 1 78,82 Q100,75 122,82 Z" fill="${SNOW}"/>
+      <text x="86" y="13" font-size="8" text-anchor="middle" fill="${INK}" font-weight="bold">North Pole</text>
+      <line x1="100" y1="16" x2="100" y2="26" stroke="${INK}" stroke-width="1.4"/>
+      <g transform="translate(130,8)" stroke="${INK}" stroke-width="1" fill="${SNOW}">
+        <rect x="-6" y="7" width="2.6" height="4.5" rx="1"/><rect x="3" y="7" width="2.6" height="4.5" rx="1"/>
+        <ellipse cx="0" cy="5" rx="8" ry="4.5"/><circle cx="8" cy="1.5" r="3"/></g>
+      <text x="86" y="106" font-size="8" text-anchor="middle" fill="${INK}" font-weight="bold">South Pole</text>
+      <line x1="100" y1="92" x2="100" y2="97" stroke="${INK}" stroke-width="1.4"/>
+      <g transform="translate(132,94)">
+        <ellipse cx="0" cy="4" rx="5" ry="7.5" fill="${INK}"/>
+        <ellipse cx="0" cy="5.5" rx="3" ry="5" fill="${SNOW}"/>
+        <circle cx="0" cy="-4.5" r="3.4" fill="${INK}"/>
+        <path d="M0,-4 l2.6,1.6 -2.6,1.6 Z" fill="${SUN}"/></g>`, SKY2),
   };
 })();

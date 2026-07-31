@@ -589,3 +589,18 @@ textarea { background: var(--tile-low); color: var(--ink); border: 2px solid tra
   font-weight: 700;
   color: var(--terra, #9f402d);
 }
+
+/* --- v15 pedagogy: coach's debrief + corrective retype --- */
+.debrief { margin-top: 14px; text-align: left; }
+.debrief h2 { margin-bottom: 10px; }
+.debrief-row {
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: var(--paper, #fcf9f8);
+  margin-bottom: 8px;
+}
+.debrief-q { font-weight: 700; margin-bottom: 2px; }
+.debrief-a { color: var(--sage-deep, #56642b); font-weight: 700; }
+.retype-row input {
+  border-color: var(--terra-soft, #e2725b);
+}

@@ -698,6 +698,15 @@
     };
     nextStep();
   }
+  // Coach's debrief drill: re-quiz exactly the facts missed in a mock.
+  function startDrill(factIds) {
+    act = {
+      kind: "practice",
+      sess: E.newSession("practice", null, { noTeach: true, factIds }),
+      topicFilter: null, noTeach: true,
+    };
+    nextStep();
+  }
   function startPlacement() {
     act = { kind: "placement", plan: E.placementPlan(S) };
     nextStep();
@@ -713,7 +722,14 @@
 
   function nextStep() {
     if (act.kind === "practice") {
-      if (act.sess.i >= E.ROUND_LEN) return renderSummary();
+      // a round is "10 + fix your misses": overtime (max +3) re-asks any
+      // miss that never got its in-session retry, so no round ends on an
+      // uncorrected error. Drill sessions run until their list is done.
+      const sess = act.sess;
+      const done = sess.drill
+        ? sess.drill.every((id) => sess.asked.includes(id)) && !sess.misses.length
+        : sess.i >= E.ROUND_LEN && (!sess.misses.length || sess.i >= E.ROUND_LEN + 3);
+      if (done) return renderSummary();
       const item = E.nextQuestion(S, act.sess);
       if (!item) return renderSummary();
       if (item.teach) return renderTeach(item.fact);
@@ -776,7 +792,10 @@
   function quizTopBar() {
     let progress = "", extra = "";
     if (act.kind === "practice") {
-      progress = `${Math.min(act.sess.i + 1, E.ROUND_LEN)}/${E.ROUND_LEN}`;
+      const total = act.sess.drill
+        ? Math.max(act.sess.drill.length, act.sess.i + 1)
+        : Math.max(E.ROUND_LEN, act.sess.i + 1);
+      progress = `${act.sess.drill ? "🎯 " : ""}${act.sess.i + 1}/${total}`;
       extra = `<span class="stat">🔥 ${act.sess.streak}</span><span class="stat">⭐ ${act.sess.xp}</span>`;
     } else if (act.kind === "placement") {
       progress = `${act.plan.i + 1}/${act.plan.n}`;
@@ -1017,16 +1036,46 @@
       : e.type === "badge" ? `<span class="event-chip">${e.badge.emoji} Badge: ${esc(e.badge.name)}</span>`
       : e.type === "quest" ? `<span class="event-chip">🎯 Daily quest done! +30 XP ${e.sticker ? "· new sticker " + e.sticker : ""}</span>` : ""
     ).join("");
+    // corrective retrieval: after a practice miss, the child re-produces the
+    // answer (types it) before moving on — recognition isn't learning
+    const retype = act.kind === "practice" && result === "wrong" && q.accept && q.accept.length
+      ? `<div class="retype-row" style="margin-top:8px">
+           <div class="fact" style="margin-bottom:4px">✏️ Your turn — type the answer to lock it in:</div>
+           <div class="typed-row">
+             <input id="retype-input" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="${esc(q.answerText)}" />
+             <button class="ghost small" id="btn-retype-go">Check</button>
+           </div>
+         </div>`
+      : "";
     $("#feedback").innerHTML = `
       <div class="feedback ${good ? "good" : "bad"}">
         <div class="headline">${headline} ${xpLine}</div>
         ${answerLine}${factLine}
+        ${retype}
         <div>${eventChips}</div>
-        <button class="big ${good ? "green" : "ghost"}" id="btn-next" style="margin-top:10px">Next ➜</button>
+        <button class="big ${good ? "green" : "ghost"}" id="btn-next" style="margin-top:10px" ${retype ? "disabled" : ""}>Next ➜</button>
       </div>`;
     const btn = $("#btn-next");
-    btn.focus();
     btn.onclick = nextStep;
+    if (retype) {
+      const inp = $("#retype-input");
+      const check = () => {
+        if (q.accept.includes(Q.normalize(inp.value))) {
+          inp.disabled = true;
+          inp.style.borderColor = "var(--sage, #56642b)";
+          btn.disabled = false;
+          sndGood();
+          btn.focus();
+        } else if (inp.value.trim()) {
+          inp.select();
+        }
+      };
+      $("#btn-retype-go").onclick = check;
+      inp.onkeydown = (e) => { if (e.key === "Enter") check(); };
+      inp.focus();
+    } else {
+      btn.focus();
+    }
     if (!good && q.answerText) speak("The answer is " + q.answerText);
   }
 
@@ -1098,13 +1147,32 @@
         <p class="summary-line">🏅 Best: ${S.best.oral} &nbsp;·&nbsp; +${bonus} XP</p>
         ${events.some((e) => e.type === "badge") ? `<span class="event-chip">🎖️ New badge earned!</span>` : ""}`;
     }
+    // Coach's debrief: a mock never ends with just a score — review every
+    // miss, then drill exactly those facts.
+    let debrief = "";
+    const missed = act.plan && act.plan.review ? act.plan.review : [];
+    if ((act.kind === "nsf" || act.kind === "iac" || act.kind === "oral") && missed.length) {
+      debrief = `
+        <div class="card debrief">
+          <h2>🧑‍🏫 Coach's debrief — ${missed.length} to fix</h2>
+          ${missed.slice(0, 12).map((r) => `
+            <div class="debrief-row">
+              <div class="debrief-q">${esc(r.prompt)}</div>
+              <div class="debrief-a">✅ ${esc(r.answer)}</div>
+              ${r.fact ? `<div class="fact">💡 ${esc(r.fact)}</div>` : ""}
+            </div>`).join("")}
+          ${missed.length > 12 ? `<p class="muted">…and ${missed.length - 12} more.</p>` : ""}
+          <button class="big green" id="btn-drill">🎯 Drill these ${missed.length} now ▶</button>
+        </div>`;
+    }
     show("#screen-summary");
     $("#screen-summary").innerHTML = `
       <div class="card hero">
         ${html}
         <button class="big green" id="btn-again">Play again ▶️</button>
         <button class="big ghost" id="btn-home">Home 🏠</button>
-      </div>`;
+      </div>${debrief}`;
+    if (debrief) $("#btn-drill").onclick = () => startDrill(missed.map((r) => r.factId).filter(Boolean));
     const kind = act.kind, tf = act.topicFilter, nt = act.noTeach;
     $("#btn-again").onclick = () => (kind === "practice" ? startPractice(tf, nt) : startBee(kind));
     $("#btn-home").onclick = renderHome;
