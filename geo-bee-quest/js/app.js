@@ -363,6 +363,19 @@
       pages.push({ sec, part: toc.length });
       facts.forEach((f) => pages.push({ fact: f, sec }));
     };
+    // prose sections: divider page + written textbook pages (advanced pages
+    // only in advanced mode); facts stay in the quiz bank, reading marks them seen
+    const pushProseSec = (sec, facts) => {
+      const adv = S.settings && S.settings.advanced;
+      const reads = (sec.read || [])
+        .map((pg) => (typeof pg === "string" ? { p: pg } : pg))
+        .filter((pg) => !pg.adv || adv);
+      if (!reads.length) return false;
+      toc.push({ name: sec.n, page: pages.length, count: reads.length });
+      pages.push({ sec, part: toc.length });
+      reads.forEach((pg) => pages.push({ sec, prose: pg.p, art: pg.art, facts }));
+      return true;
+    };
     if (t.secBy && t.secMeta) {
       const used = new Set();
       for (const sec of t.secMeta) {
@@ -381,12 +394,38 @@
           const ix = t.items.indexOf(f.src);
           return ix >= from && ix < to;
         });
-        pushSec(t.secs[i], facts);
+        if (!facts.length) continue; // e.g. all-advanced section with advanced off
+        if (!pushProseSec(t.secs[i], facts)) pushSec(t.secs[i], facts);
       }
     } else {
       byTier(all).forEach((f) => pages.push({ fact: f }));
     }
     return { pages, toc };
+  }
+  // Declarative atlas text for structured chapters — a book entry, not a quiz.
+  function atlasEntry(topicId, f) {
+    const s = f.src || {};
+    if (topicId === "states") {
+      const big = s.big ? ` Its largest city is ${s.big}.` : " The capital is also its largest city.";
+      return { title: `${s.n} — “${s.nick}”`,
+        prose: `${s.c} is the capital of ${s.n}, in the ${s.r} region.${big}`,
+        note: s.feat || null };
+    }
+    if (topicId === "usmap" || topicId === "worldmap") {
+      return { title: s.n + (topicId === "worldmap" && s.f ? " " + s.f : ""), prose: f.fact, note: null };
+    }
+    if (topicId === "capitals") {
+      const big = s.big ? ` Its largest city is ${s.big}.` : "";
+      return { title: `${s.n} ${s.f || ""}`,
+        prose: `${s.c} is the capital of ${s.n}, a country in ${s.k}.${big}`,
+        note: s.x || null };
+    }
+    if (topicId === "flags") {
+      return { title: `The flag of ${s.n}`,
+        prose: `This flag belongs to ${s.n}, a country in ${s.k}. Its capital is ${s.c}.`,
+        note: s.x || null };
+    }
+    return null;
   }
   // Section illustration, falling back to the chapter's art.
   function secSceneHTML(sec, topicId) {
@@ -515,8 +554,42 @@
       return;
     }
 
-    // page illustration: the fact's own map/flag when it has one,
-    // otherwise the section's (or chapter's) scene art
+    if (page.prose) {
+      // textbook page: written paragraphs, no Q&A
+      (page.facts || []).forEach((pf) => E.noteSeen(S, pf.id));
+      save();
+      const art = page.art && window.GEO_SCENES && window.GEO_SCENES[page.art]
+        ? window.GEO_SCENES[page.art]
+        : secSceneHTML(page.sec, topicId);
+      $("#screen-learn").innerHTML = `
+        <div class="quiz-top">
+          <button class="icon-btn" id="btn-back">← Chapter</button>
+          <span class="stat">${m.emoji} ${idx + 1} / ${pages.length}</span>
+          <button class="icon-btn" id="btn-quiz-topic" title="Quiz this whole chapter">🎯 Quiz</button>
+        </div>
+        <div class="card book-page ${turn}">
+          <div class="bp-ribbon">${m.emoji} ${esc(page.sec.n)}</div>
+          <div class="bp-scene">${art}</div>
+          <div class="bp-prose teach-main">${esc(page.prose)}</div>
+          <button class="icon-btn small" id="btn-say" aria-label="read aloud">🔊 Read to me</button>
+          <div class="bp-footer">— Page ${idx + 1} of ${pages.length} —</div>
+        </div>
+        <div class="row learn-nav">
+          <button class="big ghost" id="btn-prev" ${idx === 0 ? "disabled" : ""}>◀ Back</button>
+          <button class="big green" id="btn-next-card">${idx === pages.length - 1 ? "Finish chapter 🎉" : "Turn the page ▶"}</button>
+        </div>`;
+      $("#btn-back").onclick = () => renderLearnCover(topicId);
+      $("#btn-say").onclick = () => forceSpeak(page.prose);
+      $("#btn-prev").onclick = () => renderLearnDeck(topicId, idx - 1, "back");
+      $("#btn-next-card").onclick = () =>
+        idx === pages.length - 1 ? renderLearnDone(topicId, pages.length) : renderLearnDeck(topicId, idx + 1);
+      $("#btn-quiz-topic").onclick = () => startPractice(topicId, true);
+      speak(page.prose);
+      return;
+    }
+
+    // atlas page (states, maps, capitals, flags): declarative entry, not Q&A
+    const entry = atlasEntry(topicId, f);
     let media;
     if (topicId === "flags") {
       media = `<div class="qmedia">${mediaHTML({ type: "flag", code: Q.flagCode(f.src.f), emoji: f.src.f }, true)}</div>`;
@@ -525,6 +598,17 @@
     } else {
       media = `<div class="bp-scene">${secSceneHTML(page.sec, topicId)}</div>`;
     }
+    const body = entry
+      ? `<h2 class="bp-title">${esc(entry.title)}</h2>
+         ${media}
+         <div class="bp-prose teach-main">${esc(entry.prose || "")}</div>
+         ${entry.note ? `<div class="bp-note"><span class="bp-note-tag">🖋️ Field note</span>${esc(entry.note)}</div>` : ""}`
+      : `${media}
+         <div class="teach-main">${esc(f.teachText)}</div>
+         ${f.fact ? `<div class="bp-note"><span class="bp-note-tag">🖋️ Field note</span>${esc(f.fact)}</div>` : ""}`;
+    const sayText = entry
+      ? entry.title + ". " + (entry.prose || "") + (entry.note ? " " + entry.note : "")
+      : f.teachText + (f.fact ? ". " + f.fact : "");
     $("#screen-learn").innerHTML = `
       <div class="quiz-top">
         <button class="icon-btn" id="btn-back">← Chapter</button>
@@ -534,11 +618,7 @@
       </div>
       <div class="card book-page ${turn}">
         <div class="bp-ribbon">${m.emoji} ${esc(page.sec ? page.sec.n : m.name)}</div>
-        ${media}
-        ${f.teachQ
-          ? `<div class="bp-question">${esc(f.teachQ)}</div><div class="teach-main">${esc(f.teachA)}</div>`
-          : `<div class="teach-main">${esc(f.teachText)}</div>`}
-        ${f.fact ? `<div class="bp-note"><span class="bp-note-tag">🖋️ Field note</span>${esc(f.fact)}</div>` : ""}
+        ${body}
         <button class="icon-btn small" id="btn-say" aria-label="read aloud">🔊 Read to me</button>
         <div class="bp-footer">— Page ${idx + 1} of ${pages.length} —</div>
       </div>
@@ -548,7 +628,7 @@
       </div>`;
     decorateMap($("#screen-learn"));
     $("#btn-back").onclick = () => renderLearnCover(topicId);
-    $("#btn-say").onclick = () => forceSpeak(f.teachText + (f.fact ? ". " + f.fact : ""));
+    $("#btn-say").onclick = () => forceSpeak(sayText);
     $("#btn-prev").onclick = () => renderLearnDeck(topicId, idx - 1, "back");
     $("#btn-next-card").onclick = () =>
       idx === pages.length - 1 ? renderLearnDone(topicId, pages.length) : renderLearnDeck(topicId, idx + 1);

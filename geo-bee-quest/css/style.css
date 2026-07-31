@@ -569,3 +569,23 @@ textarea { background: var(--tile-low); color: var(--ink); border: 2px solid tra
 .sec-page .bp-scene .scene { height: 130px; }
 .sec-title { margin: 2px 0 6px; font-size: 1.5rem; }
 .sec-page .bc-intro { text-align: left; }
+
+/* --- Field Book v15: textbook prose + atlas entries --- */
+.bp-title {
+  text-align: left;
+  font-size: 1.35rem;
+  margin: 2px 0 8px;
+  color: var(--terra, #9f402d);
+}
+.bp-prose.teach-main {
+  text-align: left;
+  font-size: 1.04rem;
+  font-weight: 600;
+  line-height: 1.65;
+  color: inherit;
+}
+.bp-prose.teach-main::first-letter {
+  font-size: 1.6em;
+  font-weight: 700;
+  color: var(--terra, #9f402d);
+}
