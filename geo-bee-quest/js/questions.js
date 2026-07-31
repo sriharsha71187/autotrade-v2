@@ -71,11 +71,16 @@ window.QBank = (function () {
 
   // US states
   for (const s of D.STATES) {
+    const forms = ["cap", "rev"];
+    if (s.nick) forms.push("nick");
+    if (s.big) forms.push("big"); // largest ≠ capital: the classic bee trap
     addFact({
       id: "st:" + s.n, topic: "states", tier: s.t, src: s,
-      forms: s.nick ? ["cap", "rev", "nick"] : ["cap", "rev"],
+      forms,
       label: s.n, teachText: `${s.c} is the capital of ${s.n} — "${s.nick}"`,
-      fact: s.x || `${s.c} is the capital of ${s.n}, in the ${s.r} region. Its nickname is "${s.nick}".`,
+      fact: s.x || (s.big
+        ? `${s.c} is the capital of ${s.n}, but ${s.big} is its largest city. Its nickname is "${s.nick}".`
+        : `${s.c} is the capital of ${s.n}, in the ${s.r} region. Its nickname is "${s.nick}".`),
     });
   }
   // Countries whose names take "the" mid-sentence
@@ -86,9 +91,11 @@ window.QBank = (function () {
   for (const c of D.COUNTRIES) {
     addFact({
       id: "cc:" + c.n, topic: "capitals", tier: c.ct || c.t, src: c,
-      forms: ["cap", "rev"], label: c.n,
+      forms: c.big ? ["cap", "rev", "big"] : ["cap", "rev"], label: c.n,
       teachText: `${c.c} is the capital of ${art(c.n)} ${c.f}`,
-      fact: c.x || `${c.c} is the capital of ${art(c.n)}, a country in ${c.k}.`,
+      fact: c.x || (c.big
+        ? `${c.c} is the capital of ${art(c.n)}, but ${c.big} is its largest city.`
+        : `${c.c} is the capital of ${art(c.n)}, a country in ${c.k}.`),
     });
   }
   // Flags (ft overrides tier: flag recognizability ≠ country fame)
@@ -116,7 +123,9 @@ window.QBank = (function () {
         label: s.n, teachQ: "Here it is on the map:", teachA: s.n,
         teachText: "This is " + s.n + " on the map!",
         teachMap: { kind: "us", highlight: s.n },
-        fact: `${s.n} is in the ${s.r} region. Its capital is ${s.c}.`,
+        fact: `${s.n} — "${s.nick}" — is in the ${s.r} region. Its capital is ${s.c}` +
+          (s.big ? `, but its largest city is ${s.big}. ` : `, which is also its largest city. `) +
+          (s.feat || ""),
       });
     }
     const MW = window.GEO_MAPS.world.countries;
@@ -128,7 +137,7 @@ window.QBank = (function () {
         teachQ: "Here it is on the map:", teachA: c.n + " " + c.f,
         teachText: "This is " + c.n + " on the map!",
         teachMap: { kind: "world", highlight: c.n },
-        fact: `${c.n} is in ${c.k}. Its capital is ${c.c}.`,
+        fact: `${c.n} is in ${c.k}. Its capital is ${c.c}.` + (c.x ? " " + c.x : ""),
       });
     }
   }
@@ -155,6 +164,9 @@ window.QBank = (function () {
   }
   const allStateCaps = D.STATES.map((s) => s.c);
   const allStateNames = D.STATES.map((s) => s.n);
+  const bigCityByRegion = {};
+  for (const s of D.STATES) if (s.big) (bigCityByRegion[s.r] = bigCityByRegion[s.r] || []).push(s.big);
+  const allBigCities = D.STATES.filter((s) => s.big).map((s) => s.big);
   const countriesByCont = {};
   for (const c of D.COUNTRIES) (countriesByCont[c.k] = countriesByCont[c.k] || []).push(c);
   const allCountries = D.COUNTRIES;
@@ -201,6 +213,13 @@ window.QBank = (function () {
         prompt = opts.rich ? `${s.c} is the capital of which state in the ${s.r}?` : `${s.c} is the capital of which state?`;
         answer = s.n; pools = [sameRegionNames, allStateNames];
         accept = [s.n];
+      } else if (form === "big") {
+        prompt = opts.rich ? `${s.c} is the capital of ${s.n}, but what is its largest city?` : `What is the largest city in ${s.n}?`;
+        answer = s.big;
+        // the state's own capital first — that's the trap the real bee sets
+        pools = [[s.c], (bigCityByRegion[s.r] || []).filter((b) => b !== s.big), allBigCities, allStateCaps];
+        accept = [s.big];
+        if (s.big === "New York City") accept.push("new york", "nyc");
       } else {
         prompt = `Which state is nicknamed "${s.nick}"?`;
         answer = s.n; pools = [sameRegionNames, allStateNames];
@@ -221,6 +240,15 @@ window.QBank = (function () {
         if (s.c === "Ulaanbaatar") accept.push("ulan bator");
         if (s.c === "Kyiv") accept.push("kiev");
         if (s.c === "Nukuʻalofa") accept.push("nukualofa");
+      } else if (form === "big") {
+        prompt = opts.rich ? `${s.c} is the capital of ${art(s.n)}, but what is its largest city?` : `What is the largest city in ${art(s.n)}?`;
+        answer = s.big;
+        // capital first (the trap), then other famous non-capital big cities
+        pools = [[s.c], allCountries.filter((c) => c.big && c.big !== s.big).map((c) => c.big), cont.map((c) => c.c)];
+        accept = [s.big];
+        if (s.big === "New York City") accept.push("new york", "nyc");
+        if (s.big === "Ho Chi Minh City") accept.push("saigon", "ho chi minh");
+        if (s.big === "São Paulo") accept.push("sao paolo");
       } else {
         prompt = opts.rich ? `${s.c} is the capital of which country in ${s.k}?` : `${s.c} is the capital of which country?`;
         answer = s.n;
