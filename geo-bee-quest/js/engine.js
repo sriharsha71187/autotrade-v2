@@ -304,7 +304,10 @@ window.Engine = (function () {
     const form = Q.nextForm(fact, r.forms);
     // typed recall for well-known facts when spelling mode is on
     const typed = !!(s.settings.typed && r.b >= 3 && fact.forms[0] !== "flagrev");
-    const q = Q.buildQuestion(fact, { form, typed });
+    // exam-style clue stems (the official JGB pattern) once material reaches
+    // bee difficulty or the fact is already known — practice like the test
+    const rich = fact.tier >= 3 || r.b >= 3;
+    const q = Q.buildQuestion(fact, { form, typed, rich });
     q.flags = flags || {};
     return q;
   }

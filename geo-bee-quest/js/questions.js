@@ -238,10 +238,14 @@ window.QBank = (function () {
       const cont = countriesByCont[s.k].filter((c) => c.n !== s.n);
       const near = cont.filter((c) => Math.abs((c.ct || c.t) - (s.ct || s.t)) <= 1);
       if (form === "cap") {
+        // official-style stems: an authored locating clue beats the largest-city
+        // hook, which beats the bare continent label
         prompt = opts.rich
-          ? (s.big
-            ? `What is the capital of ${art(s.n)}, the country whose largest city is ${s.big}?`
-            : `What is the capital of ${art(s.n)}, a country in ${s.k}?`)
+          ? (s.clue
+            ? `What is the capital of ${art(s.n)}, the country ${s.clue}?`
+            : s.big
+              ? `What is the capital of ${art(s.n)}, the country whose largest city is ${s.big}?`
+              : `What is the capital of ${art(s.n)}, a country in ${s.k}?`)
           : `What is the capital of ${art(s.n)}?`;
         answer = s.c;
         pools = [near.map((c) => c.c), cont.map((c) => c.c), allCountries.map((c) => c.c)];
@@ -262,7 +266,11 @@ window.QBank = (function () {
         if (s.big === "Ho Chi Minh City") accept.push("saigon", "ho chi minh");
         if (s.big === "São Paulo") accept.push("sao paolo");
       } else {
-        prompt = opts.rich ? `${s.c} is the capital of which country in ${s.k}?` : `${s.c} is the capital of which country?`;
+        prompt = opts.rich
+          ? (s.clue
+            ? `${s.c} is the capital of which country, ${s.clue}?`
+            : `${s.c} is the capital of which country in ${s.k}?`)
+          : `${s.c} is the capital of which country?`;
         answer = s.n;
         pools = [near.map((c) => c.n), cont.map((c) => c.n), allCountries.map((c) => c.n)];
         accept = countryAccept(s.n);
