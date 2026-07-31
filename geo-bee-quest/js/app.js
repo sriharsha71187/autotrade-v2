@@ -377,10 +377,47 @@
       </div>`;
     $("#btn-back").onclick = renderHome;
     document.querySelectorAll(".learn-tile").forEach((b) => {
-      b.onclick = () => renderLearnDeck(b.dataset.id, S.learnPos[b.dataset.id] || 0);
+      b.onclick = () => renderLearnCover(b.dataset.id);
     });
   }
-  function renderLearnDeck(topicId, idx) {
+  // Chapter illustration: real map for the map chapters, SVG scene otherwise.
+  function sceneHTML(topicId) {
+    const t = window.GEO_DATA.TOPICS.find((x) => x.id === topicId) || {};
+    if (t.scene === "usmap") return mapHTML({ kind: "us" });
+    if (t.scene === "worldmap") return mapHTML({ kind: "world" });
+    return (window.GEO_SCENES && window.GEO_SCENES[t.scene]) || "";
+  }
+  // Chapter cover: illustration + a real explanation of the subject.
+  function renderLearnCover(topicId) {
+    const t = window.GEO_DATA.TOPICS.find((x) => x.id === topicId);
+    const facts = learnFacts(topicId);
+    const chapterNo = E.enabledTopics(S).findIndex((x) => x.id === topicId) + 1;
+    const pos = Math.min(S.learnPos[topicId] || 0, facts.length);
+    show("#screen-learn");
+    $("#screen-learn").innerHTML = `
+      <div class="quiz-top">
+        <button class="icon-btn" id="btn-back">← Field Book</button>
+        <span class="stat">${t.emoji} Chapter ${chapterNo}</span>
+        <button class="icon-btn" id="btn-quiz-topic" title="Quiz this whole chapter">🎯 Quiz</button>
+      </div>
+      <div class="card book-cover">
+        <div class="bc-scene">${sceneHTML(topicId)}</div>
+        <div class="bc-kicker">Chapter ${chapterNo}</div>
+        <h1>${esc(t.name)}</h1>
+        <p class="bc-intro">${esc(t.intro || "")}</p>
+        <div class="bc-progress">
+          <div class="bar"><div class="seg-mastered" style="width:${facts.length ? (pos / facts.length) * 100 : 0}%"></div></div>
+          <span class="counts">${pos} of ${facts.length} pages read</span>
+        </div>
+        <button class="big green" id="btn-start-reading">${pos > 0 && pos < facts.length ? `Continue reading — page ${pos + 1} ▶` : pos >= facts.length ? "Read it again 📖" : "Start reading ▶"}</button>
+      </div>`;
+    $("#btn-back").onclick = renderLearnTopics;
+    $("#btn-quiz-topic").onclick = () => startPractice(topicId, true);
+    $("#btn-start-reading").onclick = () =>
+      renderLearnDeck(topicId, pos >= facts.length ? 0 : pos);
+    speak(t.intro);
+  }
+  function renderLearnDeck(topicId, idx, dir) {
     const facts = learnFacts(topicId);
     if (!facts.length) return renderLearnTopics();
     idx = Math.max(0, Math.min(idx, facts.length - 1));
@@ -389,37 +426,42 @@
     E.noteSeen(S, f.id);
     save();
     const m = topicMeta(topicId);
-    let media = "";
+    // page illustration: the fact's own map/flag when it has one,
+    // otherwise the chapter's scene art
+    let media;
     if (topicId === "flags") {
       media = `<div class="qmedia">${mediaHTML({ type: "flag", code: Q.flagCode(f.src.f), emoji: f.src.f }, true)}</div>`;
     } else if (f.teachMap) {
       media = `<div class="qmedia">${mapHTML(f.teachMap)}</div>`;
+    } else {
+      media = `<div class="bp-scene">${sceneHTML(topicId)}</div>`;
     }
     show("#screen-learn");
     $("#screen-learn").innerHTML = `
       <div class="quiz-top">
-        <button class="icon-btn" id="btn-back">← Topics</button>
+        <button class="icon-btn" id="btn-back">← Chapter</button>
         <span class="stat">${m.emoji} ${idx + 1} / ${facts.length}</span>
         <span class="stat">${tierStars(f.tier).slice(0, 5)}</span>
-        <button class="icon-btn" id="btn-quiz-topic" title="Quiz this whole topic">🎯 Quiz</button>
+        <button class="icon-btn" id="btn-quiz-topic" title="Quiz this whole chapter">🎯 Quiz</button>
       </div>
-      <div class="card teach">
-        <span class="topic-chip">${m.emoji} ${esc(m.name)}</span>
+      <div class="card book-page ${dir === "back" ? "turn-back" : "turn-fwd"}">
+        <div class="bp-ribbon">${m.emoji} ${esc(m.name)}</div>
         ${media}
         ${f.teachQ
-          ? `<div class="fact" style="font-size:1.05rem;margin-bottom:6px">${esc(f.teachQ)}</div><div class="teach-main">${esc(f.teachA)}</div>`
+          ? `<div class="bp-question">${esc(f.teachQ)}</div><div class="teach-main">${esc(f.teachA)}</div>`
           : `<div class="teach-main">${esc(f.teachText)}</div>`}
-        ${f.fact ? `<div class="fact">💡 ${esc(f.fact)}</div>` : ""}
+        ${f.fact ? `<div class="bp-note"><span class="bp-note-tag">🖋️ Field note</span>${esc(f.fact)}</div>` : ""}
         <button class="icon-btn small" id="btn-say" aria-label="read aloud">🔊 Read to me</button>
+        <div class="bp-footer">— Page ${idx + 1} of ${facts.length} —</div>
       </div>
       <div class="row learn-nav">
         <button class="big ghost" id="btn-prev" ${idx === 0 ? "disabled" : ""}>◀ Back</button>
-        <button class="big green" id="btn-next-card">${idx === facts.length - 1 ? "Done! 🎉" : "Next ▶"}</button>
+        <button class="big green" id="btn-next-card">${idx === facts.length - 1 ? "Finish chapter 🎉" : "Turn the page ▶"}</button>
       </div>`;
     decorateMap($("#screen-learn"));
-    $("#btn-back").onclick = renderLearnTopics;
+    $("#btn-back").onclick = () => renderLearnCover(topicId);
     $("#btn-say").onclick = () => forceSpeak(f.teachText + (f.fact ? ". " + f.fact : ""));
-    $("#btn-prev").onclick = () => renderLearnDeck(topicId, idx - 1);
+    $("#btn-prev").onclick = () => renderLearnDeck(topicId, idx - 1, "back");
     $("#btn-next-card").onclick = () =>
       idx === facts.length - 1 ? renderLearnDone(topicId, facts.length) : renderLearnDeck(topicId, idx + 1);
     $("#btn-quiz-topic").onclick = () => startPractice(topicId, true);
@@ -433,11 +475,11 @@
     $("#screen-learn").innerHTML = `
       <div class="card hero">
         <div class="mascot">🎓</div>
-        <h1>Topic explored!</h1>
-        <p class="summary-line">${m.emoji} You flipped through all ${count} cards of ${esc(m.name)}.</p>
-        <p class="muted">Ready to prove it? The quiz mixes the whole topic — no card order to lean on.</p>
+        <h1>Chapter complete!</h1>
+        <p class="summary-line">${m.emoji} You read all ${count} pages of ${esc(m.name)}.</p>
+        <p class="muted">Ready to prove it? The quiz mixes the whole chapter — no page order to lean on.</p>
         <button class="big green" id="btn-quiz-done">🎯 Quiz me on ${esc(m.name)}!</button>
-        <button class="big ghost" id="btn-back-topics">📚 Back to topics</button>
+        <button class="big ghost" id="btn-back-topics">📖 Back to the Field Book</button>
       </div>`;
     $("#btn-quiz-done").onclick = () => startPractice(topicId, true);
     $("#btn-back-topics").onclick = renderLearnTopics;

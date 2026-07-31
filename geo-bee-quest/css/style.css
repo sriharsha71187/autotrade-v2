@@ -451,3 +451,76 @@ textarea { background: var(--tile-low); color: var(--ink); border: 2px solid tra
 .learn-tile .lt-count { font-size: 0.7rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--sage); }
 .learn-nav { margin-top: 4px; }
 .learn-nav .big { margin: 4px 0; }
+
+/* ---- Field Book: chapter covers & book pages ---- */
+.scene { width: 100%; height: 100%; display: block; }
+.book-cover { text-align: center; padding-top: 20px; }
+.book-cover .bc-scene {
+  height: 150px; border-radius: var(--r); overflow: hidden; margin-bottom: 16px;
+  box-shadow: inset 0 2px 6px rgb(27 28 28 / 0.08);
+}
+.book-cover .bc-scene .map-svg { height: 100%; width: 100%; object-fit: cover; box-shadow: none; }
+.bc-kicker {
+  font-size: 0.72rem; font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--terra); margin-bottom: 4px;
+}
+.bc-intro {
+  text-align: left; font-size: 1.02rem; line-height: 1.65; color: var(--ink);
+  margin: 12px 0 4px; padding: 14px 16px;
+  background: var(--tile-low); border-radius: var(--r);
+  border-left: 4px solid var(--sage-bright);
+}
+.bc-intro::first-letter { font-size: 1.7em; font-weight: 700; color: var(--terra); }
+.bc-progress { display: flex; align-items: center; gap: 12px; margin: 14px 0 4px; }
+.bc-progress .bar { flex: 1; margin: 0; }
+
+.book-page {
+  position: relative; overflow: hidden;
+  background: #fffdf7;
+  border-left: 10px solid transparent;
+  background-image: repeating-linear-gradient(
+    to bottom, var(--outline-soft) 0 6px, transparent 6px 16px);
+  background-size: 3px 100%; background-repeat: no-repeat; background-position: 8px 0;
+  background-color: #fffdf7;
+}
+.book-page::after { /* dog-eared corner */
+  content: ""; position: absolute; right: 0; bottom: 0;
+  border-style: solid; border-width: 0 0 26px 26px;
+  border-color: transparent transparent var(--sand) transparent;
+  filter: drop-shadow(-2px -2px 2px rgb(27 28 28 / 0.08));
+}
+.book-page.turn-fwd { animation: page-fwd 0.4s cubic-bezier(0.2, 0.7, 0.3, 1) both; transform-origin: left center; }
+.book-page.turn-back { animation: page-back 0.4s cubic-bezier(0.2, 0.7, 0.3, 1) both; transform-origin: right center; }
+@keyframes page-fwd { from { opacity: 0; transform: perspective(900px) rotateY(-14deg); } to { opacity: 1; transform: none; } }
+@keyframes page-back { from { opacity: 0; transform: perspective(900px) rotateY(14deg); } to { opacity: 1; transform: none; } }
+.bp-ribbon {
+  display: inline-block; background: var(--sage-soft); color: var(--sage);
+  border: 2px solid var(--sage-bright); border-radius: var(--r-full);
+  font-size: 0.72rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 3px 12px; margin-bottom: 12px;
+}
+.bp-scene { height: 110px; border-radius: var(--r); overflow: hidden; margin-bottom: 14px; }
+.bp-question {
+  font-size: 0.86rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--ink-soft); margin-bottom: 6px;
+}
+.book-page .teach-main {
+  font-family: var(--font-display); font-weight: 700; font-size: 1.5rem;
+  letter-spacing: -0.01em; line-height: 1.3; margin-bottom: 10px; color: var(--terra);
+}
+.bp-note {
+  text-align: left; background: var(--tile-low); border-radius: var(--r);
+  padding: 12px 14px; margin: 8px 0 10px; font-size: 0.96rem; line-height: 1.55; color: var(--ink);
+  border-left: 4px solid var(--terra-bright);
+}
+.bp-note-tag {
+  display: block; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--terra); margin-bottom: 3px;
+}
+.bp-footer {
+  margin-top: 12px; font-size: 0.78rem; font-weight: 700; letter-spacing: 0.12em;
+  color: var(--outline); text-transform: uppercase;
+}
+@media (prefers-reduced-motion: reduce) {
+  .book-page.turn-fwd, .book-page.turn-back { animation: none; }
+}
