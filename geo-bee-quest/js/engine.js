@@ -238,7 +238,10 @@ window.Engine = (function () {
       if (dueFacts.length) {
         dueFacts.sort((a, b) => a[0] - b[0]);
         sess.reviews++;
-        return makeQ(s, dueFacts[0][1], { review: true });
+        // pick among the few most-overdue, not always the single oldest —
+        // otherwise every round opens with the exact same question
+        const top = dueFacts.slice(0, Math.min(4, dueFacts.length));
+        return makeQ(s, top[Math.floor(Math.random() * top.length)][1], { review: true });
       }
     }
     // big backlog or bee taper → review-only rounds, no new material
@@ -291,13 +294,16 @@ window.Engine = (function () {
         // facts studied in Learn mode come first — quiz what was just studied
         const lowest = pool.filter((f) => f.tier === pool[0].tier);
         const noted = lowest.filter((f) => { const r = s.facts[f.id]; return r && r.n; });
-        const pickFrom = noted.length ? noted : lowest;
+        // usually quiz what was just studied, but never lock onto one fact
+        const pickFrom = noted.length && Math.random() < 0.7 ? noted : lowest;
         return pickFrom[Math.floor(Math.random() * pickFrom.length)];
       }
     }
     return null;
   }
-  pickNew._cursor = 0;
+  // start the round-robin at a random topic each app load, so the first new
+  // question of the day isn't always from the first chapter
+  pickNew._cursor = Math.floor(Math.random() * 24);
 
   function makeQ(s, fact, flags) {
     const r = rec(s, fact.id);
