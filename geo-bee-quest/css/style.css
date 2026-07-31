@@ -608,3 +608,20 @@ textarea { background: var(--tile-low); color: var(--ink); border: 2px solid tra
 /* teaching diagrams keep their full drawing (no crop — labels must show) */
 .bp-diagram { height: auto; }
 .bp-diagram .scene { height: auto; aspect-ratio: 200 / 110; }
+
+/* --- v16 My Atlas: mastery map --- */
+.atlas-map { border-radius: var(--r); overflow: hidden; margin: 8px 0 4px; }
+.atlas-map .map-svg { width: 100%; height: auto; display: block; }
+.atlas-map path.atl { cursor: pointer; stroke: #fffdf7; stroke-width: 0.6; transition: opacity 0.15s; }
+.atlas-map path.atl:hover { opacity: 0.75; }
+.atlas-map path.atl-unseen { fill: #e5ddd6 !important; }
+.atlas-map path.atl-learning { fill: #f5c518 !important; }
+.atlas-map path.atl-known { fill: #a8c46a !important; }
+.atlas-map path.atl-mastered { fill: #56642b !important; }
+.atlas-legend { display: flex; flex-wrap: wrap; gap: 10px 14px; font-size: 0.85rem; font-weight: 600; }
+.atl-chip { display: inline-block; width: 14px; height: 14px; border-radius: 4px; vertical-align: -2px; margin-right: 4px; }
+.atl-chip.atl-unseen { background: #e5ddd6; }
+.atl-chip.atl-learning { background: #f5c518; }
+.atl-chip.atl-known { background: #a8c46a; }
+.atl-chip.atl-mastered { background: #56642b; }
+.atlas-map path.atl-off { fill: #efe9e4 !important; opacity: 0.55; }

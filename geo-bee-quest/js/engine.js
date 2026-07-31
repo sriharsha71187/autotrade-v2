@@ -452,7 +452,8 @@ window.Engine = (function () {
       kind, tiers, i: 0, score: 0, correct: 0, strikes: 0,
       asked: new Set(), topics, cursor: 0,
       pyUsed: new Set(), clueBonus: 0,
-      timeLimit: kind === "iac" ? 30 * 60 : null,
+      // real Phase I limits: NSF 25Q/30min, IAC 50Q/30min
+      timeLimit: kind === "iac" || kind === "nsf" ? 30 * 60 : null,
     };
   }
   function beeNext(s, plan) {
@@ -639,6 +640,6 @@ window.Engine = (function () {
     placementPlan, placementNext, placementRecord, placementFinish,
     beePlan, beeNext, beeRecord, beeFinish,
     topicSummary, dueCount, mergeState, factLabel, topicKnown, topicFacts, migrate,
-    awardSticker, dayStreak, questProgress, coach, noteSeen,
+    awardSticker, dayStreak, questProgress, coach, noteSeen, solidKnown,
   };
 })();

@@ -42,6 +42,7 @@
         <button data-nav="written">📝 Written Bee</button>
         <button data-nav="oral">🎤 Oral Bee</button>
         <button data-nav="stickers">🎒 Stickers (${(S.stickers || []).length})</button>
+        <button data-nav="atlas">🗺️ My Atlas</button>
         <button data-nav="progress" class="${active === "progress" ? "active" : ""}">📊 Progress</button>
         <button data-nav="settings" class="${active === "settings" ? "active" : ""}">⚙️ Settings</button>
       </nav>
@@ -54,7 +55,7 @@
     const routes = {
       home: renderHome, learn: renderLearnTopics, written: writtenBeePicker,
       oral: () => startBee("oral"), stickers: stickersOverlay,
-      progress: renderProgress, settings: renderSettings,
+      atlas: renderAtlas, progress: renderProgress, settings: renderSettings,
     };
     sb.querySelectorAll("[data-nav]").forEach((b) => (b.onclick = navTo(routes[b.dataset.nav])));
     sb.querySelector(".sb-play").onclick = navTo(() => startPractice());
@@ -317,11 +318,13 @@
         <button class="big violet" id="btn-bee-written">📝 Written Bee</button>
         <button class="big amber" id="btn-bee-oral">🎤 Oral Bee</button>
       </div>
+      <button class="big ghost" id="btn-atlas">🗺️ &nbsp;My Atlas — watch the world fill in</button>
       <div class="row">
         <button class="big ghost" id="btn-stickers">🎒 Stickers (${(S.stickers || []).length})</button>
         <button class="big ghost" id="btn-progress">📊 Progress</button>
         <button class="big ghost" id="btn-settings">⚙️</button>
       </div>`;
+    $("#btn-atlas").onclick = renderAtlas;
     $("#btn-play").onclick = () => startPractice();
     $("#btn-learn").onclick = renderLearnTopics;
     $("#btn-bee-written").onclick = writtenBeePicker;
@@ -330,6 +333,74 @@
     $("#btn-settings").onclick = renderSettings;
     $("#btn-profile").onclick = profileOverlay;
     $("#btn-stickers").onclick = stickersOverlay;
+  }
+
+  // ---------- My Atlas: the mastery map ----------
+  // The child SEES the US and the world fill in with color as places become
+  // known: grey = not met yet, yellow = learning, light green = known,
+  // deep green = mastered. Tap a place → its Field Book page.
+  function atlasLevel(ids) {
+    // strongest evidence across the place's facts (map + capital)
+    let best = 0;
+    for (const id of ids) {
+      const r = S.facts[id];
+      if (!r || r.b === 0) continue;
+      const solid = E.solidKnown(r);
+      const lvl = r.b >= 4 && solid ? 3 : r.b >= 3 && solid ? 2 : 1;
+      if (lvl > best) best = lvl;
+    }
+    return best; // 0 unseen · 1 learning · 2 known · 3 mastered
+  }
+  const ATLAS_CLASS = ["atl-unseen", "atl-learning", "atl-known", "atl-mastered"];
+  function paintAtlas(container, kind, prefixes) {
+    const counts = [0, 0, 0, 0];
+    container.querySelectorAll("path[data-name]").forEach((p) => {
+      const n = p.getAttribute("data-name");
+      const ids = prefixes.map((pre) => pre + n).filter((id) => Q.byId[id]);
+      if (!ids.length) { p.classList.add("atl-off"); return; } // not in the book (yet)
+      const lvl = atlasLevel(ids);
+      counts[lvl]++;
+      p.classList.add(ATLAS_CLASS[lvl]);
+      p.classList.add("atl");
+    });
+    container.addEventListener("click", (e) => {
+      const p = e.target.closest("path[data-name]");
+      if (!p) return;
+      const name = p.getAttribute("data-name");
+      const topic = kind === "us" ? "usmap" : "worldmap";
+      const idx = learnBook(topic).pages.findIndex(
+        (pg) => pg.fact && pg.fact.id === (kind === "us" ? "um:" : "wm:") + name);
+      if (idx >= 0) renderLearnDeck(topic, idx);
+    });
+    return counts;
+  }
+  function renderAtlas() {
+    show("#screen-progress");
+    $("#screen-progress").innerHTML = `
+      <div class="quiz-top">
+        <button class="icon-btn" id="btn-back">← Back</button>
+        <span class="stat">🗺️ My Atlas</span>
+      </div>
+      <div class="card">
+        <p class="muted" style="margin-bottom:8px">Watch your world fill in with color! Tap any place to read its page.</p>
+        <div class="atlas-legend">
+          <span><i class="atl-chip atl-unseen"></i> not met yet</span>
+          <span><i class="atl-chip atl-learning"></i> learning</span>
+          <span><i class="atl-chip atl-known"></i> known</span>
+          <span><i class="atl-chip atl-mastered"></i> mastered</span>
+        </div>
+        <h2 style="margin-top:10px">🇺🇸 United States</h2>
+        <div class="atlas-map" id="atlas-us">${mapHTML({ kind: "us" })}</div>
+        <p class="summary-line" id="atlas-us-line"></p>
+        <h2>🌍 The World</h2>
+        <div class="atlas-map" id="atlas-world">${mapHTML({ kind: "world" })}</div>
+        <p class="summary-line" id="atlas-world-line"></p>
+      </div>`;
+    const us = paintAtlas($("#atlas-us"), "us", ["um:", "st:"]);
+    const wd = paintAtlas($("#atlas-world"), "world", ["wm:", "cc:"]);
+    $("#atlas-us-line").textContent = `${us[2] + us[3]} of ${us.reduce((a, b) => a + b, 0)} states known · ${us[3]} mastered`;
+    $("#atlas-world-line").textContent = `${wd[2] + wd[3]} of ${wd.reduce((a, b) => a + b, 0)} countries known · ${wd[3]} mastered`;
+    $("#btn-back").onclick = renderHome;
   }
 
   function stickersOverlay() {
@@ -678,7 +749,7 @@
     el.innerHTML = `<div class="celebrate-box">
       <h2>📝 Pick your mock exam</h2>
       <div class="profile-list">
-        <button class="green profile-btn" data-kind="nsf">🏫 NSF Mock — 25 questions<br><span class="note" style="color:inherit">+1 per correct, no penalty. Always guess!</span></button>
+        <button class="green profile-btn" data-kind="nsf">🏫 NSF Mock — 25 questions<br><span class="note" style="color:inherit">+1 per correct, no penalty · 30-minute timer. Always guess!</span></button>
         <button class="violet profile-btn" data-kind="iac">🌎 IAC Mock — 50 questions<br><span class="note" style="color:inherit">+2 / −1 / 0 skip · 30-minute timer</span></button>
       </div>
       <p class="muted" style="margin-top:10px">tap outside to cancel</p></div>`;
@@ -824,7 +895,7 @@
         extra = `<span class="stat">${"❤️".repeat(Math.max(0, 3 - act.plan.strikes)) || "💔"}</span>`;
       } else {
         extra = `<span class="stat">🏅 ${act.plan.score}</span>` +
-          (act.kind === "iac" ? `<span class="stat" id="bee-timer">⏱ --:--</span>` : "");
+          (act.plan.timeLimit ? `<span class="stat" id="bee-timer">⏱ --:--</span>` : "");
       }
     }
     return `<div class="quiz-top">
@@ -1334,6 +1405,7 @@
         <h2>My competition 🐝</h2>
         <div class="field"><label>Bee name (optional)</label><input id="set-beename" type="text" maxlength="40" placeholder="e.g. NSF Junior Geography Bee" value="${esc(S.settings.beeName || "")}" /></div>
         <div class="field"><label>Bee date</label><input id="set-beedate" type="date" value="${esc(S.settings.beeDate || "")}" /></div>
+        <p class="muted">📅 NSF regional bees run in late March–April (2026: Week 1 March 28–29, register by March 16; Week 2 from April 25, register by April 13). Registration opens each January at northsouth.org.</p>
         <p class="note">Setting a date turns on the countdown coach: a daily plan that paces new material to finish ~10 days before the bee, leaving pure review time.</p>
       </div>
       <div class="card">
