@@ -218,6 +218,9 @@ it point-in-time.
   `gap_fade.py`, `sector_pairs.py` (market-neutral stat-arb). Conviction-ITM (deep-ITM
   multi-day longs) lives in `autotrade.py`. `orb.py` / `mean_reversion.py` ship dark
   (`*_ENABLED=False`) — both were backtested and rejected as single-name artifacts.
+  `option_scalp.py` (momentum-burst SPY/QQQ option scalps) also ships dark: prior
+  evidence is adverse; `research/backtest_option_scalp.py` must pass its friction +
+  exit-lag verdict bar before the flag is ever flipped.
 - `alpaca_system_prompt.txt` — the model's trading instructions.
 - `backtest.py` — offline backtest harness.
 - `research/` — validation & distillation (see **Research & validation**):

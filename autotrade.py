@@ -4636,11 +4636,13 @@ def run_cycle(dry: bool = False):
     import orb
     import mean_reversion as mr
     import sector_pairs as sp
+    import option_scalp as osc
     # The cfg flag is authoritative; mirror it onto each module's own master gate so the
     # in-module early-return agrees with the call-site gate (modules read their own flag).
     orb.ORB_ENABLED = cfg.ORB_ENABLED
     mr.MEANREV_ENABLED = cfg.MEANREV_ENABLED
     sp.PAIRS_ENABLED = cfg.PAIRS_ENABLED
+    osc.OPTION_SCALP_ENABLED = cfg.OPTION_SCALP_ENABLED
     gs.run(tc, state, dry)
     od.run(tc, state, dry)               # sell at open / buy near close (regime-gated)
     th.run(tc, state, dry)              # always-on crash hedge (flag-gated, OFF by default)
@@ -4664,6 +4666,11 @@ def run_cycle(dry: bool = False):
             sp.run(tc, state, dry)             # sector pairs stat-arb (MULTI-DAY; SHIELDED below)
         except Exception as e:
             log(f"sector_pairs: run failed: {e}")
+    if cfg.OPTION_SCALP_ENABLED:
+        try:
+            osc.run(tc, state, dry)            # momentum-burst option scalps (intraday; SHIELDED —
+        except Exception as e:                 # the book manages its own option exits)
+            log(f"option_scalp: run failed: {e}")
     sleeve = gs.held_symbols(state)
     # Shielded books the intraday engine must leave alone. (gap_fade/orb/mean_reversion are
     # intraday and managed by the normal bracket machinery, so they are intentionally NOT
@@ -4672,7 +4679,7 @@ def run_cycle(dry: bool = False):
     # like overnight/tail/earnings; its own run() records P&L via record_strategy_realized.)
     held_books = (sleeve | od.held_symbols(state)
                   | th.held_symbols(state) | ec.held_symbols(state)
-                  | sp.held_symbols(state))
+                  | sp.held_symbols(state) | osc.held_symbols(state))
 
     # Sleeve-overlap (flag-OFF default): names the intraday engine MAY take a LONG stock
     # entry in despite the managed-book block — held ONLY by the sleeve (not pairs/overnight/
@@ -5062,6 +5069,7 @@ def run_cycle(dry: bool = False):
         "orb": orb.summary(state),
         "mean_reversion": mr.summary(state),
         "sector_pairs": sp.summary(state),
+        "option_scalp": osc.summary(state),
         "bracket_managed": sorted(bracketed),
         "signal_scan": scan[:20],
         "option_chains": option_chains,

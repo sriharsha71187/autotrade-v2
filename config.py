@@ -673,6 +673,9 @@ GAP_FADE_UNIVERSE = ["SPY", "QQQ", "IWM", "AAPL", "MSFT", "NVDA", "AMZN", "META"
 ORB_ENABLED     = False   # opening-range-breakout (intraday)
 MEANREV_ENABLED = False   # intraday mean-reversion (chop-day book)
 PAIRS_ENABLED   = False   # sector pairs / stat-arb (multi-day, shielded; enable via override file)
+OPTION_SCALP_ENABLED = False  # momentum-burst option scalps on SPY/QQQ (intraday; book manages
+                              # its own option exits, symbols shielded). PRIOR EVIDENCE ADVERSE —
+                              # research/backtest_option_scalp.py must pass before enabling.
 
 
 BLACKLIST: list[str] = []
@@ -788,6 +791,7 @@ RUNTIME_SETTABLE = {
     "ORB_ENABLED": bool,
     "MEANREV_ENABLED": bool,
     "PAIRS_ENABLED": bool,
+    "OPTION_SCALP_ENABLED": bool,
     # conviction-ITM book (deep-ITM, multi-day directional options)
     "CONVICTION_ITM_ENABLED": bool,
     "CONVICTION_ITM_DEPTH": float,
