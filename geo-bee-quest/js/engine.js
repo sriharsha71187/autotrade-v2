@@ -180,7 +180,7 @@ window.Engine = (function () {
       // drill: fixed fact-id list (mock debrief / tricky-ones) — the session
       // serves exactly these facts plus their in-session re-asks
       drill: o && o.factIds ? o.factIds.slice() : null,
-      asked: [], misses: [], reasks: 0, reviews: 0,
+      asked: [], misses: [], reasks: 0, reviews: 0, usedAnswers: [],
       i: 0, correct: 0, streak: 0, xp: 0, events: [], topicCursor: 0,
     };
   }
@@ -224,6 +224,11 @@ window.Engine = (function () {
     }
     const taper = beeDays !== null && beeDays >= 0 && beeDays <= 10;
     const polish = beeDays !== null && beeDays >= 0 && beeDays <= 2;
+    // no repeated subjects/answers within one round (misses re-ask is exempt)
+    const used = new Set(sess.usedAnswers || []);
+    const fresh = (f) => !used.has(Q.normalize(f.label || ""));
+    // a hot streak (≥85% recent accuracy) unlocks harder picks
+    const hot = recentAccuracy(s) >= 0.85;
     // 2. overdue scheduled reviews — cap grows with the backlog (4..8)
     const dueN = dueCount(s);
     const cap = Math.max(4, Math.min(8, Math.ceil(dueN / 5)));
@@ -232,7 +237,7 @@ window.Engine = (function () {
       for (const t of sessionTopics(s, sess)) {
         for (const f of topicFacts(s, t.id)) {
           const r = s.facts[f.id];
-          if (r && r.b >= (polish ? 2 : 1) && r.due && r.due <= now && !askedSet.has(f.id)) dueFacts.push([r.due, f]);
+          if (r && r.b >= (polish ? 2 : 1) && r.due && r.due <= now && !askedSet.has(f.id) && fresh(f)) dueFacts.push([r.due, f]);
         }
       }
       if (dueFacts.length) {
@@ -246,13 +251,14 @@ window.Engine = (function () {
     }
     // big backlog or bee taper → review-only rounds, no new material
     if (!taper && dueN <= 25) {
-      // 3. occasional challenge preview from one tier up
-      if (Math.random() < 0.12) {
-        const f = pickNew(s, askedSet, +1, sessionTopics(s, sess));
+      // 3. challenge preview from one tier up — more often on a hot streak
+      if (Math.random() < (hot ? 0.25 : 0.12)) {
+        const f = pickNew(s, askedSet, +1, sessionTopics(s, sess), { fresh, hot });
         if (f) return makeQ(s, f, { challenge: true });
       }
-      // 4. new material at current tier, asked cold (marked 🆕 in the UI)
-      const f = pickNew(s, askedSet, 0, sessionTopics(s, sess));
+      // 4. new material at current tier, asked cold (marked 🆕 in the UI);
+      // hot learners draw from the top of their unlocked range, not the bottom
+      const f = pickNew(s, askedSet, 0, sessionTopics(s, sess), { fresh, hot });
       if (f) {
         const r = s.facts[f.id];
         const isNew = !r || (r.b === 0 && !r.c && !r.w);
@@ -265,18 +271,29 @@ window.Engine = (function () {
       for (const fx of topicFacts(s, t.id)) {
         const r = s.facts[fx.id];
         if (!r || askedSet.has(fx.id)) continue;
-        const score = (r.due || 0) - (r.w - r.c) * DAY;
+        let score = (r.due || 0) - (r.w - r.c) * DAY;
+        if (!fresh(fx)) score += 30 * DAY; // avoid same-subject repeats if possible
         if (score < bestScore) { bestScore = score; best = fx; }
       }
     }
     return best ? makeQ(s, best, { review: true }) : null;
   }
 
-  function pickNew(s, askedSet, tierOffset, topicList) {
+  // recent accuracy over roughly the last 60 answers (needs >=30 to count)
+  function recentAccuracy(s) {
+    let a = 0, c = 0;
+    for (let i = (s.log || []).length - 1; i >= 0 && a < 60; i--) { a += s.log[i].a; c += s.log[i].c; }
+    return a >= 30 ? c / a : 0;
+  }
+
+  function pickNew(s, askedSet, tierOffset, topicList, opts) {
     const topics = topicList || enabledTopics(s);
     if (!topics.length) return null;
-    // Round-robin over topics; within a topic take unseen facts,
-    // lowest tier first, up to the topic's current tier (+offset).
+    const freshOk = (opts && opts.fresh) || (() => true);
+    const hot = !!(opts && opts.hot);
+    // Round-robin over topics; within a topic take unseen facts up to the
+    // topic's current tier (+offset) — lowest tier first normally, HIGHEST
+    // first for hot learners so an advanced kid isn't fed warm-ups.
     for (let k = 0; k < topics.length; k++) {
       const t = topics[(pickNew._cursor + k) % topics.length];
       const maxTier = Math.min(5, (s.topics[t.id].tier || 1) + tierOffset);
@@ -284,18 +301,18 @@ window.Engine = (function () {
       const pool = topicFacts(s, t.id)
         .filter((f) => {
           const r = s.facts[f.id];
-          return (!r || r.b === 0) && !askedSet.has(f.id) &&
+          return (!r || r.b === 0) && !askedSet.has(f.id) && freshOk(f) &&
             (tierOffset > 0 ? f.tier === maxTier : f.tier <= maxTier);
         })
-        .sort((a, b) => a.tier - b.tier);
+        .sort((a, b) => (hot ? b.tier - a.tier : a.tier - b.tier));
       if (pool.length) {
         if (tierOffset === 0) pickNew._cursor = (pickNew._cursor + k + 1) % topics.length;
-        // small shuffle within the lowest tier so ordering isn't alphabetical;
+        // small shuffle within the leading tier so ordering isn't alphabetical;
         // facts studied in Learn mode come first — quiz what was just studied
-        const lowest = pool.filter((f) => f.tier === pool[0].tier);
-        const noted = lowest.filter((f) => { const r = s.facts[f.id]; return r && r.n; });
+        const lead = pool.filter((f) => f.tier === pool[0].tier);
+        const noted = lead.filter((f) => { const r = s.facts[f.id]; return r && r.n; });
         // usually quiz what was just studied, but never lock onto one fact
-        const pickFrom = noted.length && Math.random() < 0.7 ? noted : lowest;
+        const pickFrom = noted.length && Math.random() < 0.7 ? noted : lead;
         return pickFrom[Math.floor(Math.random() * pickFrom.length)];
       }
     }
@@ -347,6 +364,9 @@ window.Engine = (function () {
     if (sess) {
       sess.i++;
       sess.asked.push(q.factId);
+      // remember this round's subjects and answers, so "capital of Texas"
+      // and "Austin is the capital of..." never share one round
+      (sess.usedAnswers = sess.usedAnswers || []).push(Q.normalize(f.label || ""), Q.normalize(q.answerText || ""));
       if (correct) {
         sess.correct++;
         sess.streak++;
@@ -431,7 +451,9 @@ window.Engine = (function () {
   function placementFinish(s, p) {
     const tail = p.results.slice(-6);
     const avg = tail.reduce((a, r) => a + r.tier, 0) / Math.max(1, tail.length);
-    const start = Math.max(1, Math.min(3, Math.round(avg) - 1));
+    // a strong placement can start as high as tier 4 — advanced kids
+    // shouldn't crawl through warm-ups
+    const start = Math.max(1, Math.min(4, Math.round(avg) - 1));
     for (const t of enabledTopics(s)) s.topics[t.id].tier = start;
     s.placementDone = true;
     s.metaUpdated = Date.now();
