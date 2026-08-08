@@ -481,7 +481,8 @@ window.Engine = (function () {
     else tiers = [1,1,2,2,2,3,3,3,3,4,4,4,5,5,5];
     return {
       kind, tiers, i: 0, score: 0, correct: 0, strikes: 0,
-      asked: new Set(), topics, cursor: 0,
+      // random starting topic — every mock opens differently
+      asked: new Set(), topics, cursor: Math.floor(Math.random() * topics.length),
       pyUsed: new Set(), clueBonus: 0,
       // real Phase I limits: NSF 25Q/30min, IAC 50Q/30min
       timeLimit: kind === "iac" || kind === "nsf" ? 30 * 60 : null,
@@ -501,6 +502,8 @@ window.Engine = (function () {
     }
     const written = plan.kind === "nsf" || plan.kind === "iac";
     const tier = plan.tiers[plan.i];
+    // avoid re-serving the previous mock's questions when pools allow
+    const lastBee = new Set(s.lastBeeAsked || []);
     const search = (slot) => {
       for (let dt = 0; dt <= 4; dt++) {
         for (const off of [0, -dt, dt]) {
@@ -517,7 +520,9 @@ window.Engine = (function () {
             if (slot === "t" || plan.kind === "oral") pool = pool.filter((f) => !(f.item && f.item.odd));
             if (pool.length) {
               plan.cursor = (plan.cursor + k + 1) % plan.topics.length;
-              const f = pool[Math.floor(Math.random() * pool.length)];
+              const unseenLastBee = pool.filter((f) => !lastBee.has(f.id));
+              const pickPool = unseenLastBee.length ? unseenLastBee : pool;
+              const f = pickPool[Math.floor(Math.random() * pickPool.length)];
               plan.asked.add(f.id);
               // tap-the-map isn't an exam form; highlighted-map ID is fine
               let form = Q.nextForm(f, (s.facts[f.id] || {}).forms);
@@ -561,6 +566,8 @@ window.Engine = (function () {
   }
   function beeFinish(s, plan) {
     const events = [];
+    // remember this mock's questions so the next one prefers fresh material
+    s.lastBeeAsked = Array.from(plan.asked).slice(-200);
     const key = plan.kind === "oral" ? "oral" : plan.kind;
     const val = plan.kind === "oral" ? plan.correct : plan.score;
     if (s.best[key] == null || val > s.best[key]) { s.best[key] = val; events.push({ type: "best" }); }
