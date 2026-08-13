@@ -21,6 +21,8 @@ ok, why = cc.day_is_calm(600.0, 601.0, 599.5, 600.5, 600.5, 17.0)
 chk("VIX >= 16 blocks", not ok and "VIX" in why)
 ok, why = cc.day_is_calm(596.0, 597.0, 595.5, 596.2, 600.0, 13.0)   # -0.67% gap-down
 chk("big gap-down blocks", not ok and "gap-down" in why)
+ok, why = cc.day_is_calm(604.5, 605.0, 604.0, 604.6, 600.0, 13.0)   # +0.75% gap-up
+chk("big gap-up blocks (symmetric)", not ok and "gap-up" in why)
 ok, why = cc.day_is_calm(600.0, 602.5, 599.8, 602.2, 600.2, 13.0)   # +0.37% move now
 chk("trending day blocks (|move|)", not ok and "flat" in why)
 ok, why = cc.day_is_calm(600.0, 602.8, 598.9, 600.2, 600.2, 13.0)   # 0.65% range

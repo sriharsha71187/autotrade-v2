@@ -64,8 +64,14 @@ def day_is_calm(open_px, hi, lo, now_px, prev_close, vix) -> tuple[bool, str]:
         return False, "missing data"
     if vix is None or vix >= cfg.CALM_CONDOR_VIX_MAX:
         return False, f"VIX {vix} not < {cfg.CALM_CONDOR_VIX_MAX}"
-    if open_px / prev_close - 1 <= -0.005:
+    gap = open_px / prev_close - 1
+    if gap <= -0.005:
         return False, "gap-down >= 0.5% (never sell premium into it)"
+    if gap >= 0.005:
+        # Red-team finding: the backtested population never included big up-gap
+        # days (gate was |gap| < 0.15-0.30%); an unbounded up-gap allowance would
+        # be an untested bet. Symmetric block keeps the live book inside evidence.
+        return False, "gap-up >= 0.5% (outside the backtested population)"
     if abs(now_px / open_px - 1) >= 0.0025:
         return False, "day not flat (|move| >= 0.25%)"
     if (hi - lo) / open_px >= 0.006:
@@ -172,31 +178,64 @@ def _spy_session():
         return None
 
 
+def _audit(record: dict):
+    """Append one JSON line to ~/calm_condor_fills.jsonl — the model-vs-market
+    audit trail the red-team review demanded. The book's KILL CRITERION lives on
+    this file: if filled_credit / model_credit averages < 1.0 over the validation
+    run, the synthetic edge doesn't exist at real quotes and the book dies."""
+    try:
+        import json
+        p = cfg.HOME / "calm_condor_fills.jsonl"
+        with open(p, "a") as fh:
+            fh.write(json.dumps(record) + "\n")
+    except Exception:
+        pass                               # audit must never break trading
+
+
 def _close(tc, odc, state, h, reason, dry) -> bool:
     import autotrade as at
     if dry:
         at.log(f"[DRY] calm_condor would CLOSE ({reason})")
         return False
-    cost = 0.0
+    # Cost to close from mid quotes. Track whether we actually GOT quotes — on a
+    # total quote failure the old cost=0.0 silently booked the full credit as
+    # profit (red-team finding). Now: still close, but book P&L as UNKNOWN.
+    cost, quoted = 0.0, 0
+    legs = h.get("legs", [])
     try:
-        for l in h.get("legs", []):
+        for l in legs:
             _, _, mid = at.option_quote(odc, l["symbol"])
+            if mid:
+                quoted += 1
             m = mid or 0.0
             cost += m if l["side"] == "sell" else -m
     except Exception:
-        cost = 0.0
+        pass
     try:
-        for l in h.get("legs", []):
+        for l in legs:
             try:
                 tc.close_position(l["symbol"])
             except Exception:
                 pass                       # leg already expired/closed — fine
         qty = int(h.get("qty") or 1)
-        realized = float(h.get("entry_net", 0.0)) - cost * 100 * qty
-        at.record_strategy_realized(state, "calm_condor", realized)
-        state.setdefault("calm_condor", {})["last_realized"] = round(realized, 2)
-        at.log(f"CALM_CONDOR close ({reason}) realized≈{realized:+.0f}")
-        at.tg_send(f"🦅 Calm-day condor closed ({reason}): P&L ≈ ${realized:+,.0f}.")
+        if quoted == len(legs) and legs:
+            realized = float(h.get("entry_net", 0.0)) - cost * 100 * qty
+            at.record_strategy_realized(state, "calm_condor", realized)
+            state.setdefault("calm_condor", {})["last_realized"] = round(realized, 2)
+            at.log(f"CALM_CONDOR close ({reason}) realized≈{realized:+.0f}")
+            at.tg_send(f"🦅 Calm-day condor closed ({reason}): P&L ≈ ${realized:+,.0f}.")
+        else:
+            realized = None
+            at.log(f"CALM_CONDOR close ({reason}) — quotes unavailable "
+                   f"({quoted}/{len(legs)} legs), realized UNKNOWN (not booked; "
+                   f"reconcile from fills)")
+            at.tg_send(f"🦅 Calm-day condor closed ({reason}); P&L unknown at close "
+                       f"(quotes missing) — check fills.")
+        _audit({"event": "close", "when": at.et_now().isoformat(), "reason": reason,
+                "legs": [l["symbol"] for l in legs], "qty": qty,
+                "close_cost_mid": round(cost, 4) if quoted == len(legs) else None,
+                "entry_net": h.get("entry_net"), "model_credit": h.get("model_credit"),
+                "realized": realized})
         return True
     except Exception as ex:
         at.log(f"calm_condor: close failed: {ex}")
@@ -265,10 +304,16 @@ def _enter(tc, odc, state, now, dry):
         if not dry:
             cc["holding"] = {"legs": pick["legs"], "qty": qty,
                              "entry_net": round(pick["net_credit"] * 100 * qty, 2),
+                             "model_credit": pick["net_credit"],
                              "short_call": pick["short_call"], "short_put": pick["short_put"],
                              "risk": risk * qty, "entry_date": today_s,
                              "opened": now.isoformat(),
                              "order_id": str(getattr(o, "id", "")) or None}
+            _audit({"event": "entry", "when": now.isoformat(), "spot": spot,
+                    "em": pick["em"], "legs": [l["symbol"] for l in pick["legs"]],
+                    "qty": qty, "model_credit": pick["net_credit"],
+                    "risk": risk * qty, "vix": vix,
+                    "order_id": str(getattr(o, "id", "")) or None})
         at.log(f"CALM_CONDOR sell {qty}x SPY {today_s} shorts "
                f"[{pick['short_put']}/{pick['short_call']}] EM≈{pick['em']} "
                f"credit≈{pick['net_credit']} risk≈${risk * qty:.0f}")
