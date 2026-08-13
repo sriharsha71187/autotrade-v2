@@ -4598,6 +4598,18 @@ def run_cycle(dry: bool = False):
         save_state(state)   # persist telegram offset + any command effects
         return
 
+    # Calm-day afternoon condor book: deterministic (no model call), so it is
+    # EXPLICITLY allowed to run while TRADING_PAUSED — the pause verdict was about
+    # LLM intraday selection, and this book is code-only. Flag-gated OFF by default;
+    # it owns its own entries, touch-stop, and 15:40 flatten (legs shielded below).
+    if cfg.CALM_CONDOR_ENABLED:
+        try:
+            import calm_condor as ccb
+            ccb.CALM_CONDOR_ENABLED = True
+            ccb.run(tc, state, dry)
+        except Exception as e:
+            log(f"calm_condor: run failed: {e}")
+
     # TRADING PAUSED (data-collection mode): commands above still work and the daemon keeps
     # firing the Anthropic-free research capture, but we skip the model decision + all order
     # placement. No edge in the live intraday selection; we collect data and judge in batch.
@@ -4677,9 +4689,11 @@ def run_cycle(dry: bool = False):
     # here. sector_pairs is multi-day and holds SHORT stock legs — its legs MUST be shielded
     # from the cross-day ledger, the EOD stock flatten, and the orphan/forced sweep, exactly
     # like overnight/tail/earnings; its own run() records P&L via record_strategy_realized.)
+    import calm_condor as ccb2
     held_books = (sleeve | od.held_symbols(state)
                   | th.held_symbols(state) | ec.held_symbols(state)
-                  | sp.held_symbols(state) | osc.held_symbols(state))
+                  | sp.held_symbols(state) | osc.held_symbols(state)
+                  | ccb2.held_symbols(state))
 
     # Sleeve-overlap (flag-OFF default): names the intraday engine MAY take a LONG stock
     # entry in despite the managed-book block — held ONLY by the sleeve (not pairs/overnight/
@@ -5070,6 +5084,7 @@ def run_cycle(dry: bool = False):
         "mean_reversion": mr.summary(state),
         "sector_pairs": sp.summary(state),
         "option_scalp": osc.summary(state),
+        "calm_condor": ccb2.summary(state),
         "bracket_managed": sorted(bracketed),
         "signal_scan": scan[:20],
         "option_chains": option_chains,

@@ -677,6 +677,17 @@ OPTION_SCALP_ENABLED = False  # momentum-burst option scalps on SPY/QQQ (intrada
                               # its own option exits, symbols shielded). PRIOR EVIDENCE ADVERSE —
                               # research/backtest_option_scalp.py must pass before enabling.
 
+# ---- calm-day afternoon condor (the OOS survivor; see calm_condor.py) --------
+# Deterministic same-day SPY condor at ~1PM ET on flat-open calm-VIX days, with a
+# short-strike touch-stop and a 15:40 hard flatten. Runs EVEN while TRADING_PAUSED
+# (code-only book; the pause verdict was about LLM selection). PAPER validation
+# run: judge fills-vs-model, not a week of P&L.
+CALM_CONDOR_ENABLED            = False
+CALM_CONDOR_BOOK_CAPITAL       = 20_000.0  # gross risk cap for the whole book
+CALM_CONDOR_RISK_PER_DAY       = 2_000.0   # target margin/risk per trade day (10% of book)
+CALM_CONDOR_VIX_MAX            = 16.0      # calm gate (prior/live VIX must be below)
+CALM_CONDOR_MAX_LEG_SPREAD_PCT = 0.05      # per-leg bid/ask width ceiling vs mid
+
 
 BLACKLIST: list[str] = []
 
@@ -792,6 +803,12 @@ RUNTIME_SETTABLE = {
     "MEANREV_ENABLED": bool,
     "PAIRS_ENABLED": bool,
     "OPTION_SCALP_ENABLED": bool,
+    # calm-day afternoon condor book (flip on/off + resize from Telegram)
+    "CALM_CONDOR_ENABLED": bool,
+    "CALM_CONDOR_BOOK_CAPITAL": float,
+    "CALM_CONDOR_RISK_PER_DAY": float,
+    "CALM_CONDOR_VIX_MAX": float,
+    "CALM_CONDOR_MAX_LEG_SPREAD_PCT": float,
     # conviction-ITM book (deep-ITM, multi-day directional options)
     "CONVICTION_ITM_ENABLED": bool,
     "CONVICTION_ITM_DEPTH": float,
