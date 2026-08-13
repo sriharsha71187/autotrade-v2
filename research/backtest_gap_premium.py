@@ -15,7 +15,7 @@ Setup (all entered at the OPEN, exited at the CLOSE, defined risk, T=1 session):
     PCS  put credit spread (bullish)       — return on margin
     CCS  call credit spread (bearish)      — return on margin
     CDS  call debit spread ATM->+0.75s     — return on debit
-    PDS  put debit spread ATM->-0.75s      — return on debit
+    PDS  put debit spread ATM->-0.75s     — return on debit
   friction: 10% of gross credit/debit round trip (20% sensitivity column).
 
 Conditioning (NO lookahead: gap uses today's open vs prior close; macro uses
@@ -26,25 +26,28 @@ prior-close values only):
 
 Method: mine cells on 2007-2018 (IS), require N>=80 and |t|>=2.0 after friction,
 then test ONLY the surviving rules on 2019-2026 (OOS). A rule that dies OOS is
-mining noise — reported as such. Data: research/data/spy_vix_daily.csv
-(SPY OHLC split-adjusted + VIX close, Robinhood MCP export 2007-2026; pass
---csv PATH to use another file with the same header).
+mining noise — reported as such. Additional sections: a LOOSENING LADDER (relax
+each gate of the surviving rule one at a time — how fast does the edge dilute as
+trade count rises?) and an AGGRESSION grid (tighter short strikes / bigger sizing
+on the strict signal — is "fewer but bigger" better?).
 
-Run: python3 research/backtest_gap_premium.py [--csv PATH]
-Pure stdlib — no pandas/numpy needed.
+Data: research/data/spy_vix_daily.csv (SPY OHLC split-adjusted + VIX close,
+Robinhood MCP export 2007-2026; pass --csv PATH for another file, same header).
+Run: python3 research/backtest_gap_premium.py [--csv PATH]   (pure stdlib)
 """
 import csv, math, os, sys
 
 FRICTIONS = [0.10, 0.20]      # of gross credit (credit legs) / debit (debit legs)
-SHORT_S, WING_S = 0.75, 2.0   # strikes in units of sigma-day
+SHORT_S, WING_S = 0.75, 2.0   # default strikes in units of sigma-day
 IS_END = "2019-01-01"         # IS = 2007..2018, OOS = 2019..2026
 MIN_N, MIN_T = 80, 2.0        # IS survival bar per cell-rule
+T = 1 / 252
 
 
 def N(x): return 0.5 * (1 + math.erf(x / math.sqrt(2)))
-def bs(S, K, T, sig, put=False):
-    if T <= 0 or sig <= 0: return max((K - S) if put else (S - K), 0.0)
-    d1 = (math.log(S / K) + (sig * sig / 2) * T) / (sig * math.sqrt(T)); d2 = d1 - sig * math.sqrt(T)
+def bs(S, K, Tx, sig, put=False):
+    if Tx <= 0 or sig <= 0: return max((K - S) if put else (S - K), 0.0)
+    d1 = (math.log(S / K) + (sig * sig / 2) * Tx) / (sig * math.sqrt(Tx)); d2 = d1 - sig * math.sqrt(Tx)
     return (K * N(-d2) - S * N(-d1)) if put else (S * N(d1) - K * N(d2))
 
 
@@ -57,62 +60,54 @@ def load(path):
     return rows
 
 
-def day_returns(rows):
-    """Per-day: features (no lookahead) + after-friction return of each structure."""
-    T = 1 / 252
+def build_days(rows):
+    """Per-day raw state + features (no lookahead)."""
     out = []
     for i in range(201, len(rows)):
         S, C = rows[i]["o"], rows[i]["c"]
         pc = rows[i - 1]["c"]
-        # intraday realized vol, trailing 21d ending YESTERDAY (x1.10 VRP, 0dte convention)
         ocs = [math.log(rows[j]["c"] / rows[j]["o"]) for j in range(i - 21, i)]
         m = sum(ocs) / 21
         iv = math.sqrt(sum((x - m) ** 2 for x in ocs) / 20) * math.sqrt(252) * 1.10
         if iv <= 0: continue
-        sd = iv * math.sqrt(T)
         gap = S / pc - 1
         ma200 = sum(r["c"] for r in rows[i - 200:i]) / 200
         vix = rows[i - 1]["v"]
         gb = ("dn_big" if gap <= -0.005 else "dn" if gap <= -0.0015 else
               "up_big" if gap >= 0.005 else "up" if gap >= 0.0015 else "flat")
-        tr = "up" if pc > ma200 else "down"
-        vb = ("calm" if vix < 16 else "mid" if vix < 22 else "high" if vix < 30 else "extreme")
-        Kc, Kp = S * math.exp(SHORT_S * sd), S * math.exp(-SHORT_S * sd)
-        Wc, Wp = S * math.exp(WING_S * sd), S * math.exp(-WING_S * sd)
-        cc = bs(S, Kc, T, iv) - bs(S, Wc, T, iv)              # call-side credit
-        pcred = bs(S, Kp, T, iv, True) - bs(S, Wp, T, iv, True)  # put-side credit
-        wc, wp = Wc - Kc, Kp - Wp
-        # debit spreads: long ATM, short the 0.75-sigma strike
-        cds_cost = bs(S, S, T, iv) - bs(S, Kc, T, iv)
-        pds_cost = bs(S, S, T, iv, True) - bs(S, Kp, T, iv, True)
-        day = {"d": rows[i]["d"], "gap": gb, "tr": tr, "vb": vb, "structs": {}}
-        for f in FRICTIONS:
-            ic_credit = (cc + pcred) * (1 - f)
-            ic_loss = min(max(C - Kc, 0) + max(Kp - C, 0), min(wc, wp))
-            ic_m = min(wc, wp) - (cc + pcred)
-            pcs_loss = min(max(Kp - C, 0), wp); pcs_m = wp - pcred
-            ccs_loss = min(max(C - Kc, 0), wc); ccs_m = wc - cc
-            cds_pay = min(max(C - S, 0), Kc - S); cds_c = cds_cost * (1 + f)
-            pds_pay = min(max(S - C, 0), S - Kp); pds_c = pds_cost * (1 + f)
-            day["structs"][f] = {
-                "IC":  (ic_credit - ic_loss) / ic_m if ic_m > 0 else 0.0,
-                "PCS": (pcred * (1 - f) - pcs_loss) / pcs_m if pcs_m > 0 else 0.0,
-                "CCS": (cc * (1 - f) - ccs_loss) / ccs_m if ccs_m > 0 else 0.0,
-                "CDS": (cds_pay - cds_c) / cds_c if cds_c > 0 else 0.0,
-                "PDS": (pds_pay - pds_c) / pds_c if pds_c > 0 else 0.0,
-            }
-        out.append(day)
+        out.append({"d": rows[i]["d"], "S": S, "C": C, "iv": iv, "gap_val": gap,
+                    "vix": vix, "gap": gb, "tr": "up" if pc > ma200 else "down",
+                    "vb": ("calm" if vix < 16 else "mid" if vix < 22 else
+                           "high" if vix < 30 else "extreme")})
     return out
 
 
-def agg(days, f, key=None):
-    """{(cell, struct): [returns]} for friction f; cell = key(day) or coarse default."""
-    key = key or (lambda d: (d["gap"], d["tr"], d["vb"]))
-    cells = {}
-    for d in days:
-        for s, r in d["structs"][f].items():
-            cells.setdefault((key(d), s), []).append(r)
-    return cells
+def struct_ret(day, name, f, short_s=SHORT_S, wing_s=WING_S):
+    """After-friction return of one structure on one day (on margin / on debit)."""
+    S, C, iv = day["S"], day["C"], day["iv"]
+    sd = iv * math.sqrt(T)
+    Kc, Kp = S * math.exp(short_s * sd), S * math.exp(-short_s * sd)
+    Wc, Wp = S * math.exp(wing_s * sd), S * math.exp(-wing_s * sd)
+    cc = bs(S, Kc, T, iv) - bs(S, Wc, T, iv)
+    pcred = bs(S, Kp, T, iv, True) - bs(S, Wp, T, iv, True)
+    wc, wp = Wc - Kc, Kp - Wp
+    if name == "IC":
+        marg = min(wc, wp) - (cc + pcred)
+        loss = min(max(C - Kc, 0) + max(Kp - C, 0), min(wc, wp))
+        return ((cc + pcred) * (1 - f) - loss) / marg if marg > 0 else 0.0
+    if name == "PCS":
+        marg = wp - pcred
+        return (pcred * (1 - f) - min(max(Kp - C, 0), wp)) / marg if marg > 0 else 0.0
+    if name == "CCS":
+        marg = wc - cc
+        return (cc * (1 - f) - min(max(C - Kc, 0), wc)) / marg if marg > 0 else 0.0
+    if name == "CDS":
+        cost = (bs(S, S, T, iv) - bs(S, Kc, T, iv)) * (1 + f)
+        return (min(max(C - S, 0), Kc - S) - cost) / cost if cost > 0 else 0.0
+    if name == "PDS":
+        cost = (bs(S, S, T, iv, True) - bs(S, Kp, T, iv, True)) * (1 + f)
+        return (min(max(S - C, 0), S - Kp) - cost) / cost if cost > 0 else 0.0
+    raise ValueError(name)
 
 
 def tstat(rs):
@@ -124,9 +119,20 @@ def tstat(rs):
 
 
 def fmt(rs):
+    if not rs: return "N=   0"
     n = len(rs); m = sum(rs) / n
     win = sum(1 for r in rs if r > 0) / n
     return f"N={n:4d} avg={m*100:+6.2f}% t={tstat(rs):+5.1f} win={win*100:3.0f}% worst={min(rs)*100:+5.0f}%"
+
+
+def equity(days_sel, name, f, size, short_s=SHORT_S):
+    """Compound equity path trading `name` on the selected days at `size` of account."""
+    eq, peak, dd, worst, wins = 1.0, 1.0, 0.0, 0.0, 0
+    for d in days_sel:
+        r = struct_ret(d, name, f, short_s) * size
+        wins += r > 0; worst = min(worst, r)
+        eq *= (1 + r); peak = max(peak, eq); dd = min(dd, eq / peak - 1)
+    return eq, dd, worst, (wins / len(days_sel) if days_sel else 0.0)
 
 
 def main():
@@ -136,22 +142,26 @@ def main():
     if not os.path.exists(path):
         print(f"data file not found: {path} (pass --csv PATH)"); return
     rows = load(path)
-    days = day_returns(rows)
+    days = build_days(rows)
     is_days = [d for d in days if d["d"] < IS_END]
     oos_days = [d for d in days if d["d"] >= IS_END]
+    yrs = len({d["d"][:4] for d in days})
     print(f"\n=== gap+macro conditioned daily SPY structures · {rows[0]['d']}..{rows[-1]['d']} · "
           f"IS {len(is_days)}d / OOS {len(oos_days)}d ===")
     print("  returns are per-trade on the structure's own margin (credit) / debit, AFTER friction\n")
 
-    # 0) unconditional baselines at 10% friction (the already-known result, for anchoring)
+    # 0) unconditional baselines at 10% friction
     print("-- unconditional baselines (10% friction) --")
     for s in ["IC", "PCS", "CCS", "CDS", "PDS"]:
-        rs = [d["structs"][0.10][s] for d in days]
+        rs = [struct_ret(d, s, 0.10) for d in days]
         print(f"  {s:4} every day          {fmt(rs)}")
 
     # 1) mine IS cells at 10% friction
     print(f"\n-- IS (2007-2018) cells passing N>={MIN_N}, |t|>={MIN_T}, avg>0 (10% friction) --")
-    cells = agg(is_days, 0.10)
+    cells = {}
+    for d in is_days:
+        for s in ["IC", "PCS", "CCS", "CDS", "PDS"]:
+            cells.setdefault(((d["gap"], d["tr"], d["vb"]), s), []).append(struct_ret(d, s, 0.10))
     survivors = []
     for (cell, s), rs in sorted(cells.items()):
         if len(rs) >= MIN_N and tstat(rs) >= MIN_T and sum(rs) > 0:
@@ -163,43 +173,66 @@ def main():
     # 2) OOS test of survivors, both frictions
     print("\n-- OOS (2019-2026) test of IS survivors --")
     for f in FRICTIONS:
-        oc = agg(oos_days, f)
         for (cell, s) in survivors:
-            rs = oc.get((cell, s), [])
+            rs = [struct_ret(d, s, f) for d in oos_days
+                  if (d["gap"], d["tr"], d["vb"]) == cell]
             tag = "SURVIVES" if rs and sum(rs) > 0 and tstat(rs) >= 1.0 else "DIES"
             print(f"  fric={f:.0%} {s:4} gap={cell[0]:6} trend={cell[1]:4} vix={cell[2]:7} "
-                  f"{fmt(rs) if rs else 'N=0'}  -> {tag}")
-    if not survivors:
-        print("  (nothing to test)")
+                  f"{fmt(rs)}  -> {tag}")
 
-    # 3) coarse single-factor views (context, 10% friction, FULL sample): gap-only and vix-only
+    # 3) context: gap-bucket only (full sample, 10% friction)
     print("\n-- context: gap-bucket only (full sample, 10% friction) --")
-    gc = agg(days, 0.10, key=lambda d: d["gap"])
-    for (cell, s), rs in sorted(gc.items()):
-        if s in ("IC", "PCS", "CCS") and len(rs) >= 100:
-            print(f"  {s:4} gap={cell:6} {fmt(rs)}")
-    # 4) deep-dive: the headline rule, sized like an account would actually trade it.
-    #    RULE: sell the IC ONLY when gap is flat (|gap|<0.15%), prior close > 200dma,
-    #    prior VIX < 16. Margin at risk = 10% of account on trade days, cash otherwise.
-    #    ANTI-RULE (from the context table): NEVER sell premium on a >=0.5% gap-down.
-    print("\n-- deep-dive: IC on flat-gap + uptrend + calm-VIX, 10% of account/day --")
-    for f in FRICTIONS:
-        eq, peak, dd, worst, wins, n = 1.0, 1.0, 0.0, 0.0, 0, 0
-        by_year = {}
-        for d in days:
-            if (d["gap"], d["tr"], d["vb"]) != ("flat", "up", "calm"): continue
-            r = d["structs"][f]["IC"] * 0.10
-            n += 1; wins += r > 0; worst = min(worst, r)
-            eq *= (1 + r); peak = max(peak, eq); dd = min(dd, eq / peak - 1)
-            y = d["d"][:4]; by_year[y] = by_year.get(y, 1.0) * (1 + r)
-        yrs = len({d['d'][:4] for d in days})
-        cagr = eq ** (1 / yrs) - 1
-        print(f"  fric={f:.0%}: {n} trades/{yrs}y (~{n/yrs:.0f}/yr) · total {eq:8.2f}x · "
-              f"CAGR {cagr*100:+.1f}% · maxDD {dd*100:.1f}% · worst day {worst*100:+.1f}% · "
-              f"win {wins/n*100:.0f}%")
-        ys = sorted(by_year)
-        line = "   " + " ".join(f"{y[2:]}:{(by_year[y]-1)*100:+.0f}%" for y in ys)
-        print(line)
+    gonly = {}
+    for d in days:
+        for s in ["IC", "PCS", "CCS"]:
+            gonly.setdefault((d["gap"], s), []).append(struct_ret(d, s, 0.10))
+    for (g, s), rs in sorted(gonly.items()):
+        if len(rs) >= 100:
+            print(f"  {s:4} gap={g:6} {fmt(rs)}")
+
+    # 4) LOOSENING LADDER — relax the surviving rule's gates one at a time.
+    #    More trades vs edge dilution, full sample + OOS, both frictions, IC + CCS.
+    ladders = [
+        ("L0 strict: flat gap & uptrend & VIX<16",
+         lambda d: d["gap"] == "flat" and d["tr"] == "up" and d["vix"] < 16),
+        ("L1 + small up-gaps (gap in flat/up)",
+         lambda d: d["gap"] in ("flat", "up") and d["tr"] == "up" and d["vix"] < 16),
+        ("L2 wider flat band (|gap|<0.30%)",
+         lambda d: abs(d["gap_val"]) < 0.003 and d["tr"] == "up" and d["vix"] < 16),
+        ("L3 calmer bar (VIX<20)",
+         lambda d: d["gap"] == "flat" and d["tr"] == "up" and d["vix"] < 20),
+        ("L4 drop the trend gate",
+         lambda d: d["gap"] == "flat" and d["vix"] < 16),
+        ("L5 loose: |gap|<0.30% & VIX<20, no trend",
+         lambda d: abs(d["gap_val"]) < 0.003 and d["vix"] < 20),
+    ]
+    print("\n-- loosening ladder (IC; per-trade after friction; OOS = 2019-2026) --")
+    for lbl, pred in ladders:
+        sel = [d for d in days if pred(d)]
+        sel_oos = [d for d in oos_days if pred(d)]
+        for f in FRICTIONS:
+            rs, ro = [struct_ret(d, "IC", f) for d in sel], [struct_ret(d, "IC", f) for d in sel_oos]
+            print(f"  {lbl:42} fric={f:.0%} ~{len(sel)/yrs:3.0f}/yr  full {fmt(rs)}")
+            print(f"  {'':42}          OOS  {fmt(ro)}")
+    print("\n-- loosening ladder (CCS = call credit spread only) --")
+    for lbl, pred in ladders[:3]:
+        sel_oos = [d for d in oos_days if pred(d)]
+        rs = [struct_ret(d, "CCS", 0.20) for d in sel_oos]
+        print(f"  {lbl:42} fric=20% OOS  {fmt(rs)}")
+
+    # 5) AGGRESSION GRID on the strict rule — tighter shorts x sizing.
+    #    Tighter shorts collect more credit (more often breached); sizing scales
+    #    the whole path. CAGR uses ALL years incl. the zero-trade ones (honest).
+    print("\n-- aggression grid: strict rule days, IC, fric=20% --")
+    strict = [d for d in days if ladders[0][1](d)]
+    print(f"  {len(strict)} trade days over {yrs} years (~{len(strict)/yrs:.0f}/yr)")
+    print(f"  {'shorts':>8} {'size':>5} {'total':>9} {'CAGR':>7} {'maxDD':>7} {'worst-day':>10} {'win':>5}")
+    for ss in [0.50, 0.75, 1.00]:
+        for size in [0.10, 0.20, 0.30]:
+            eq, dd, worst, win = equity(strict, "IC", 0.20, size, short_s=ss)
+            cagr = eq ** (1 / yrs) - 1
+            print(f"  {ss:7.2f}s {size:4.0%} {eq:8.2f}x {cagr*100:+6.1f}% {dd*100:6.1f}% "
+                  f"{worst*100:+9.1f}% {win*100:4.0f}%")
 
     print("\n  Verdict bar: a rule is deployable ONLY if it survives OOS at 20% friction")
     print("  with t>=1 — and even then it inherits the premium-selling crash factor the")
