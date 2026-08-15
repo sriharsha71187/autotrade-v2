@@ -67,15 +67,22 @@ def _weak_themes(limit: int = 4) -> list[str]:
     return [t for t, _ in sorted(counts.items(), key=lambda kv: -kv[1])[:limit]]
 
 
-def daily_set(target: int | None = None, rival: str | None = None) -> list[dict]:
+def daily_set(target: int | None = None, rival: str | None = None,
+              theme: str | None = None) -> list[dict]:
     """Assemble today's puzzle set: due reviews first, then fresh, weakness-weighted."""
     target = target or config.get("puzzle_daily_target")
     now = util.now_iso()
 
     if rival:
-        base = db.rows(
-            "SELECT * FROM puzzles WHERE retired=0 AND rival=? ORDER BY due_at LIMIT ?",
-            (rival, target))
+        if theme:
+            base = db.rows(
+                """SELECT * FROM puzzles WHERE retired=0 AND rival=? AND themes LIKE ?
+                   ORDER BY due_at LIMIT ?""",
+                (rival, f'%"{theme}"%', target))
+        else:
+            base = db.rows(
+                "SELECT * FROM puzzles WHERE retired=0 AND rival=? ORDER BY due_at LIMIT ?",
+                (rival, target))
         return [_public(p) for p in base]
 
     due = db.rows(

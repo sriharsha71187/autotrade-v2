@@ -313,19 +313,65 @@ async function rivals() {
   for (const r of list) main.append(rivalCard(r));
 }
 
+const FIND_ICONS = { weapon: "⚔️", weakness: "🎯", pattern: "🔍" };
+
 function rivalCard(r) {
   const rep = r.scout_report;
   const body = el("div", {});
   if (rep) {
-    const h2h = rep.head_to_head || {};
-    body.append(el("p", { class: "mut" }, `Scouted ${fmtDate(r.scouted_at)} · prep puzzles: ${rep.prep_puzzles_created ?? 0}`));
-    (rep.advice || []).forEach(a => body.append(el("p", { style: "margin:4px 0" }, "• " + a)));
-    if ((rep.typical_mistakes || []).length)
-      body.append(el("p", { style: "margin:6px 0 0" },
-        el("b", {}, "Their habits: "),
-        rep.typical_mistakes.map(m => `${m.label} (${m.count}×)`).join(" · ")));
+    body.append(el("p", { class: "mut", style: "margin:4px 0 10px" },
+      `Scouted ${fmtDate(r.scouted_at)} · ${rep.recent_results?.n ?? 0} games analyzed · ` +
+      `${rep.prep_puzzles_created ?? 0} prep puzzles built`));
+
+    const findings = rep.findings || [];
+    if (findings.length) {
+      const groups = [["weapon", "Their weapons — defend against these"],
+                      ["weakness", "Their weaknesses — punish these"],
+                      ["pattern", "Patterns"]];
+      for (const [kind, title] of groups) {
+        const items = findings.filter(f => f.kind === kind);
+        if (!items.length) continue;
+        body.append(el("h4", { style: "margin:12px 0 6px;font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)" }, title));
+        items.forEach(f => body.append(el("div", { class: `finding ${f.kind}` },
+          el("div", { class: "fi" }, FIND_ICONS[f.kind]),
+          el("div", {}, el("h4", {}, f.title), el("p", {}, f.detail)))));
+      }
+    } else {
+      // older scout report without findings — show the legacy summary
+      (rep.advice || []).forEach(a => body.append(el("p", { style: "margin:4px 0" }, "• " + a)));
+      body.append(el("p", { class: "mut" }, "Re-scout to generate the full findings + learning plan."));
+    }
+
+    const plan = rep.learn_plan || [];
+    if (plan.length) {
+      const planBox = el("div", { class: "card", style: "margin-top:12px" },
+        el("h3", { style: "margin:0 0 6px;font-size:15px" }, `📋 Learning plan vs ${r.name}`));
+      plan.forEach((s, i) => {
+        const row = el("div", { class: "plan-step" },
+          el("div", { class: "num" }, String(i + 1)),
+          el("div", { style: "flex:1" },
+            el("div", { class: "tag" }, s.step),
+            el("h4", {}, s.title),
+            el("p", {}, s.detail)));
+        if (s.action?.type === "puzzles") {
+          row.append(el("button", {
+            class: "ghost", style: "align-self:center;white-space:nowrap",
+            onclick: async () => {
+              const q = s.action.theme ? `&theme=${encodeURIComponent(s.action.theme)}` : "";
+              const list = await get(`/puzzles/daily?rival=${encodeURIComponent(r.name)}${q}`);
+              showRivalPuzzles(r, list);
+            },
+          }, `Train${s.ready ? ` (${s.ready})` : ""}`));
+        } else if (s.action?.type === "games") {
+          row.append(el("button", { class: "ghost", style: "align-self:center",
+            onclick: () => { location.hash = "games"; navigate("games"); } }, "Open"));
+        }
+        planBox.append(row);
+      });
+      body.append(planBox);
+    }
   } else {
-    body.append(el("p", { class: "mut" }, "Not scouted yet."));
+    body.append(el("p", { class: "mut" }, "Not scouted yet — hit Scout to analyze their public games."));
   }
   return el("div", { class: "card", style: "margin-bottom:12px" },
     el("div", { class: "row" },

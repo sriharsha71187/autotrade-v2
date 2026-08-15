@@ -151,8 +151,8 @@ def openings():
 # ------------------------------------------------------------------ puzzles
 
 @router.get("/puzzles/daily")
-def daily_puzzles(rival: str | None = None):
-    return scheduler.daily_set(rival=rival)
+def daily_puzzles(rival: str | None = None, theme: str | None = None):
+    return scheduler.daily_set(rival=rival, theme=theme)
 
 
 @router.post("/puzzles/{puzzle_id}/attempt")
