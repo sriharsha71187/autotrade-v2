@@ -10,7 +10,7 @@ import json
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
-from .. import db, util
+from .. import config, db, util
 from ..analysis.motifs import MOTIF_LABELS
 
 MIN_GAMES = 8            # global gate before insights generate at all
@@ -18,19 +18,48 @@ MIN_PHASE_MOVES = 60
 MIN_OPENING_GAMES = 5
 
 
-def regenerate() -> list[dict]:
+def regenerate(window_days: int | None = None) -> list[dict]:
+    """Rebuild insights, by default from a recent window of games.
+
+    A window (config `insights_window_days`, 0 = all-time) keeps the
+    coaching current: what he struggled with a year ago shouldn't dilute
+    what he struggles with now. If the window holds too few analyzed games
+    to say anything, we quietly fall back to all-time.
+    """
+    if window_days is None:
+        try:
+            window_days = int(config.get("insights_window_days") or 0)
+        except (TypeError, ValueError):
+            window_days = 0
+    cutoff = None
+    if window_days > 0:
+        cutoff = (datetime.now(timezone.utc)
+                  - timedelta(days=window_days)).strftime("%Y-%m-%dT00:00:00Z")
+    n_windowed = db.scalar(
+        "SELECT COUNT(*) FROM games WHERE analyzed_at IS NOT NULL"
+        + (" AND played_at >= ?" if cutoff else ""),
+        (cutoff,) if cutoff else ()) or 0
+    window_used = window_days if cutoff else 0
+    if cutoff and n_windowed < MIN_GAMES:
+        cutoff, window_used = None, 0    # not enough recent games — use everything
+        n_windowed = db.scalar(
+            "SELECT COUNT(*) FROM games WHERE analyzed_at IS NOT NULL") or 0
+
     out: list[dict] = []
-    n_games = db.scalar("SELECT COUNT(*) FROM games WHERE analyzed_at IS NOT NULL") or 0
-    if n_games >= MIN_GAMES:
-        out += _phase_insights()
-        out += _motif_insights()
-        out += _opening_insights()
-        out += _color_insights()
-        out += _time_insights()
-        out += _conversion_insights()
-        out += _opponent_strength_insights()
+    if n_windowed >= MIN_GAMES:
+        out += _phase_insights(cutoff)
+        out += _motif_insights(cutoff)
+        out += _opening_insights(cutoff)
+        out += _color_insights(cutoff)
+        out += _time_insights(cutoff)
+        out += _conversion_insights(cutoff)
+        out += _opponent_strength_insights(cutoff)
         out += _tilt_insights()
     out += _trend_insights()
+
+    db.kv_set("insights_meta", {
+        "window_days": window_days, "window_used": window_used,
+        "games": n_windowed, "generated_at": util.now_iso()})
 
     with db.tx() as conn:
         conn.execute("DELETE FROM insights")
@@ -52,6 +81,15 @@ def current() -> list[dict]:
     return rows
 
 
+def meta() -> dict:
+    return db.kv_get("insights_meta") or {}
+
+
+def _flt(cutoff: str | None, alias: str = "g") -> str:
+    """SQL fragment restricting to the recency window (cutoff is app-generated)."""
+    return f" AND {alias}.played_at >= '{cutoff}'" if cutoff else ""
+
+
 def _mk(kind, key, title, detail, evidence=None, score=0.0) -> dict:
     return {"kind": kind, "key": key, "title": title, "detail": detail,
             "evidence": evidence or {}, "score": score}
@@ -59,13 +97,14 @@ def _mk(kind, key, title, detail, evidence=None, score=0.0) -> dict:
 
 # ---------------------------------------------------------------- rules
 
-def _phase_insights() -> list[dict]:
+def _phase_insights(cutoff: str | None = None) -> list[dict]:
     rows = db.rows(
-        """SELECT phase,
+        f"""SELECT m.phase AS phase,
                   COUNT(*) n,
-                  AVG(MAX(winprob_before - winprob_after, 0)) avg_loss,
-                  SUM(classification='blunder') blunders
-           FROM moves WHERE mover='player' GROUP BY phase""")
+                  AVG(MAX(m.winprob_before - m.winprob_after, 0)) avg_loss,
+                  SUM(m.classification='blunder') blunders
+           FROM moves m JOIN games g ON g.id = m.game_id
+           WHERE m.mover='player'{_flt(cutoff)} GROUP BY m.phase""")
     rows = [r for r in rows if r["n"] >= MIN_PHASE_MOVES]
     if len(rows) < 2:
         return []
@@ -93,10 +132,11 @@ def _phase_insights() -> list[dict]:
     return out
 
 
-def _motif_insights() -> list[dict]:
+def _motif_insights(cutoff: str | None = None) -> list[dict]:
     rows = db.rows(
-        """SELECT m.motifs FROM moves m
-           WHERE m.mover='player' AND m.classification IN ('mistake','blunder')""")
+        f"""SELECT m.motifs FROM moves m JOIN games g ON g.id = m.game_id
+           WHERE m.mover='player' AND m.classification IN ('mistake','blunder')
+           {_flt(cutoff)}""")
     counts: dict[str, int] = defaultdict(int)
     for r in rows:
         for t in json.loads(r["motifs"] or "[]"):
@@ -118,7 +158,8 @@ def _motif_insights() -> list[dict]:
             score=80 - i * 10))
     # positive motifs
     good = db.rows(
-        "SELECT motifs FROM moves WHERE mover='player' AND classification='best'")
+        f"""SELECT m.motifs FROM moves m JOIN games g ON g.id = m.game_id
+           WHERE m.mover='player' AND m.classification='best'{_flt(cutoff)}""")
     gcounts: dict[str, int] = defaultdict(int)
     for r in good:
         for t in json.loads(r["motifs"] or "[]"):
@@ -133,10 +174,10 @@ def _motif_insights() -> list[dict]:
     return out
 
 
-def _opening_insights() -> list[dict]:
+def _opening_insights(cutoff: str | None = None) -> list[dict]:
     games = db.rows(
-        """SELECT eco, opening_name, color, result FROM games
-           WHERE analyzed_at IS NOT NULL AND opening_name IS NOT NULL""")
+        f"""SELECT eco, opening_name, color, result FROM games g
+           WHERE analyzed_at IS NOT NULL AND opening_name IS NOT NULL{_flt(cutoff)}""")
     fams: dict[tuple, dict] = defaultdict(lambda: {"n": 0, "w": 0, "l": 0})
     for g in games:
         fam = util.opening_family(g["eco"], g["opening_name"])
@@ -173,10 +214,10 @@ def _opening_insights() -> list[dict]:
     return out
 
 
-def _color_insights() -> list[dict]:
+def _color_insights(cutoff: str | None = None) -> list[dict]:
     rows = db.rows(
-        """SELECT color, COUNT(*) n, SUM(result='win') w, SUM(result='loss') l
-           FROM games GROUP BY color""")
+        f"""SELECT color, COUNT(*) n, SUM(result='win') w, SUM(result='loss') l
+           FROM games g WHERE 1=1{_flt(cutoff)} GROUP BY color""")
     if len(rows) < 2 or any(r["n"] < 10 for r in rows):
         return []
     by = {r["color"]: r for r in rows}
@@ -195,12 +236,13 @@ def _color_insights() -> list[dict]:
     return []
 
 
-def _time_insights() -> list[dict]:
+def _time_insights(cutoff: str | None = None) -> list[dict]:
     out = []
     flagged = db.scalar(
-        """SELECT COUNT(*) FROM games WHERE result='loss'
-           AND termination IN ('outoftime','timeout','time')""") or 0
-    losses = db.scalar("SELECT COUNT(*) FROM games WHERE result='loss'") or 0
+        f"""SELECT COUNT(*) FROM games g WHERE result='loss'
+           AND termination IN ('outoftime','timeout','time'){_flt(cutoff)}""") or 0
+    losses = db.scalar(
+        f"SELECT COUNT(*) FROM games g WHERE result='loss'{_flt(cutoff)}") or 0
     if losses >= 10 and flagged / losses >= 0.2:
         out.append(_mk(
             "weakness", "time_losses",
@@ -210,8 +252,10 @@ def _time_insights() -> list[dict]:
             "thumb like 'never under 30 seconds before move 20'.",
             {"time_losses": flagged, "total_losses": losses}, score=75))
     fast = db.rows(
-        """SELECT COUNT(*) n, SUM(classification IN ('mistake','blunder')) bad
-           FROM moves WHERE mover='player' AND move_time IS NOT NULL AND move_time < 2""")
+        f"""SELECT COUNT(*) n, SUM(m.classification IN ('mistake','blunder')) bad
+           FROM moves m JOIN games g ON g.id = m.game_id
+           WHERE m.mover='player' AND m.move_time IS NOT NULL AND m.move_time < 2
+           {_flt(cutoff)}""")
     if fast and fast[0]["n"] and fast[0]["n"] >= 50:
         rate = fast[0]["bad"] / fast[0]["n"]
         if rate >= 0.15:
@@ -225,14 +269,14 @@ def _time_insights() -> list[dict]:
     return out
 
 
-def _conversion_insights() -> list[dict]:
+def _conversion_insights(cutoff: str | None = None) -> list[dict]:
     """Did winning positions (+3 or better) convert to wins?"""
     rows = db.rows(
-        """SELECT g.id, g.result, MAX(CASE WHEN m.mover='player'
+        f"""SELECT g.id, g.result, MAX(CASE WHEN m.mover='player'
                     THEN CASE WHEN g.color='white' THEN m.eval_before
                               ELSE -m.eval_before END END) AS best_eval
            FROM games g JOIN moves m ON m.game_id = g.id
-           WHERE g.analyzed_at IS NOT NULL GROUP BY g.id""")
+           WHERE g.analyzed_at IS NOT NULL{_flt(cutoff)} GROUP BY g.id""")
     winning = [r for r in rows if (r["best_eval"] or 0) >= 300]
     if len(winning) < 8:
         return []
@@ -256,10 +300,11 @@ def _conversion_insights() -> list[dict]:
         score=50)]
 
 
-def _opponent_strength_insights() -> list[dict]:
+def _opponent_strength_insights(cutoff: str | None = None) -> list[dict]:
     rows = db.rows(
-        """SELECT (opponent_rating - player_rating) diff, result FROM games
-           WHERE opponent_rating IS NOT NULL AND player_rating IS NOT NULL""")
+        f"""SELECT (opponent_rating - player_rating) diff, result FROM games g
+           WHERE opponent_rating IS NOT NULL AND player_rating IS NOT NULL
+           {_flt(cutoff)}""")
     if len(rows) < 20:
         return []
     up = [r for r in rows if r["diff"] >= 100]

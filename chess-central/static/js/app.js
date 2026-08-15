@@ -58,6 +58,8 @@ async function overview() {
     el("div", { class: "row", style: "margin-bottom:16px" },
       el("h1", { style: "margin:0;font-size:22px" }, `${sum.player} — Chess Central`),
       el("div", { class: "spacer" }),
+      el("button", { class: "ghost", onclick: () => window.open("/packet", "_blank") },
+        "🖨 Coach packet"),
       el("button", { class: "ghost", id: "analyzeBtn" }, analysisLabel(status.analysis)),
       el("button", { id: "syncBtn" }, "Sync games"),
     ),
@@ -130,7 +132,7 @@ async function overview() {
     .map(s => ({ name: RATING_LABELS[s], points: bySource[s] })).slice(0, 4);
   lineChart(document.getElementById("ratingChart"), series);
 
-  const ins = await get("/insights");
+  const ins = (await get("/insights")).items;
   const top = ins.slice(0, 4);
   const box = document.getElementById("topInsights");
   box.innerHTML = top.length ? "" : '<div class="empty">Sync + analyze games to unlock coaching insights.</div>';
@@ -188,12 +190,31 @@ function insightCard(i) {
 // ------------------------------------------------------------------ insights
 
 async function insights() {
-  const ins = await get("/insights");
+  const r = await get("/insights");
+  const ins = r.items;
+  const meta = r.meta || {};
   main.innerHTML = "";
+  const windowSel = el("select", {},
+    ...[[30, "Last 30 days"], [90, "Last 90 days"], [180, "Last 6 months"],
+        [365, "Last year"], [0, "All time"]].map(([v, label]) =>
+      el("option", { value: String(v),
+        ...(Number(meta.window_days ?? 90) === v ? { selected: "" } : {}) }, label)));
+  windowSel.addEventListener("change", async () => {
+    await post("/insights/regenerate", { window_days: parseInt(windowSel.value, 10) });
+    navigate("insights");
+  });
   main.append(el("div", { class: "row", style: "margin-bottom:14px" },
     el("h1", { style: "margin:0;font-size:22px" }, "Strengths · Weaknesses · Opportunities"),
     el("div", { class: "spacer" }),
+    windowSel,
     el("button", { class: "ghost", onclick: async () => { await post("/insights/regenerate"); navigate("insights"); } }, "Recompute")));
+  if (meta.generated_at) {
+    const scope = meta.window_used
+      ? `the last ${meta.window_used} days`
+      : (meta.window_days ? "all time (not enough recent games for the chosen window)" : "all time");
+    main.append(el("p", { class: "mut", style: "margin:-6px 0 14px" },
+      `Based on ${meta.games} analyzed games from ${scope}.`));
+  }
   if (!ins.length) {
     main.append(el("div", { class: "empty" }, "Not enough analyzed games yet — sync, analyze, then check back."));
     return;
@@ -356,14 +377,60 @@ async function gameDetail(id) {
 
 // ------------------------------------------------------------------ openings
 
+const REP_ICONS = { info: "📖", leak: "🚨", study: "📚" };
+
 async function openings() {
-  const rows = await get("/openings");
+  const [rows, repW, repB] = await Promise.all([
+    get("/openings"), get("/repertoire?color=white"), get("/repertoire?color=black")]);
   main.innerHTML = "";
   main.append(el("h1", { style: "margin:0 0 14px;font-size:22px" }, "Opening repertoire"));
+
+  // --- his real repertoire + where he leaves book
+  for (const rep of [repW, repB]) {
+    if (!rep.findings.length && !rep.lines.length) continue;
+    const box = el("div", {});
+    rep.findings.forEach(f => box.append(el("div", { class: `finding ${f.kind === "leak" ? "weakness" : "pattern"}` },
+      el("div", { class: "fi" }, REP_ICONS[f.kind] || "📖"),
+      el("div", {}, el("p", { style: "margin:0" }, f.text)))));
+    if (rep.lines.length) {
+      box.append(el("table", { class: "data", style: "margin-top:8px" },
+        el("thead", {}, el("tr", {}, ...["His most-played lines", "Games", "Score"].map(h => el("th", {}, h)))),
+        el("tbody", {}, rep.lines.slice(0, 6).map(l => el("tr", {},
+          el("td", { style: "font-family:ui-monospace,monospace;font-size:13px" }, l.line),
+          el("td", {}, String(l.n)),
+          el("td", {}, `${l.score_pct}% (${l.w}W ${l.l}L ${l.d}D)`))))));
+    }
+    main.append(card(`His book as ${rep.color} — what he actually plays (${rep.games} games)`, box),
+      el("div", { style: "height:12px" }));
+  }
+
+  // --- repertoire trainer
+  const trainerBox = el("div", { id: "repTrainer" });
+  main.append(card("Repertoire trainer — fix the lines that leak", trainerBox),
+    el("div", { style: "height:12px" }));
+  const loadTrainer = async () => {
+    const queue = await get("/repertoire/queue");
+    trainerBox.innerHTML = "";
+    if (!queue.length) {
+      trainerBox.append(
+        el("p", { class: "mut", style: "margin:0 0 10px" },
+          "Drills come from positions he keeps reaching where his usual move loses ground — the engine knows a better plan."),
+        el("button", { class: "ghost", onclick: async (ev) => {
+          ev.target.disabled = true;
+          const r = await post("/repertoire/drills");
+          toast(r.created ? `${r.created} repertoire drills built` : "No leaky repeated positions found (yet) — that's fine");
+          loadTrainer();
+        } }, "Build drills from his games"));
+      return;
+    }
+    const playerBox = el("div", {});
+    trainerBox.append(playerBox);
+    new PuzzlePlayer(playerBox).start(queue);
+  };
+  loadTrainer();
+
+  // --- score by opening family (the original charts)
   for (const color of ["white", "black"]) {
-    const data = rows.filter(r => r.color === color && r.n >= 2).slice(0, 12)
-      .map(r => ({ label: r.opening, value: r.score_pct, sub: `${r.n} games — ${r.w}W ${r.l}L ${r.d}D`,
-        color: r.score_pct >= 55 ? "var(--series-3)" : r.score_pct <= 45 ? "var(--series-2)" : "var(--series-1)" }));
     main.append(card(`As ${color} — score % by opening (min 2 games)`,
       el("div", { id: `op-${color}` })));
     main.append(el("div", { style: "height:12px" }));
@@ -769,8 +836,27 @@ async function settings() {
         }
         await post("/settings", body); toast("Saved");
       } }, "Save")),
+    el("div", { style: "height:14px" }),
+    el("div", { class: "card" },
+      el("h2", { style: "margin:0 0 6px;font-size:16px" }, "Database backups"),
+      el("p", { class: "mut", style: "margin:0 0 10px" },
+        "A dated copy of the database is saved to data/backups/ automatically each day the app starts (2 weeks kept)."),
+      el("div", { id: "backupList", class: "mut" }, "Loading…"),
+      el("div", { style: "margin-top:10px" },
+        el("button", { class: "ghost", onclick: async (ev) => {
+          ev.target.disabled = true;
+          await post("/backups"); toast("Backup written");
+          navigate("settings");
+        } }, "Back up now"))),
     el("p", { class: "mut", style: "margin-top:12px" },
       "Nirvaan's view lives at ", el("a", { href: "/kid" }, "/kid"), " — bookmark it on his device."));
+
+  const bl = await get("/backups");
+  const box = document.getElementById("backupList");
+  box.textContent = bl.backups.length
+    ? bl.backups.slice(0, 5).map(b => `${b.date} (${(b.bytes / 1e6).toFixed(1)} MB)`).join(" · ")
+      + (bl.backups.length > 5 ? ` · +${bl.backups.length - 5} more` : "")
+    : "No backups yet — one is written next time the app starts.";
 }
 
 // ---------------------------------------------------------------- PIN gate

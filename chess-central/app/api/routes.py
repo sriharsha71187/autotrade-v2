@@ -222,13 +222,15 @@ def game_detail(game_id: int):
 
 @router.get("/insights")
 def get_insights():
-    return insights.current()
+    return {"items": insights.current(), "meta": insights.meta()}
 
 
 @router.post("/insights/regenerate")
-def regen_insights():
+def regen_insights(body: dict = Body(default={})):
+    if "window_days" in body:
+        config.update({"insights_window_days": body["window_days"]})
     insights.regenerate()
-    return insights.current()
+    return {"items": insights.current(), "meta": insights.meta()}
 
 
 @router.get("/openings")
@@ -248,6 +250,28 @@ def openings():
           "score_pct": round(100 * (v["w"] + 0.5 * v["d"]) / v["n"])}
          for (fam, color), v in fams.items()],
         key=lambda x: -x["n"])
+
+
+# --------------------------------------------------------------- repertoire
+
+@router.get("/repertoire")
+def get_repertoire(color: str = "white"):
+    from ..coach import repertoire
+    if color not in ("white", "black"):
+        raise HTTPException(422, "color must be white or black")
+    return repertoire.build(color)
+
+
+@router.post("/repertoire/drills")
+def repertoire_drills():
+    from ..coach import repertoire
+    return {"created": repertoire.refresh_drills()}
+
+
+@router.get("/repertoire/queue")
+def repertoire_queue():
+    from ..coach import repertoire
+    return repertoire.drill_queue()
 
 
 # ------------------------------------------------------------------ puzzles
@@ -547,6 +571,20 @@ def llm_chat_clear():
     from ..coach import llm
     llm.chat_clear()
     return {"ok": True}
+
+
+# ------------------------------------------------------------------ backups
+
+@router.get("/backups")
+def backups_list():
+    from .. import backup
+    return {"backups": backup.list_backups()}
+
+
+@router.post("/backups")
+def backups_run():
+    from .. import backup
+    return backup.run(force=True)
 
 
 # ----------------------------------------------------------------- settings
