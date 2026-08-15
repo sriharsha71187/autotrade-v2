@@ -30,6 +30,7 @@ DEFAULTS = {
     ],
     "engine_path": "",           # auto-detected if empty (brew stockfish)
     "engine_movetime_ms": 350,   # per-position budget for deep analysis
+    "allow_fallback_engine": False,  # never persist non-Stockfish analysis unless opted in
     "engine_multipv": 2,
     "engine_threads": 2,
     "analysis_auto": True,       # analyze new games automatically after sync
@@ -65,11 +66,21 @@ def all_config() -> dict:
     return dict(_config)
 
 
+_INT_FLOORS = {"engine_movetime_ms": 50, "engine_threads": 1,
+               "puzzle_daily_target": 1, "sync_lookback_days": 1}
+
+
 def update(values: dict) -> dict:
-    """Persist config changes (only known keys)."""
+    """Persist config changes (only known keys, sane numeric floors)."""
     for k, v in values.items():
-        if k in DEFAULTS:
-            _config[k] = v
+        if k not in DEFAULTS:
+            continue
+        if k in _INT_FLOORS:
+            try:
+                v = max(_INT_FLOORS[k], int(v))
+            except (TypeError, ValueError):
+                v = DEFAULTS[k]
+        _config[k] = v
     CONFIG_PATH.write_text(json.dumps(_config, indent=2))
     return dict(_config)
 

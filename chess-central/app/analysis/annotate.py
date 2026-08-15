@@ -11,11 +11,15 @@ from . import motifs
 from .engine import PositionEval
 
 
-def annotate_game(game_row: dict, engine) -> int:
+def annotate_game(game_row: dict, engine, engine_name: str | None = None) -> int:
     """Analyze one game; returns number of move rows written."""
     game = util.parse_pgn_game(game_row["pgn"])
     if game is None:
         raise ValueError("unparseable PGN")
+    if engine_name is None:
+        from .engine import Engine
+        engine_name = "stockfish" if isinstance(engine, Engine) else "fallback"
+    increment = util.parse_increment(game_row.get("time_control"))
 
     board = game.board()
     player_color = chess.WHITE if game_row["color"] == "white" else chess.BLACK
@@ -38,7 +42,8 @@ def annotate_game(game_row: dict, engine) -> int:
         clock = util.clock_from_comment(node.comment)
         move_time = None
         if clock is not None and prev_clock[mover] is not None:
-            move_time = max(0.0, prev_clock[mover] - clock)
+            # clock after move = clock before - think time + increment
+            move_time = max(0.0, prev_clock[mover] - clock + increment)
         if clock is not None:
             prev_clock[mover] = clock
 
@@ -105,8 +110,9 @@ def annotate_game(game_row: dict, engine) -> int:
             records,
         )
         conn.execute(
-            "UPDATE games SET analyzed_at=?, analysis_error=NULL, moves_count=? WHERE id=?",
-            (util.now_iso(), len(records), game_row["id"]),
+            "UPDATE games SET analyzed_at=?, analysis_error=NULL, moves_count=?, engine=? "
+            "WHERE id=?",
+            (util.now_iso(), len(records), engine_name, game_row["id"]),
         )
     return len(records)
 

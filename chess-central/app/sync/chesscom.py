@@ -140,9 +140,5 @@ def _record_ratings(username: str) -> None:
                     "INSERT OR REPLACE INTO ratings_history(source,date,rating) VALUES (?,?,?)",
                     (source, today, last["rating"]),
                 )
-        puzzles = ((stats.get("tactics") or {}).get("highest") or {})
-        if puzzles.get("rating"):
-            conn.execute(
-                "INSERT OR REPLACE INTO ratings_history(source,date,rating) VALUES (?,?,?)",
-                ("chesscom_puzzles", today, puzzles["rating"]),
-            )
+        # note: the API exposes only the all-time HIGHEST tactics rating,
+        # which is not a current rating — so we deliberately don't store it

@@ -73,26 +73,34 @@ SEED_EVENTS = [
 
 
 def ensure_seeds() -> None:
+    """Insert recurring PNW events, and roll any past annual date to next year
+    so yearly events never silently vanish from the list."""
     with db.tx() as conn:
         for i, ev in enumerate(SEED_EVENTS):
+            next_date = _next_occurrence(ev["month"])
             conn.execute(
                 """INSERT OR IGNORE INTO tournaments
                    (source, external_id, name, starts_at, city, url, sections,
                     online, near_home, recurring_note, fetched_at)
                    VALUES ('seed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (f"seed_{i}", ev["name"], _next_occurrence(ev["month"]),
+                (f"seed_{i}", ev["name"], next_date,
                  ev["city"], ev["url"], ev["sections"], ev["online"],
                  1 if ev["city"].lower() not in ("online", "national — travel", "varies (wa)")
                  else 0,
                  ev["recurring_note"], util.now_iso()))
+            if next_date:
+                conn.execute(
+                    """UPDATE tournaments SET starts_at=?, status='new'
+                       WHERE source='seed' AND external_id=? AND starts_at < ?""",
+                    (next_date, f"seed_{i}", util.now_iso()[:10]))
 
 
 def _next_occurrence(month: int) -> str | None:
-    """Approximate next date for a yearly seed event; None for always-on."""
+    """Next future occurrence (1st of month) for a yearly seed; None = always-on."""
     if not month:
         return None
     today = datetime.now(timezone.utc)
-    year = today.year if month >= today.month else today.year + 1
+    year = today.year if month > today.month else today.year + 1
     return f"{year}-{month:02d}-01"
 
 

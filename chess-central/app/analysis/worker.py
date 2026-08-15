@@ -47,6 +47,16 @@ def _run() -> None:
     engine, real = open_engine()
     with _lock:
         _state["real_engine"] = real
+    from .. import config
+    if not real and not config.get("allow_fallback_engine"):
+        # Never persist fallback analysis as truth — wait for Stockfish instead.
+        engine.close()
+        with _lock:
+            _state.update(running=False, current=None,
+                          last_error="Stockfish not available — analysis is waiting. "
+                                     "Install it (see Settings) and press Analyze again.")
+        return
+    engine_name = "stockfish" if real else "fallback"
     try:
         while True:
             game = db.row(
@@ -58,7 +68,7 @@ def _run() -> None:
                 _state["current"] = {"id": game["id"], "opponent": game["opponent_name"],
                                      "played_at": game["played_at"]}
             try:
-                annotate.annotate_game(game, engine)
+                annotate.annotate_game(game, engine, engine_name=engine_name)
                 _post_game_hooks(game["id"])
                 with _lock:
                     _state["done_this_run"] += 1

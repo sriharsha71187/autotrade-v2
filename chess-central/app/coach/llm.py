@@ -312,6 +312,9 @@ def chat(message: str) -> dict:
     history = db.rows(
         "SELECT role, text FROM coach_chat ORDER BY id DESC LIMIT ?", (MAX_CHAT_TURNS,))
     history.reverse()
+    # the window must start on a user turn or the API rejects the role order
+    while history and history[0]["role"] != "user":
+        history.pop(0)
 
     facts = _overview_facts(days=60)
     grounding = (

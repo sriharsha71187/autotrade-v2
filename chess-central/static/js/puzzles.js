@@ -157,8 +157,10 @@ export class PuzzlePlayer {
     if (clean) this._burst();
     if (p.id != null) {
       try {
+        // correct = clean first-try (drives review scheduling);
+        // completed = he finished it (drives streaks and solved-today)
         const res = await post(`/puzzles/${p.id}/attempt`,
-          { correct: clean, time_ms: Date.now() - this.t0 });
+          { correct: clean, completed: true, time_ms: Date.now() - this.t0 });
         for (const _ of res.new_badges || []) toast("🏅 New badge earned!");
       } catch (e) { /* offline — keep playing */ }
     }
@@ -179,7 +181,8 @@ export class PuzzlePlayer {
     }
     this._say(p.explanation || "That was the idea.", "");
     if (p.id != null) {
-      try { await post(`/puzzles/${p.id}/attempt`, { correct: false, time_ms: Date.now() - this.t0 }); }
+      try { await post(`/puzzles/${p.id}/attempt`,
+        { correct: false, completed: false, time_ms: Date.now() - this.t0 }); }
       catch (e) {}
     }
     setTimeout(() => this._next(), 2400);

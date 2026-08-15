@@ -16,10 +16,11 @@ fi
 # keep dependencies in sync with requirements.txt on every start (fast no-op when current)
 ./.venv/bin/pip install --quiet -r requirements.txt
 
-if ! command -v stockfish >/dev/null 2>&1 \
+if [ ! -x ./stockfish-bin ] && ! command -v stockfish >/dev/null 2>&1 \
    && [ ! -x /opt/homebrew/bin/stockfish ] && [ ! -x /usr/local/bin/stockfish ]; then
   echo "⚠️  Stockfish not found — install with:  brew install stockfish"
-  echo "   (the app still runs; deep analysis waits for the engine)"
+  echo "   (or drop a binary at ./stockfish-bin — see README)"
+  echo "   The app still runs; analysis waits until the engine is available."
 fi
 
 echo "♞ Nirvaan Chess Central →  http://localhost:8425   (kid mode: /kid)"

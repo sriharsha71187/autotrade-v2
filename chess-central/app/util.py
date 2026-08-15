@@ -54,6 +54,20 @@ def phase_of(board: chess.Board) -> str:
     return "middlegame"
 
 
+def parse_increment(tc: str | None) -> float:
+    """Seconds of increment in a 'base+inc' time control ('600+5' -> 5).
+
+    Daily controls like '1/86400' and bare '600' have no increment.
+    """
+    if not tc or "/" in tc:
+        return 0.0
+    _, _, inc = tc.partition("+")
+    try:
+        return float(inc) if inc else 0.0
+    except ValueError:
+        return 0.0
+
+
 CLK_RE = re.compile(r"\[%clk\s+(\d+):(\d+):(\d+(?:\.\d+)?)\]")
 
 

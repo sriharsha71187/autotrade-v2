@@ -198,19 +198,25 @@ def _engine_scout(games: list[dict]) -> tuple[list[dict], list[dict], dict]:
 def _make_prep_puzzles(rival: dict, prep_positions: list[dict], h2h: dict) -> int:
     created = 0
     with db.tx() as conn:
-        # from scouting: punish the rival's typical mistakes
+        # from scouting: punish the rival's typical mistakes.
+        # dedupe on (rival, fen) — the unique index doesn't apply to NULL game_id
         for i, p in enumerate(prep_positions):
+            exists = conn.execute(
+                "SELECT 1 FROM puzzles WHERE source='rival_prep' AND rival=? AND fen=?",
+                (rival["name"], p["fen"])).fetchone()
+            if exists:
+                continue
             solution = p["solution"]
             if len(solution) % 2 == 0:
                 solution = solution[:-1] or p["solution"][:1]
-            cur = conn.execute(
-                """INSERT OR IGNORE INTO puzzles
+            conn.execute(
+                """INSERT INTO puzzles
                    (source, game_id, ply, fen, solution, themes, phase, difficulty,
                     rival, explanation, created_at, due_at)
                    VALUES ('rival_prep', NULL, ?, ?, ?, ?, NULL, 3, ?, ?, ?, ?)""",
                 (i, p["fen"], json.dumps(solution), json.dumps(p["themes"]),
                  rival["name"], p["note"], util.now_iso(), util.now_iso()))
-            created += cur.rowcount
+            created += 1
     # from head-to-head games: their critical moments already have puzzles via
     # the normal pipeline; tag them with the rival name so they surface in prep
     ids = [g["id"] for g in h2h.get("games", [])]

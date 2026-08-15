@@ -32,12 +32,46 @@ def status():
         "analysis": worker.status(),
         "games_total": db.scalar("SELECT COUNT(*) FROM games") or 0,
         "engine_found": bool(config.find_engine()),
+        "fake_analyzed": db.scalar(
+            "SELECT COUNT(*) FROM games WHERE analyzed_at IS NOT NULL "
+            "AND (engine IS NULL OR engine != 'stockfish')") or 0,
+        "analysis_errors": db.scalar(
+            "SELECT COUNT(*) FROM games WHERE analysis_error IS NOT NULL") or 0,
     }
 
 
 @router.post("/analyze")
 def start_analysis():
     return worker.start()
+
+
+@router.post("/analyze/reset")
+def reset_analysis(body: dict = Body(default={})):
+    """Queue games for re-analysis.
+
+    scope: 'fake' (analyzed without Stockfish), 'errors', or 'all'.
+    Their derived moves and own-game puzzles are discarded and rebuilt.
+    """
+    scope = body.get("scope", "fake")
+    where = {
+        "fake": "analyzed_at IS NOT NULL AND (engine IS NULL OR engine != 'stockfish')",
+        "errors": "analysis_error IS NOT NULL",
+        "all": "analyzed_at IS NOT NULL OR analysis_error IS NOT NULL",
+    }.get(scope)
+    if not where:
+        raise HTTPException(422, "scope must be fake, errors, or all")
+    ids = [r["id"] for r in db.rows(f"SELECT id FROM games WHERE {where}")]
+    if ids:
+        ph = ",".join("?" for _ in ids)
+        with db.tx() as conn:
+            conn.execute(f"DELETE FROM moves WHERE game_id IN ({ph})", ids)
+            conn.execute(
+                f"DELETE FROM puzzles WHERE game_id IN ({ph}) AND source != 'rival_prep'", ids)
+            conn.execute(
+                f"UPDATE games SET analyzed_at=NULL, analysis_error=NULL, engine=NULL "
+                f"WHERE id IN ({ph})", ids)
+    worker.start()
+    return {"reset": len(ids)}
 
 
 @router.get("/analysis/status")
@@ -98,7 +132,7 @@ def list_games(limit: int = 50, offset: int = 0, opponent: str | None = None,
     rows = db.rows(
         f"""SELECT id, platform, url, color, opponent_name, opponent_rating,
                   player_rating, result, termination, time_class, eco, opening_name,
-                  moves_count, played_at, analyzed_at
+                  moves_count, played_at, analyzed_at, analysis_error, engine
            FROM games WHERE {' AND '.join(where)}
            ORDER BY played_at DESC LIMIT ? OFFSET ?""",
         (*params, limit, offset))
@@ -158,7 +192,8 @@ def daily_puzzles(rival: str | None = None, theme: str | None = None):
 @router.post("/puzzles/{puzzle_id}/attempt")
 def puzzle_attempt(puzzle_id: int, body: dict = Body(...)):
     result = scheduler.record_attempt(
-        puzzle_id, bool(body.get("correct")), body.get("time_ms"))
+        puzzle_id, bool(body.get("correct")), body.get("time_ms"),
+        completed=body.get("completed"))
     newly = badges.recompute()
     return {**result, "new_badges": newly}
 

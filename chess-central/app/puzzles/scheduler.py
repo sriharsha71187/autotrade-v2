@@ -15,7 +15,13 @@ AGAIN_MINUTES = 10
 FIRST_INTERVALS = [1, 3]      # days after 1st and 2nd successful review
 
 
-def record_attempt(puzzle_id: int, correct: bool, time_ms: int | None = None) -> dict:
+def record_attempt(puzzle_id: int, correct: bool, time_ms: int | None = None,
+                   completed: bool | None = None) -> dict:
+    """correct = clean first-try solve (drives spaced repetition).
+    completed = the puzzle was finished at all (drives streaks / solved-today);
+    defaults to `correct` for backwards compatibility."""
+    if completed is None:
+        completed = correct
     p = db.row("SELECT * FROM puzzles WHERE id=?", (puzzle_id,))
     if not p:
         raise ValueError("no such puzzle")
@@ -48,9 +54,10 @@ def record_attempt(puzzle_id: int, correct: bool, time_ms: int | None = None) ->
             (reps, lapses, interval, ease,
              due.strftime("%Y-%m-%dT%H:%M:%SZ"), retired, puzzle_id))
         conn.execute(
-            "INSERT INTO puzzle_attempts(puzzle_id, attempted_at, correct, time_ms) "
-            "VALUES (?,?,?,?)",
-            (puzzle_id, util.now_iso(), 1 if correct else 0, time_ms))
+            "INSERT INTO puzzle_attempts(puzzle_id, attempted_at, correct, time_ms, completed) "
+            "VALUES (?,?,?,?,?)",
+            (puzzle_id, util.now_iso(), 1 if correct else 0, time_ms,
+             1 if completed else 0))
     return {"next_due": due.isoformat(), "interval_days": interval, "retired": retired}
 
 
@@ -132,23 +139,30 @@ def stats() -> dict:
     total = db.scalar("SELECT COUNT(*) FROM puzzles WHERE rival IS NULL") or 0
     solved_today = db.scalar(
         "SELECT COUNT(DISTINCT puzzle_id) FROM puzzle_attempts "
-        "WHERE attempted_at LIKE ? AND correct=1", (today + "%",)) or 0
+        "WHERE attempted_at LIKE ? AND completed=1", (today + "%",)) or 0
     attempts = db.rows(
-        "SELECT attempted_at, correct FROM puzzle_attempts ORDER BY attempted_at DESC LIMIT 2000")
-    # streak: consecutive days (ending today or yesterday) with >=1 correct solve
-    days = sorted({a["attempted_at"][:10] for a in attempts if a["correct"]}, reverse=True)
+        "SELECT attempted_at, correct, completed FROM puzzle_attempts "
+        "ORDER BY attempted_at DESC LIMIT 2000")
+    # streak: strictly consecutive days with >=1 completed puzzle,
+    # anchored to today (or yesterday, so an evening solve isn't "broken" at breakfast)
+    days = sorted({a["attempted_at"][:10] for a in attempts if a["completed"]}, reverse=True)
     streak = 0
     if days:
-        cur = datetime.now(timezone.utc).date()
-        for d in days:
-            dd = datetime.strptime(d, "%Y-%m-%d").date()
-            if (cur - dd).days in (0, 1):
-                streak += 1
-                cur = dd - timedelta(days=1)
-            elif (cur - dd).days > 1:
-                break
-    correct = sum(1 for a in attempts if a["correct"])
-    accuracy = round(100 * correct / len(attempts), 1) if attempts else None
+        latest = datetime.strptime(days[0], "%Y-%m-%d").date()
+        today_d = datetime.now(timezone.utc).date()
+        if (today_d - latest).days <= 1:
+            streak = 1
+            prev = latest
+            for d in days[1:]:
+                dd = datetime.strptime(d, "%Y-%m-%d").date()
+                if (prev - dd).days == 1:
+                    streak += 1
+                    prev = dd
+                else:
+                    break
+    done = [a for a in attempts if a["completed"]]
+    first_try = sum(1 for a in done if a["correct"])
+    accuracy = round(100 * first_try / len(done), 1) if done else None
     return {"total_puzzles": total, "solved_today": solved_today,
             "streak_days": streak, "accuracy_pct": accuracy,
             "attempts_total": len(attempts)}

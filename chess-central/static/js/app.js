@@ -73,7 +73,26 @@ async function overview() {
     !status.engine_found ? el("div", { class: "card", style: "margin-top:14px;border-left:3px solid var(--warning)" },
       el("b", {}, "Stockfish not found. "),
       "Install it with ", el("code", {}, "brew install stockfish"),
-      " for real analysis — a simple built-in engine is used until then.") : null,
+      " (or drop a binary at chess-central/stockfish-bin). ",
+      "Analysis waits until the engine is available — nothing fake is recorded.") : null,
+    status.fake_analyzed > 0 ? el("div", { class: "card", style: "margin-top:14px;border-left:3px solid var(--critical)" },
+      el("b", {}, `${status.fake_analyzed} game${status.fake_analyzed === 1 ? " was" : "s were"} analyzed without Stockfish. `),
+      "Those results (and their puzzles) are unreliable. ",
+      el("button", { class: "ghost", onclick: async (ev) => {
+        ev.target.disabled = true;
+        const r = await post("/analyze/reset", { scope: "fake" });
+        toast(`${r.reset} games queued for re-analysis`);
+        navigate("overview");
+      } }, "Re-analyze with Stockfish")) : null,
+    status.analysis_errors > 0 ? el("div", { class: "card", style: "margin-top:14px;border-left:3px solid var(--warning)" },
+      el("b", {}, `${status.analysis_errors} game${status.analysis_errors === 1 ? "" : "s"} failed analysis. `),
+      status.analysis?.last_error ? el("span", { class: "mut" }, `Last error: ${status.analysis.last_error} `) : null,
+      el("button", { class: "ghost", onclick: async (ev) => {
+        ev.target.disabled = true;
+        const r = await post("/analyze/reset", { scope: "errors" });
+        toast(`${r.reset} games queued for retry`);
+        navigate("overview");
+      } }, "Retry failed")) : null,
     el("div", { style: "margin-top:14px" }),
     card("Top insights", el("div", { id: "topInsights" })),
   );
@@ -82,8 +101,17 @@ async function overview() {
     ev.target.disabled = true; ev.target.textContent = "Syncing…";
     try {
       const r = await post("/sync");
-      const n = (r.lichess?.inserted ?? 0) + (r.chesscom?.inserted ?? 0);
-      toast(`Sync complete: ${n} new game${n === 1 ? "" : "s"}`);
+      const parts = [];
+      for (const src of ["lichess", "chesscom"]) {
+        const s = r[src] || {};
+        parts.push(s.error ? `${src}: FAILED (${String(s.error).slice(0, 60)})`
+                           : `${src}: ${s.inserted ?? 0} new`);
+      }
+      const otb = r.otb_ratings || {};
+      for (const [k, v] of Object.entries(otb)) {
+        if (v && v.ok === false) parts.push(`${k}: ${v.reason}`);
+      }
+      toast(parts.join(" · "), 6000);
       navigate("overview");
     } catch (e) { toast(`Sync failed: ${e.message}`); ev.target.disabled = false; ev.target.textContent = "Sync games"; }
   });
@@ -180,7 +208,8 @@ async function games() {
         el("td", {}, el("span", { class: `pill ${g.result}` }, g.result)),
         el("td", {}, g.opening_name || g.eco || "—"),
         el("td", {}, g.time_class || "—"),
-        el("td", {}, g.analyzed_at ? "✓" : "…"),
+        el("td", { title: g.analysis_error || (g.engine && g.engine !== "stockfish" ? "analyzed without Stockfish" : "") },
+          g.analysis_error ? "⚠️" : g.analyzed_at ? (g.engine === "stockfish" ? "✓" : "✓*") : "…"),
       ))));
     list.append(table);
   };
@@ -426,7 +455,11 @@ async function tournaments() {
     el("div", { class: "spacer" }),
     el("button", { class: "ghost", onclick: async (ev) => {
       ev.target.disabled = true; ev.target.textContent = "Refreshing…";
-      await post("/tournaments/refresh"); navigate("tournaments");
+      const r = await post("/tournaments/refresh");
+      const parts = Object.entries(r).map(([src, v]) =>
+        v && v.error ? `${src}: FAILED` : `${src}: ${v?.found ?? 0} found`);
+      toast(parts.join(" · "), 6000);
+      navigate("tournaments");
     } }, "Refresh listings")));
 
   const groups = [

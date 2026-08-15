@@ -210,8 +210,31 @@ def connect() -> sqlite3.Connection:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.executescript(SCHEMA)
+        _migrate(conn)
         _local.conn = conn
     return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Lightweight in-place migrations for existing databases."""
+    def cols(table):
+        return {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+
+    if "engine" not in cols("games"):
+        # which engine produced the analysis: 'stockfish' | 'fallback' | NULL
+        conn.execute("ALTER TABLE games ADD COLUMN engine TEXT")
+    if "completed" not in cols("puzzle_attempts"):
+        # completed = the puzzle was finished (with or without help);
+        # correct = first-try clean solve (drives spaced repetition)
+        conn.execute("ALTER TABLE puzzle_attempts ADD COLUMN completed INTEGER DEFAULT 0")
+        conn.execute("UPDATE puzzle_attempts SET completed=1 WHERE correct=1")
+    # one-time cleanup: rival_prep rows had NULL game_id, which SQLite treats
+    # as distinct in the unique index — re-scouting created duplicates
+    conn.execute(
+        """DELETE FROM puzzles WHERE source='rival_prep' AND id NOT IN (
+             SELECT MIN(id) FROM puzzles WHERE source='rival_prep'
+             GROUP BY rival, fen)""")
+    conn.commit()
 
 
 @contextmanager
