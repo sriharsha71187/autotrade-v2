@@ -118,6 +118,42 @@ def normalize_result_tag(res: str) -> str:
     return {"1-0": "1-0", "0-1": "0-1", "1/2-1/2": "1/2-1/2"}.get(res, "*")
 
 
+def validate_movetext(sans: list[str]) -> dict:
+    """Replay a SAN move list; keep the legal prefix, report where it breaks.
+
+    Used to check scoresheet transcriptions: nothing enters the database
+    until python-chess has replayed it.
+    """
+    board = chess.Board()
+    good: list[str] = []
+    issues: list[str] = []
+    for i, raw in enumerate(sans):
+        san = (raw or "").strip().rstrip("!?")
+        if not san:
+            continue
+        # common scoresheet spellings
+        san = san.replace("0-0-0", "O-O-O").replace("0-0", "O-O")
+        try:
+            move = board.parse_san(san)
+        except ValueError:
+            side = "White" if board.turn == chess.WHITE else "Black"
+            issues.append(
+                f"Move {i // 2 + 1} for {side}: '{raw}' is not a legal move here — "
+                "kept everything before it. Check the scoresheet and fix the rest by hand.")
+            break
+        good.append(board.san(move))
+        board.push(move)
+
+    parts = []
+    for i, san in enumerate(good):
+        if i % 2 == 0:
+            parts.append(f"{i // 2 + 1}.")
+        parts.append(san)
+    return {"movetext": " ".join(parts), "valid_plies": len(good),
+            "total_plies": len([s for s in sans if (s or "").strip()]),
+            "issues": issues}
+
+
 def opening_family(eco: str | None, name: str | None) -> str:
     """Collapse opening names to a family for aggregation ('Italian Game' etc.)."""
     if name:

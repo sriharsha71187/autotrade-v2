@@ -6,6 +6,13 @@ import { PuzzlePlayer } from "./puzzles.js";
 
 const LEVEL_NAMES = { 1: "Rookie", 2: "Improver", 3: "Advanced" };
 
+// Deep link: open one lesson directly (used by "learn this" links elsewhere).
+export async function openLesson(main, navigate, lessonId) {
+  const l = await get(`/learn/lesson/${lessonId}`);
+  await lessonView(lessonId,
+    { id: l.track_id, title: l.track_title, emoji: l.track_emoji }, main, navigate);
+}
+
 export async function academyView(main, navigate) {
   const data = await get("/learn");
   main.innerHTML = "";

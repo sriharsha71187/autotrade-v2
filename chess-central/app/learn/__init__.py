@@ -26,6 +26,21 @@ CHESSCOM_LINKS = {
     "habits": ("Lessons library", "https://www.chess.com/lessons"),
 }
 
+# Where the Academy teaches each mistake pattern the engine flags —
+# so every recurring mistake links straight to the lesson that fixes it.
+MOTIF_LESSONS = {
+    "missed_mate": "mates-in-one-gallery",
+    "missed_capture": "vision-en-prise",
+    "missed_fork": "tactics-knight-forks",
+    "missed_check_tactic": "vision-cct-scan",
+    "moved_en_prise": "vision-is-it-safe",
+    "left_piece_hanging": "vision-loose-pieces",
+    "allowed_fork": "defense-escape-early",
+    "got_mated": "defense-four-answers",
+    "back_rank": "mates-back-rank",
+    "repertoire": "openings-three-rules",
+}
+
 _cache: list | None = None
 
 
@@ -83,6 +98,18 @@ def lesson(lesson_id: str) -> dict | None:
                         "chesscom": {"label": label, "url": url} if url else None,
                         "done": bool(p)}
     return None
+
+
+def motif_map() -> dict:
+    """motif tag -> {lesson_id, title, track_title} for every mapped lesson
+    that actually exists in the installed curriculum."""
+    out = {}
+    for tag, lesson_id in MOTIF_LESSONS.items():
+        l = lesson(lesson_id)
+        if l:
+            out[tag] = {"lesson_id": lesson_id, "title": l["title"],
+                        "track_title": l["track_title"]}
+    return out
 
 
 def complete(lesson_id: str, correct: int = 0, total: int = 0) -> None:

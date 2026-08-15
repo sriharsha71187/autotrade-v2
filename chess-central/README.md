@@ -35,13 +35,13 @@ once, after which each new game is analyzed within moments of syncing.
 | **Games** | Every synced game with per-move analysis; click one for its key moments and what should have been played |
 | **Openings** | Score by opening family for each color — plus his real repertoire mined from his own games: the lines he actually plays, plain-English "left book" findings (where he runs out of known moves and what it costs), and a repertoire trainer that drills the repeated positions where his habitual move leaks |
 | **Puzzles** | Generated from his own mistakes and missed tactics, with spaced repetition weighted toward current weaknesses |
-| **Academy** 🎓 | A complete curriculum — 8 tracks, 44 lessons, 119 drills covering board vision, checkmates, tactics, defense, openings, endgames, strategy, and tournament habits. Every position is engine-verified (the test suite re-checks all of them); lessons pair concept text with animated example boards and interactive drills, track progress, and link to matching chess.com Premium practice areas |
+| **Academy** 🎓 | A complete curriculum — 8 tracks, 44 lessons, 119 drills covering board vision, checkmates, tactics, defense, openings, endgames, strategy, and tournament habits. Every position is engine-verified (the test suite re-checks all of them); lessons pair concept text with animated example boards and interactive drills, track progress, and link to matching chess.com Premium practice areas. Every mistake the engine flags links straight to the lesson that fixes it — from game details, insights, and the kid-mode Game detective |
 | **Rival prep** | Add a regular opponent → head-to-head record, their opening repertoire, their habitual mistakes, and prep puzzles that drill the punishments |
 | **Tournaments** | NWSRS/NW Chess + US Chess events near Seattle/Eastside, national scholastic championships, rating-capped online arenas; track interested → registered → played |
 | **AI Coach** ✨ | Claude-powered coaching layer (see below): per-game commentary, weekly reports, ask-the-coach chat, rival pep talks |
 | **GM Roadmap** | Seven-stage ladder from today's rating to the title chase, with a study plan and weekly rhythm for the current stage |
 | **Journal** | Coach's notes that persist — tournament observations, goals, lessons |
-| **OTB games** ♟ | Type or paste any over-the-board game (full PGN or just the moves) on the Games tab — it flows through the exact same engine analysis, puzzles, and insights as online games |
+| **OTB games** ♟ | Type or paste any over-the-board game (full PGN or just the moves) on the Games tab — or **snap a photo of the scoresheet** and the AI coach reads the handwriting into moves (python-chess verifies every move; you review before saving). Either way it flows through the exact same engine analysis, puzzles, and insights as online games |
 | **Weekly rhythm** | The roadmap's weekly plan is now a live checklist on Overview — several items check themselves off from real data (puzzle days, losses reviewed, games played, OTB play) |
 | **Game detective** 🕵️ | Guided loss review in kid mode: after each analyzed loss, he's taken to the exact moment the game turned and asked to find the better move — completing it marks the game reviewed |
 | **Kid mode** | Puzzle-first, effort-based praise, days-practiced tracking, a "your skills are growing" chart (safe-move %, not rating), badges — encouraging, zero jargon |
@@ -72,6 +72,10 @@ stored only in local `config.json`, which is gitignored) or export
   games, insights, motif counts, ratings, and puzzle stats.
 - **Rival pep talk** — turns a scout report into a game plan + a pre-game pep
   talk (never trash-talk).
+- **Scoresheet scanner** — photograph a handwritten tournament scoresheet and
+  Claude transcribes it into moves. Nothing is trusted blindly: python-chess
+  replays every move, keeps only the legal prefix, flags anything doubtful,
+  and you review the movetext before the game is saved.
 
 **Model & cost:** defaults to `claude-opus-5` (changeable in Settings). Server-side
 refusal fallbacks are enabled, so rare safety-classifier declines transparently
@@ -118,7 +122,7 @@ press Sync when he's played. A minimal cron alternative:
 cd chess-central && ./.venv/bin/python -m pytest tests/ -q
 ```
 
-58 offline tests cover the annotation pipeline, motif detection, puzzle
+62 offline tests cover the annotation pipeline, motif detection, puzzle
 generation/uniqueness, spaced repetition, badges, sync record mapping, the
 API surface, engine provenance and re-analysis, OTB game entry, the weekly
 rhythm, loss review, secrets redaction, the PIN gate, and the full Academy

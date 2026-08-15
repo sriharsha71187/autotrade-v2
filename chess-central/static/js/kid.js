@@ -1,7 +1,7 @@
 // Nirvaan's view — puzzle-first, effort-framed, and self-contained
 // (the Academy and loss review live INSIDE kid mode; the parent app is gated).
 import { get, post, el, fmtDate } from "./api.js";
-import { academyView } from "./academy.js";
+import { academyView, openLesson } from "./academy.js";
 import { lineChart } from "./charts.js";
 import { PuzzlePlayer } from "./puzzles.js";
 
@@ -21,7 +21,12 @@ async function renderAcademy() {
   await academyView(box, navigate);
 }
 
+let MOTIF_MAP = null;
+
 async function renderReview() {
+  if (MOTIF_MAP === null) {
+    try { MOTIF_MAP = await get("/learn/motif-map"); } catch (e) { MOTIF_MAP = {}; }
+  }
   const queue = await get("/review/queue");
   main.innerHTML = "";
   main.append(el("button", { class: "ghost", style: "margin-bottom:12px",
@@ -32,13 +37,19 @@ async function renderReview() {
     return;
   }
   const item = queue[0];
+  const lesson = (item.motifs || []).map(t => MOTIF_MAP[t]).find(Boolean);
   main.append(
     el("div", { class: "card", style: "margin-bottom:14px" },
       el("h2", { style: "margin:0 0 6px;font-size:19px" }, "🕵️ Game detective"),
       el("p", { style: "margin:0" },
         `Your game vs ${item.opponent} (${fmtDate(item.played_at)}) — around move `,
         el("b", {}, String(item.move_number)),
-        ", something went wrong. Can you find the better move?")),
+        ", something went wrong. Can you find the better move?"),
+      lesson ? el("p", { style: "margin:8px 0 0" },
+        "Want to master this pattern? ",
+        el("a", { href: "#", onclick: (e) => {
+          e.preventDefault(); openLesson(main, navigate, lesson.lesson_id);
+        } }, `🎓 ${lesson.title}`)) : null),
     el("div", { class: "card", id: "reviewPlayer" }));
   const player = new PuzzlePlayer(document.getElementById("reviewPlayer"), {
     kid: true,

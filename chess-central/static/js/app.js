@@ -16,7 +16,20 @@ const RATING_LABELS = {
   chesscom_puzzles: "Chess.com Puzzles",
 };
 
-import { academyView } from "./academy.js";
+import { academyView, openLesson } from "./academy.js";
+
+// motif tag -> Academy lesson (loaded once; every mistake links to its fix)
+let MOTIF_MAP = null;
+async function motifMap() {
+  if (MOTIF_MAP === null) {
+    try { MOTIF_MAP = await get("/learn/motif-map"); } catch (e) { MOTIF_MAP = {}; }
+  }
+  return MOTIF_MAP;
+}
+function lessonFor(motifs) {
+  for (const t of motifs || []) if (MOTIF_MAP && MOTIF_MAP[t]) return MOTIF_MAP[t];
+  return null;
+}
 
 const VIEWS = {
   overview, insights, games, openings, puzzles, rivals, tournaments, roadmap,
@@ -132,7 +145,8 @@ async function overview() {
     .map(s => ({ name: RATING_LABELS[s], points: bySource[s] })).slice(0, 4);
   lineChart(document.getElementById("ratingChart"), series);
 
-  const ins = (await get("/insights")).items;
+  const [insResp] = await Promise.all([get("/insights"), motifMap()]);
+  const ins = insResp.items;
   const top = ins.slice(0, 4);
   const box = document.getElementById("topInsights");
   box.innerHTML = top.length ? "" : '<div class="empty">Sync + analyze games to unlock coaching insights.</div>';
@@ -181,16 +195,23 @@ export async function renderRhythm(box, { compact = false } = {}) {
 }
 
 function insightCard(i) {
+  // weakness insights keyed motif_<tag> link straight to the Academy lesson
+  const tag = (i.key || "").startsWith("motif_") ? i.key.slice(6) : null;
+  const lesson = tag && MOTIF_MAP ? MOTIF_MAP[tag] : null;
   return el("div", { class: `insight ${i.kind}` },
     el("div", { class: "kind" }, i.kind),
     el("h3", {}, i.title),
-    el("p", {}, i.detail));
+    el("p", {}, i.detail,
+      lesson ? el("span", {}, " ",
+        el("a", { href: "#", onclick: (e) => {
+          e.preventDefault(); openLesson(main, navigate, lesson.lesson_id);
+        } }, `📚 Study it: ${lesson.title}`)) : null));
 }
 
 // ------------------------------------------------------------------ insights
 
 async function insights() {
-  const r = await get("/insights");
+  const [r] = await Promise.all([get("/insights"), motifMap()]);
   const ins = r.items;
   const meta = r.meta || {};
   main.innerHTML = "";
@@ -294,10 +315,49 @@ function buildOtbForm(box, onAdded) {
     el("option", { value: "draw" }, "Draw"));
   const tc = el("input", { placeholder: "Time control (e.g. G/30;d5)", style: "width:180px" });
   const msg = el("span", { class: "mut" });
+
+  // 📷 photo -> movetext (Claude reads the handwriting; python-chess verifies)
+  const fileInput = el("input", { type: "file", accept: "image/*", style: "display:none" });
+  const scanMsg = el("div", { class: "mut", style: "margin:6px 0;white-space:pre-wrap" });
+  const scanBtn = el("button", { class: "ghost", onclick: () => fileInput.click() },
+    "📷 Scan scoresheet photo");
+  fileInput.addEventListener("change", async () => {
+    const file = fileInput.files[0];
+    if (!file) return;
+    scanBtn.disabled = true; scanBtn.textContent = "Reading the scoresheet…";
+    scanMsg.textContent = "";
+    try {
+      const dataUrl = await downscaleImage(file, 1600);
+      const r = await post("/games/otb/scan", { image: dataUrl });
+      pgn.value = r.movetext;
+      if (r.white_name && !opp.value) {
+        // whichever header name isn't Nirvaan is probably the opponent
+        const names = [r.white_name, r.black_name].filter(Boolean);
+        const other = names.find(n => !/nirvaan/i.test(n));
+        if (other) opp.value = other;
+        if (r.black_name && /nirvaan/i.test(r.black_name)) colorSel.value = "black";
+      }
+      if (r.date && !date.value) date.value = r.date;
+      if (r.result) resSel2.value = r.result === "1/2-1/2" ? "draw"
+        : (r.result === "1-0") === (colorSel.value === "white") ? "win" : "loss";
+      const parts = [`Read ${r.valid_plies} of ${r.total_plies} moves ✓`];
+      if (r.issues.length) parts.push(...r.issues.map(x => `⚠️ ${x}`));
+      parts.push("Check the moves against the scoresheet, then Add game.");
+      scanMsg.textContent = parts.join("\n");
+    } catch (e) {
+      scanMsg.textContent = "Scan failed: " + e.message.replace(/^\d+ /, "");
+    }
+    scanBtn.disabled = false; scanBtn.textContent = "📷 Scan scoresheet photo";
+    fileInput.value = "";
+  });
+
   box.append(
     el("h2", { style: "margin:0 0 8px;font-size:16px" }, "Add a tournament (OTB) game"),
     el("p", { class: "mut", style: "margin:0 0 10px" },
-      "Type it from the scoresheet — it gets the exact same engine analysis, insights, and puzzles as online games."),
+      "Type it from the scoresheet — or snap a photo and let the AI coach read the handwriting. ",
+      "Either way it gets the exact same engine analysis, insights, and puzzles as online games."),
+    el("div", { style: "margin-bottom:8px" }, scanBtn, fileInput),
+    scanMsg,
     pgn,
     el("div", { class: "row", style: "margin-top:10px" },
       opp, oppR, date, colorSel, resSel2, tc,
@@ -320,8 +380,26 @@ function buildOtbForm(box, onAdded) {
       msg));
 }
 
+function downscaleImage(file, maxDim) {
+  // phone photos are 10MB+; the reader only needs legible handwriting
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(img.width * scale);
+      canvas.height = Math.round(img.height * scale);
+      canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(img.src);
+      resolve(canvas.toDataURL("image/jpeg", 0.85));
+    };
+    img.onerror = () => reject(new Error("Could not read that image file"));
+    img.src = URL.createObjectURL(file);
+  });
+}
+
 async function gameDetail(id) {
-  const g = await get(`/games/${id}`);
+  const [g] = await Promise.all([get(`/games/${id}`), motifMap()]);
   main.innerHTML = "";
   const acc = g.accuracy || {};
   const mistakes = (g.moves || []).filter(m => m.mover === "player" &&
@@ -341,13 +419,19 @@ async function gameDetail(id) {
     card("Key moments",
       mistakes.length
         ? el("table", { class: "data" },
-            el("thead", {}, el("tr", {}, ...["Move", "Played", "Type", "Better was", "Why it mattered"].map(h => el("th", {}, h)))),
-            el("tbody", {}, mistakes.map(m => el("tr", {},
-              el("td", {}, String(Math.ceil(m.ply / 2))),
-              el("td", {}, m.san),
-              el("td", {}, el("span", { class: `pill ${m.classification === "blunder" ? "loss" : "draw"}` }, m.classification)),
-              el("td", {}, m.best_san || m.best_uci || "—"),
-              el("td", {}, (m.motifs || []).join(", ") || `−${Math.round(m.winprob_before - m.winprob_after)}% win chance`)))))
+            el("thead", {}, el("tr", {}, ...["Move", "Played", "Type", "Better was", "Why it mattered", ""].map(h => el("th", {}, h)))),
+            el("tbody", {}, mistakes.map(m => {
+              const lesson = lessonFor(m.motifs);
+              return el("tr", {},
+                el("td", {}, String(Math.ceil(m.ply / 2))),
+                el("td", {}, m.san),
+                el("td", {}, el("span", { class: `pill ${m.classification === "blunder" ? "loss" : "draw"}` }, m.classification)),
+                el("td", {}, m.best_san || m.best_uci || "—"),
+                el("td", {}, (m.motifs || []).join(", ") || `−${Math.round(m.winprob_before - m.winprob_after)}% win chance`),
+                el("td", {}, lesson ? el("a", { href: "#", title: `Academy: ${lesson.title}`,
+                  onclick: (e) => { e.preventDefault(); openLesson(main, navigate, lesson.lesson_id); } },
+                  "📚 Learn this") : null));
+            })))
         : el("div", { class: "empty" }, g.analyzed_at ? "Clean game — no player mistakes flagged. 🎉" : "Not analyzed yet.")),
     el("div", { style: "margin-top:14px" }),
     card("Coach's commentary", el("div", { id: "commentaryBox" })));

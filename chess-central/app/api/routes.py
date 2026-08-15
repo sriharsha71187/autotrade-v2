@@ -207,6 +207,46 @@ def add_otb_game(body: dict = Body(...)):
     return {"id": new_id, "moves": n_moves}
 
 
+@router.post("/games/otb/scan")
+def scan_scoresheet(body: dict = Body(...)):
+    """Photo of a handwritten scoresheet -> transcribed, validated movetext.
+
+    Returns a draft for the OTB form — never inserts a game directly. The
+    human reviews the movetext (and any flagged issues) before submitting.
+    """
+    from ..coach import llm
+
+    image = (body.get("image") or "").strip()
+    if image.startswith("data:"):          # dataURL from the browser
+        header, _, image = image.partition(",")
+        media_type = header.split(";")[0].split(":")[1] if ":" in header else ""
+    else:
+        media_type = body.get("media_type") or "image/jpeg"
+    if not image:
+        raise HTTPException(422, "image required (base64 or data URL)")
+    if media_type not in ("image/jpeg", "image/png", "image/webp", "image/gif"):
+        raise HTTPException(422, f"unsupported image type: {media_type}")
+    if len(image) > 7_000_000:             # ~5MB decoded, the API image limit
+        raise HTTPException(422, "Image too large — the app resizes photos "
+                                 "automatically, so this shouldn't happen")
+
+    try:
+        scan = llm.scan_scoresheet(image, media_type)
+    except llm.LLMError as e:
+        raise HTTPException(400, str(e))
+    checked = util.validate_movetext(scan.get("moves_san") or [])
+    if scan.get("notes"):
+        checked["issues"].append(f"Reader's notes: {scan['notes']}")
+    return {
+        **checked,
+        "white_name": scan.get("white_name"),
+        "black_name": scan.get("black_name"),
+        "date": scan.get("date"),
+        "result": scan.get("result"),
+        "event": scan.get("event"),
+    }
+
+
 @router.get("/games/{game_id}")
 def game_detail(game_id: int):
     g = db.row("SELECT * FROM games WHERE id=?", (game_id,))
@@ -488,6 +528,12 @@ def _kid_coach_note() -> str:
 def learn_overview():
     from .. import learn
     return learn.overview()
+
+
+@router.get("/learn/motif-map")
+def learn_motif_map():
+    from .. import learn
+    return learn.motif_map()
 
 
 @router.get("/learn/lesson/{lesson_id}")

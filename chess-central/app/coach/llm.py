@@ -99,6 +99,100 @@ class LLMError(Exception):
     """User-presentable LLM failure."""
 
 
+SCAN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "moves_san": {
+            "type": "array", "items": {"type": "string"},
+            "description": "Every move in standard algebraic notation, in order, "
+                           "white and black alternating, no move numbers",
+        },
+        "white_name": {"type": ["string", "null"]},
+        "black_name": {"type": ["string", "null"]},
+        "date": {"type": ["string", "null"], "description": "YYYY-MM-DD if visible"},
+        "result": {"type": ["string", "null"],
+                   "description": "Exactly '1-0', '0-1' or '1/2-1/2' if written"},
+        "event": {"type": ["string", "null"]},
+        "notes": {"type": "string",
+                  "description": "Anything uncertain: illegible moves, guesses made, "
+                                 "ambiguous handwriting — so a human can double-check"},
+    },
+    "required": ["moves_san", "white_name", "black_name", "date", "result",
+                 "event", "notes"],
+    "additionalProperties": False,
+}
+
+
+def scan_scoresheet(image_b64: str, media_type: str) -> dict:
+    """Read a photographed handwritten scoresheet into moves + headers.
+
+    Returns the model's raw transcription — the caller validates legality
+    move by move; nothing is trusted until python-chess replays it.
+    """
+    try:
+        import anthropic
+    except ImportError as e:
+        raise LLMError("The 'anthropic' package is not installed — run "
+                       "./.venv/bin/pip install anthropic") from e
+    if not is_configured():
+        raise LLMError("Scoresheet scanning uses the AI coach — add your "
+                       "Anthropic API key in Settings first.")
+
+    client = anthropic.Anthropic(api_key=_api_key())
+    prompt = (
+        "This is a photo of a handwritten chess scoresheet from a scholastic "
+        "tournament. Transcribe it.\n\n"
+        "- Read the moves in order (columns are usually White | Black per row, "
+        "rows numbered).\n"
+        "- Output standard algebraic notation (SAN): e4, Nf3, O-O, exd5, Qxf7+, "
+        "e8=Q. Normalize sloppy notation (0-0 -> O-O, NF3 -> Nf3, PxP needs "
+        "the real squares if you can infer them from context).\n"
+        "- Kids' scoresheets have errors: skipped numbers, moves in the wrong "
+        "column, illegible scribbles. Transcribe what is actually written; when "
+        "you must guess between readings, pick the chess-plausible one and "
+        "mention it in notes.\n"
+        "- If a move is truly illegible, stop the move list there and say so in "
+        "notes — a shorter correct list beats a longer corrupted one.\n"
+        "- Also read the header fields (players, date, result) if present."
+    )
+    try:
+        response = client.beta.messages.create(
+            model=_model(),
+            max_tokens=4000,
+            betas=["server-side-fallback-2026-07-01"],
+            fallbacks="default",
+            output_config={
+                "effort": "high",
+                "format": {"type": "json_schema", "schema": SCAN_SCHEMA},
+            },
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image",
+                     "source": {"type": "base64", "media_type": media_type,
+                                "data": image_b64}},
+                    {"type": "text", "text": prompt},
+                ],
+            }],
+        )
+    except anthropic.AuthenticationError as e:
+        raise LLMError("Anthropic API key was rejected — check it in Settings.") from e
+    except anthropic.RateLimitError as e:
+        raise LLMError("Rate limited by the Anthropic API — try again in a minute.") from e
+    except anthropic.APIStatusError as e:
+        raise LLMError(f"Anthropic API error ({e.status_code}): {e.message}") from e
+    except anthropic.APIConnectionError as e:
+        raise LLMError("Could not reach the Anthropic API — check your connection.") from e
+
+    if response.stop_reason == "refusal":
+        raise LLMError("The model declined to read this image — try a clearer photo.")
+    text = next((b.text for b in response.content if b.type == "text"), "")
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        raise LLMError("Could not parse the transcription — try a clearer photo.") from e
+
+
 def _note_get(kind: str, ref_id: str) -> dict | None:
     return db.row("SELECT * FROM llm_notes WHERE kind=? AND ref_id=?", (kind, str(ref_id)))
 
