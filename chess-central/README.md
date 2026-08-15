@@ -37,9 +37,41 @@ once, after which each new game is analyzed within moments of syncing.
 | **Puzzles** | Generated from his own mistakes and missed tactics, with spaced repetition weighted toward current weaknesses |
 | **Rival prep** | Add a regular opponent → head-to-head record, their opening repertoire, their habitual mistakes, and prep puzzles that drill the punishments |
 | **Tournaments** | NWSRS/NW Chess + US Chess events near Seattle/Eastside, national scholastic championships, rating-capped online arenas; track interested → registered → played |
+| **AI Coach** ✨ | Claude-powered coaching layer (see below): per-game commentary, weekly reports, ask-the-coach chat, rival pep talks |
 | **GM Roadmap** | Seven-stage ladder from today's rating to the title chase, with a study plan and weekly rhythm for the current stage |
 | **Journal** | Coach's notes that persist — tournament observations, goals, lessons |
 | **Kid mode** | Puzzle-first, streaks, badges, rating rocket — encouraging, zero jargon |
+
+## The AI Coach (Claude integration)
+
+The deterministic layer (Stockfish + the database) is the source of truth about
+chess facts; Claude turns those facts into coaching language. It only ever sees
+structured data the app computed and is instructed never to invent moves or
+numbers.
+
+**Setup:** put your Anthropic API key in **Settings → Anthropic API key** (it is
+stored only in local `config.json`, which is gitignored) or export
+`ANTHROPIC_API_KEY`. Get a key at [platform.claude.com](https://platform.claude.com).
+
+**What it does:**
+
+- **Game commentary** — on any analyzed game: a candid section for the coach and
+  a warm, simple section for Nirvaan (his section also appears in kid mode).
+  Turn on `llm_auto_commentary` in config to write it automatically after each
+  analysis run.
+- **Weekly report** (AI Coach tab) — a one-page readout: headline, what
+  happened, what's working, the one thing to fix and how to train it, tournament
+  readiness, and a note to read aloud.
+- **Ask the coach** (AI Coach tab) — chat grounded in a live snapshot of his
+  games, insights, motif counts, ratings, and puzzle stats.
+- **Rival pep talk** — turns a scout report into a game plan + a pre-game pep
+  talk (never trash-talk).
+
+**Model & cost:** defaults to `claude-opus-5` (changeable in Settings). Server-side
+refusal fallbacks are enabled, so rare safety-classifier declines transparently
+retry on Anthropic's recommended fallback model. Rough cost at Opus pricing: a
+few cents per game commentary, ~5-10¢ per weekly report or chat exchange.
+Results are cached in the database (regenerate with the ⟳ links / `force=true`).
 
 ## Configuration
 

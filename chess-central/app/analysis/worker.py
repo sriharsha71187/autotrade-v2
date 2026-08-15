@@ -78,10 +78,18 @@ def _run() -> None:
 
 
 def _post_game_hooks(game_id: int) -> None:
-    """Generate puzzles from this game as soon as it's analyzed."""
+    """Generate puzzles (and optionally AI commentary) once a game is analyzed."""
     try:
         from ..puzzles import generator
         generator.generate_for_game(game_id)
+    except Exception:
+        traceback.print_exc()
+    try:
+        from .. import config
+        if config.get("llm_auto_commentary"):
+            from ..coach import llm
+            if llm.is_configured():
+                llm.game_commentary(game_id)
     except Exception:
         traceback.print_exc()
 

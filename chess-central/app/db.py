@@ -173,6 +173,23 @@ CREATE TABLE IF NOT EXISTS kv (
     key TEXT PRIMARY KEY,
     value TEXT
 );
+
+CREATE TABLE IF NOT EXISTS llm_notes (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL,                  -- game_commentary | weekly_report | rival_brief
+    ref_id TEXT NOT NULL,                -- game id / date / rival id
+    content TEXT NOT NULL,               -- markdown
+    model TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(kind, ref_id)
+);
+
+CREATE TABLE IF NOT EXISTS coach_chat (
+    id INTEGER PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    role TEXT NOT NULL,                  -- user | assistant
+    text TEXT NOT NULL
+);
 """
 
 

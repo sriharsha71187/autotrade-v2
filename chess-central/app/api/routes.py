@@ -291,7 +291,16 @@ def kid_home():
         "recent_games": recent,
         "ratings": ratings,
         "coach_note": _kid_coach_note(),
+        "game_note": _kid_game_note(),
     }
+
+
+def _kid_game_note() -> str | None:
+    try:
+        from ..coach import llm
+        return llm.kid_note_for_latest_game()
+    except Exception:
+        return None
 
 
 def _kid_coach_note() -> str:
@@ -300,6 +309,70 @@ def _kid_coach_note() -> str:
     if ins:
         return f"Coach says: {ins[0]['title']} — keep it up! 🎉"
     return "Coach says: every puzzle you solve makes you stronger. Let's go! 🚀"
+
+
+# ---------------------------------------------------------------- AI coach
+
+@router.get("/llm/status")
+def llm_status():
+    from ..coach import llm
+    return {"configured": llm.is_configured(), "model": config.get("llm_model")}
+
+
+@router.post("/llm/game/{game_id}/commentary")
+def llm_game_commentary(game_id: int, force: bool = False):
+    from ..coach import llm
+    try:
+        return llm.game_commentary(game_id, force=force)
+    except llm.LLMError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.get("/llm/game/{game_id}/commentary")
+def llm_game_commentary_get(game_id: int):
+    from ..coach import llm
+    note = llm._note_get("game_commentary", game_id)
+    return note or {"content": None}
+
+
+@router.post("/llm/weekly-report")
+def llm_weekly_report(force: bool = False):
+    from ..coach import llm
+    try:
+        return llm.weekly_report(force=force)
+    except llm.LLMError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.post("/llm/rival/{rival_id}/brief")
+def llm_rival_brief(rival_id: int, force: bool = False):
+    from ..coach import llm
+    try:
+        return llm.rival_brief(rival_id, force=force)
+    except llm.LLMError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.get("/llm/chat")
+def llm_chat_history():
+    from ..coach import llm
+    return llm.chat_history()
+
+
+@router.post("/llm/chat")
+def llm_chat(body: dict = Body(...)):
+    from ..coach import llm
+    try:
+        return llm.chat(body.get("message", ""))
+    except llm.LLMError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.delete("/llm/chat")
+def llm_chat_clear():
+    from ..coach import llm
+    llm.chat_clear()
+    return {"ok": True}
 
 
 # ----------------------------------------------------------------- settings

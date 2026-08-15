@@ -36,6 +36,11 @@ DEFAULTS = {
     "puzzle_daily_target": 6,    # puzzles in Nirvaan's daily set
     "kid_pin": "",               # optional PIN to open the parent view from kid mode
     "sync_lookback_days": 3650,
+    # AI coach (Claude). Key lives only in local config.json (gitignored);
+    # ANTHROPIC_API_KEY env var also works.
+    "anthropic_api_key": "",
+    "llm_model": "claude-opus-5",
+    "llm_auto_commentary": False,   # write commentary automatically after analysis
 }
 
 

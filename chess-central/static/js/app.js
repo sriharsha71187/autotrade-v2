@@ -1,6 +1,7 @@
 // Parent/coach dashboard SPA.
 import { get, post, del, el, toast, fmtDate } from "./api.js";
 import { lineChart, barChart } from "./charts.js";
+import { renderMarkdown } from "./markdown.js";
 import { PuzzlePlayer } from "./puzzles.js";
 
 const main = document.getElementById("view");
@@ -16,7 +17,8 @@ const RATING_LABELS = {
 };
 
 const VIEWS = {
-  overview, insights, games, openings, puzzles, rivals, tournaments, roadmap, journal, settings,
+  overview, insights, games, openings, puzzles, rivals, tournaments, roadmap,
+  journal, settings, aicoach,
 };
 
 async function navigate(name) {
@@ -217,7 +219,31 @@ async function gameDetail(id) {
               el("td", {}, el("span", { class: `pill ${m.classification === "blunder" ? "loss" : "draw"}` }, m.classification)),
               el("td", {}, m.best_san || m.best_uci || "—"),
               el("td", {}, (m.motifs || []).join(", ") || `−${Math.round(m.winprob_before - m.winprob_after)}% win chance`)))))
-        : el("div", { class: "empty" }, g.analyzed_at ? "Clean game — no player mistakes flagged. 🎉" : "Not analyzed yet.")));
+        : el("div", { class: "empty" }, g.analyzed_at ? "Clean game — no player mistakes flagged. 🎉" : "Not analyzed yet.")),
+    el("div", { style: "margin-top:14px" }),
+    card("Coach's commentary", el("div", { id: "commentaryBox" })));
+
+  const box = document.getElementById("commentaryBox");
+  const showNote = (content) => {
+    box.innerHTML = renderMarkdown(content);
+  };
+  const existing = await get(`/llm/game/${id}/commentary`);
+  if (existing.content) {
+    showNote(existing.content);
+  } else if (g.analyzed_at) {
+    const btn = el("button", { class: "ghost" }, "✨ Write commentary");
+    btn.addEventListener("click", async () => {
+      btn.disabled = true; btn.textContent = "Coach is writing…";
+      try {
+        const r = await post(`/llm/game/${id}/commentary`);
+        showNote(r.content);
+      } catch (e) { toast(e.message); btn.disabled = false; btn.textContent = "✨ Write commentary"; }
+    });
+    box.append(btn, el("span", { class: "mut", style: "margin-left:10px" },
+      "AI commentary grounded in the engine analysis above."));
+  } else {
+    box.append(el("span", { class: "mut" }, "Analyze the game first."));
+  }
 }
 
 // ------------------------------------------------------------------ openings
@@ -316,6 +342,17 @@ function rivalCard(r) {
         const puzzlesForRival = await get(`/puzzles/daily?rival=${encodeURIComponent(r.name)}`);
         showRivalPuzzles(r, puzzlesForRival);
       } }, "Prep puzzles"),
+      rep ? el("button", { class: "ghost", onclick: async (ev) => {
+        ev.target.disabled = true; ev.target.textContent = "Writing…";
+        try {
+          const brief = await post(`/llm/rival/${r.id}/brief`);
+          const d = el("div", { class: "card", style: "margin-top:10px" });
+          d.innerHTML = renderMarkdown(brief.content);
+          ev.target.closest(".card").append(d);
+          ev.target.textContent = "✨ Pep talk";
+        } catch (e) { toast(e.message); ev.target.textContent = "✨ Pep talk"; }
+        ev.target.disabled = false;
+      } }, "✨ Pep talk") : null,
       el("button", { class: "ghost", onclick: async () => { await del(`/rivals/${r.id}`); navigate("rivals"); } }, "✕")),
     body);
 }
@@ -422,6 +459,101 @@ async function roadmap() {
   });
 }
 
+// ------------------------------------------------------------------ AI coach
+
+async function aicoach() {
+  const status = await get("/llm/status");
+  main.innerHTML = "";
+  main.append(el("div", { class: "row", style: "margin-bottom:12px" },
+    el("h1", { style: "margin:0;font-size:22px" }, "AI Coach"),
+    el("span", { class: "mut" }, status.configured ? status.model : ""),
+    el("div", { class: "spacer" }),
+    el("button", { class: "ghost", id: "reportBtn" }, "Weekly report"),
+    el("button", { class: "ghost", onclick: async () => {
+      if (confirm("Clear the chat history?")) { await del("/llm/chat"); navigate("aicoach"); }
+    } }, "Clear chat")));
+
+  if (!status.configured) {
+    main.append(el("div", { class: "card", style: "border-left:3px solid var(--warning)" },
+      el("b", {}, "No Anthropic API key configured. "),
+      "Add one in ", el("a", { href: "#settings", onclick: (e) => { e.preventDefault(); navigate("settings"); } }, "Settings"),
+      " — it stays in local config.json on this Mac. Get a key at ",
+      el("a", { href: "https://platform.claude.com", target: "_blank" }, "platform.claude.com"), "."));
+    return;
+  }
+
+  const reportBox = el("div");
+  const chatBox = el("div", { style: "max-height:52vh;overflow-y:auto;padding:4px 2px" });
+  const input = el("textarea", { rows: 2, style: "flex:1",
+    placeholder: "Ask the coach… e.g. \"why does he keep losing with black?\" or \"what should we train before the next tournament?\"" });
+  const sendBtn = el("button", {}, "Ask");
+
+  const bubble = (role, text) => el("div", {
+    style: `margin:8px 0;padding:10px 14px;border-radius:12px;max-width:85%;` +
+      (role === "user"
+        ? "background:color-mix(in oklab, var(--accent) 14%, var(--surface));margin-left:auto"
+        : "background:var(--surface);border:1px solid var(--border)"),
+  }, role === "user" ? text : rawHtml(renderMarkdown(text)));
+
+  function rawHtml(html) {
+    const d = document.createElement("div");
+    d.innerHTML = html;
+    return d;
+  }
+
+  const history = await get("/llm/chat");
+  history.forEach(h => chatBox.append(bubble(h.role, h.text)));
+  if (!history.length) {
+    chatBox.append(el("div", { class: "empty" },
+      "Ask anything about his chess — answers are grounded in his actual games, analysis, and training data."));
+  }
+
+  const send = async () => {
+    const msg = input.value.trim();
+    if (!msg) return;
+    input.value = "";
+    sendBtn.disabled = true;
+    chatBox.append(bubble("user", msg));
+    const thinking = el("div", { class: "mut", style: "padding:8px 14px" }, "Coach is thinking…");
+    chatBox.append(thinking);
+    chatBox.scrollTop = chatBox.scrollHeight;
+    try {
+      const r = await post("/llm/chat", { message: msg });
+      thinking.remove();
+      chatBox.append(bubble("assistant", r.reply));
+    } catch (e) {
+      thinking.remove();
+      chatBox.append(el("div", { class: "mut", style: "color:var(--critical);padding:8px 14px" }, e.message));
+    }
+    sendBtn.disabled = false;
+    chatBox.scrollTop = chatBox.scrollHeight;
+  };
+  sendBtn.addEventListener("click", send);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+  });
+
+  main.append(reportBox,
+    el("div", { class: "card" }, chatBox,
+      el("div", { class: "row", style: "margin-top:10px" }, input, sendBtn)));
+
+  document.getElementById("reportBtn").addEventListener("click", async (ev) => {
+    ev.target.disabled = true; ev.target.textContent = "Writing report…";
+    try {
+      const r = await post("/llm/weekly-report");
+      reportBox.innerHTML = "";
+      reportBox.append(el("div", { class: "card", style: "margin-bottom:14px" },
+        el("div", { class: "mut" },
+          `Coach's report · ${fmtDate(r.created_at)}${r.cached ? " (cached — " : " ("}`,
+          el("a", { href: "#", onclick: async (e) => {
+            e.preventDefault(); await post("/llm/weekly-report?force=true"); navigate("aicoach");
+          } }, "regenerate"), ")"),
+        rawHtml(renderMarkdown(r.content))));
+    } catch (e) { toast(e.message); }
+    ev.target.disabled = false; ev.target.textContent = "Weekly report";
+  });
+}
+
 // ------------------------------------------------------------------- journal
 
 async function journal() {
@@ -455,6 +587,8 @@ async function settings() {
     ["uscf_id", "USCF ID"], ["home_area", "Home area"],
     ["engine_path", "Stockfish path (blank = auto-detect)"],
     ["engine_movetime_ms", "Engine ms per move"], ["puzzle_daily_target", "Daily puzzle target"],
+    ["anthropic_api_key", "Anthropic API key (stays in local config.json)"],
+    ["llm_model", "AI coach model"],
   ];
   const inputs = {};
   main.append(el("h1", { style: "margin:0 0 14px;font-size:22px" }, "Settings"),
