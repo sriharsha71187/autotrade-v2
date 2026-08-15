@@ -1,4 +1,5 @@
 anthropic>=0.70
+eval_type_backport>=0.2   # lets FastAPI/pydantic run on macOS system Python 3.9
 fastapi>=0.115
 uvicorn[standard]>=0.30
 httpx>=0.27

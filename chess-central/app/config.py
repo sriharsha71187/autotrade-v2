@@ -80,6 +80,7 @@ def find_engine() -> str:
     if explicit and Path(explicit).exists():
         return explicit
     candidates = [
+        str(ROOT / "stockfish-bin"),     # binary downloaded into the app folder
         "/opt/homebrew/bin/stockfish",   # Apple Silicon brew
         "/usr/local/bin/stockfish",      # Intel brew
         "/usr/bin/stockfish",
