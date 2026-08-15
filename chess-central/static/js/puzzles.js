@@ -16,11 +16,13 @@ const PRAISE = ["Brilliant!", "Nailed it!", "Sharp eyes!", "Boom!", "Like a gran
 const NUDGE = ["Not that one — look again", "Almost — try another idea", "There's something better"];
 
 export class PuzzlePlayer {
-  constructor(container, { kid = false, onSetDone = null, onSolved = null } = {}) {
+  constructor(container, { kid = false, onSetDone = null, onSolved = null,
+                           onFinished = null } = {}) {
     this.root = container;
     this.kid = kid;
     this.onSetDone = onSetDone;
     this.onSolved = onSolved;
+    this.onFinished = onFinished;
     this.queue = [];
     this.idx = 0;
     this.solvedCount = 0;
@@ -153,12 +155,14 @@ export class PuzzlePlayer {
       ? PRAISE[Math.floor(Math.random() * PRAISE.length)]
       : (this.kid ? "Solved! Next one first try 💪" : "Solved (with help)."), "ok big");
     if (clean) this._burst();
-    try {
-      const res = await post(`/puzzles/${p.id}/attempt`,
-        { correct: clean, time_ms: Date.now() - this.t0 });
-      for (const _ of res.new_badges || []) toast("🏅 New badge earned!");
-      if (this.onSolved) this.onSolved(clean);
-    } catch (e) { /* offline — keep playing */ }
+    if (p.id != null) {
+      try {
+        const res = await post(`/puzzles/${p.id}/attempt`,
+          { correct: clean, time_ms: Date.now() - this.t0 });
+        for (const _ of res.new_badges || []) toast("🏅 New badge earned!");
+      } catch (e) { /* offline — keep playing */ }
+    }
+    if (this.onSolved) this.onSolved(clean);
     setTimeout(() => this._next(), clean ? 950 : 1250);
   }
 
@@ -174,8 +178,10 @@ export class PuzzlePlayer {
       this.board.play(rest[i]);
     }
     this._say(p.explanation || "That was the idea.", "");
-    try { await post(`/puzzles/${p.id}/attempt`, { correct: false, time_ms: Date.now() - this.t0 }); }
-    catch (e) {}
+    if (p.id != null) {
+      try { await post(`/puzzles/${p.id}/attempt`, { correct: false, time_ms: Date.now() - this.t0 }); }
+      catch (e) {}
+    }
     setTimeout(() => this._next(), 2400);
   }
 
@@ -204,6 +210,7 @@ export class PuzzlePlayer {
 
   _finish() {
     const total = this.queue.length;
+    if (this.onFinished) this.onFinished(this.firstTryCount, total);
     this.root.innerHTML = "";
     this.root.append(el("div", { class: "pz-finish" },
       el("div", { class: "big-emoji" }, this.firstTryCount === total ? "🏆" : "🌟"),

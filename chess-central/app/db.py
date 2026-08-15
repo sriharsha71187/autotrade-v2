@@ -184,6 +184,13 @@ CREATE TABLE IF NOT EXISTS llm_notes (
     UNIQUE(kind, ref_id)
 );
 
+CREATE TABLE IF NOT EXISTS learn_progress (
+    lesson_id TEXT PRIMARY KEY,
+    completed_at TEXT NOT NULL,
+    correct INTEGER DEFAULT 0,
+    total INTEGER DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS coach_chat (
     id INTEGER PRIMARY KEY,
     created_at TEXT NOT NULL,

@@ -311,6 +311,33 @@ def _kid_coach_note() -> str:
     return "Coach says: every puzzle you solve makes you stronger. Let's go! 🚀"
 
 
+# ----------------------------------------------------------------- academy
+
+@router.get("/learn")
+def learn_overview():
+    from .. import learn
+    return learn.overview()
+
+
+@router.get("/learn/lesson/{lesson_id}")
+def learn_lesson(lesson_id: str):
+    from .. import learn
+    l = learn.lesson(lesson_id)
+    if not l:
+        raise HTTPException(404)
+    return l
+
+
+@router.post("/learn/lesson/{lesson_id}/complete")
+def learn_complete(lesson_id: str, body: dict = Body(default={})):
+    from .. import learn
+    try:
+        learn.complete(lesson_id, int(body.get("correct", 0)), int(body.get("total", 0)))
+    except ValueError:
+        raise HTTPException(404)
+    return {"ok": True}
+
+
 # ---------------------------------------------------------------- AI coach
 
 @router.get("/llm/status")

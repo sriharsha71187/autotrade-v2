@@ -256,6 +256,14 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .pz-finish h2 { margin: 10px 0 4px; }
 .pz-finish p { color: var(--ink-2); margin: 0 0 18px; }
 
+/* academy */
+.track-card { transition: transform .15s ease, box-shadow .15s ease; }
+.track-card:hover { transform: translateY(-2px); box-shadow: 0 6px 18px rgba(0,0,0,.12); }
+.lesson-concept { font-size: 15px; line-height: 1.65; }
+.lesson-concept h3, .lesson-concept h4, .lesson-concept h5 { margin: 14px 0 6px; }
+.lesson-concept ul { padding-left: 22px; }
+.lesson-concept p { margin: 8px 0; }
+
 /* rival findings */
 .finding { display: flex; gap: 12px; padding: 10px 12px; border-radius: 10px;
   margin-bottom: 8px; background: var(--surface); border: 1px solid var(--border); }

@@ -16,9 +16,12 @@ const RATING_LABELS = {
   chesscom_puzzles: "Chess.com Puzzles",
 };
 
+import { academyView } from "./academy.js";
+
 const VIEWS = {
   overview, insights, games, openings, puzzles, rivals, tournaments, roadmap,
   journal, settings, aicoach,
+  academy: async () => academyView(main, navigate),
 };
 
 async function navigate(name) {
