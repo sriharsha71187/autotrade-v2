@@ -41,7 +41,10 @@ once, after which each new game is analyzed within moments of syncing.
 | **AI Coach** ✨ | Claude-powered coaching layer (see below): per-game commentary, weekly reports, ask-the-coach chat, rival pep talks |
 | **GM Roadmap** | Seven-stage ladder from today's rating to the title chase, with a study plan and weekly rhythm for the current stage |
 | **Journal** | Coach's notes that persist — tournament observations, goals, lessons |
-| **Kid mode** | Puzzle-first, streaks, badges, rating rocket — encouraging, zero jargon |
+| **OTB games** ♟ | Type or paste any over-the-board game (full PGN or just the moves) on the Games tab — it flows through the exact same engine analysis, puzzles, and insights as online games |
+| **Weekly rhythm** | The roadmap's weekly plan is now a live checklist on Overview — several items check themselves off from real data (puzzle days, losses reviewed, games played, OTB play) |
+| **Game detective** 🕵️ | Guided loss review in kid mode: after each analyzed loss, he's taken to the exact moment the game turned and asked to find the better move — completing it marks the game reviewed |
+| **Kid mode** | Puzzle-first, effort-based praise, days-practiced tracking, a "your skills are growing" chart (safe-move %, not rating), badges — encouraging, zero jargon |
 
 ## The AI Coach (Claude integration)
 
@@ -82,6 +85,21 @@ USCF ID `33201208`, Seattle/Eastside city list). Anything you change in
 (SQLite) — copy that one file to back up all history, notes, and puzzle
 progress.
 
+## Kid mode on his iPad (and the Parent PIN)
+
+By default the server binds to this Mac only. To let Nirvaan use kid mode from
+an iPad on your home wifi:
+
+1. **Set a Parent PIN first** in Settings — with a PIN set, the parent
+   dashboard shows a lock screen and the kid view stays open. Secrets (the API
+   key, the PIN itself) are never sent back to the browser after saving.
+2. Start with `HOST=0.0.0.0 ./run.sh` — the startup banner prints the LAN URL.
+3. On the iPad, open `http://<your-mac's-ip>:8425/kid` and add it to the Home
+   Screen.
+
+The PIN is a courtesy gate for a shared family network, not real security —
+don't expose the port beyond your home wifi.
+
 ## Keeping it fresh automatically (optional)
 
 Sync on a schedule with launchd, same pattern as your other agents — or just
@@ -98,10 +116,12 @@ press Sync when he's played. A minimal cron alternative:
 cd chess-central && ./.venv/bin/python -m pytest tests/ -q
 ```
 
-19 offline tests cover the annotation pipeline, motif detection, puzzle
-generation/uniqueness, spaced repetition, badges, sync record mapping, and
-the API surface. No network or Stockfish needed (a built-in 2-ply engine
-stands in).
+53 offline tests cover the annotation pipeline, motif detection, puzzle
+generation/uniqueness, spaced repetition, badges, sync record mapping, the
+API surface, engine provenance and re-analysis, OTB game entry, the weekly
+rhythm, loss review, secrets redaction, the PIN gate, and the full Academy
+curriculum (every drill position is re-verified with an engine check). No
+network or Stockfish needed (a built-in 2-ply engine stands in).
 
 ## Moving this to its own repository
 

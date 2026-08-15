@@ -223,6 +223,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "engine" not in cols("games"):
         # which engine produced the analysis: 'stockfish' | 'fallback' | NULL
         conn.execute("ALTER TABLE games ADD COLUMN engine TEXT")
+    if "reviewed_at" not in cols("games"):
+        # guided loss review completed (kid found the turning point)
+        conn.execute("ALTER TABLE games ADD COLUMN reviewed_at TEXT")
     if "completed" not in cols("puzzle_attempts"):
         # completed = the puzzle was finished (with or without help);
         # correct = first-try clean solve (drives spaced repetition)

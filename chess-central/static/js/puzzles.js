@@ -12,7 +12,10 @@ const THEME_LABELS = {
   back_rank: "Back rank",
 };
 
-const PRAISE = ["Brilliant!", "Nailed it!", "Sharp eyes!", "Boom!", "Like a grandmaster!", "Perfect!"];
+// effort praise, not trait praise — celebrate the habit, not "talent"
+const PRAISE = ["You checked the whole board!", "That's the scanning habit!",
+  "Patient and sharp — nailed it!", "You spotted it — great looking!",
+  "Boom! The practice is working!", "First try — your training shows!"];
 const NUDGE = ["Not that one — look again", "Almost — try another idea", "There's something better"];
 
 export class PuzzlePlayer {

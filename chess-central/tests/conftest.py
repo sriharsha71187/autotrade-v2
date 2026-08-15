@@ -10,6 +10,17 @@ from app import db  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
+def isolated_config(tmp_path, monkeypatch):
+    """Tests must never write the real config.json or leak config changes."""
+    from app import config
+    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
+    snapshot = dict(config._config)
+    yield
+    config._config.clear()
+    config._config.update(snapshot)
+
+
+@pytest.fixture(autouse=True)
 def fresh_db(tmp_path, monkeypatch):
     """Every test gets an isolated database."""
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.db")

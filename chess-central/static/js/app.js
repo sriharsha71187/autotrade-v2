@@ -94,8 +94,11 @@ async function overview() {
         navigate("overview");
       } }, "Retry failed")) : null,
     el("div", { style: "margin-top:14px" }),
+    card("This week's rhythm", el("div", { id: "rhythmBox" })),
+    el("div", { style: "margin-top:14px" }),
     card("Top insights", el("div", { id: "topInsights" })),
   );
+  renderRhythm(document.getElementById("rhythmBox"));
 
   document.getElementById("syncBtn").addEventListener("click", async (ev) => {
     ev.target.disabled = true; ev.target.textContent = "Syncing…";
@@ -149,6 +152,30 @@ function tile(label, value, sub = "") {
 function card(title, ...body) {
   return el("div", { class: "card" },
     el("h2", { style: "margin:0 0 10px;font-size:16px" }, title), ...body);
+}
+
+export async function renderRhythm(box, { compact = false } = {}) {
+  const r = await get("/rhythm");
+  box.innerHTML = "";
+  box.append(el("div", { class: "mut", style: "margin-bottom:8px" },
+    `${r.stage} stage · ${r.done}/${r.total} done this week`));
+  for (const item of r.items) {
+    const cb = el("input", { type: "checkbox", style: "width:18px;height:18px;flex-shrink:0" });
+    cb.checked = item.done;
+    cb.disabled = !!(item.auto && item.auto.done && !item.manual_checked);
+    cb.addEventListener("change", async () => {
+      await post("/rhythm/check", { index: item.index, checked: cb.checked });
+      renderRhythm(box, { compact });
+    });
+    box.append(el("label", { class: "row", style:
+      `gap:10px;padding:6px 0;align-items:flex-start;cursor:pointer;` +
+      (item.done ? "opacity:.65" : "") },
+      cb,
+      el("div", { style: "flex:1" },
+        el("div", { style: compact ? "font-size:14px" : "" }, item.text),
+        item.auto ? el("div", { class: "mut" },
+          `${item.auto.count}/${item.auto.target} ${item.auto.label}`) : null)));
+  }
 }
 
 function insightCard(i) {
@@ -215,12 +242,61 @@ async function games() {
   };
   oppInput.addEventListener("change", reload);
   resSel.addEventListener("change", reload);
+  const otbForm = el("div", { class: "card", style: "margin-bottom:14px;display:none" });
+  const otbBtn = el("button", { class: "ghost", onclick: () => {
+    otbForm.style.display = otbForm.style.display === "none" ? "" : "none";
+  } }, "＋ Add OTB game");
+  buildOtbForm(otbForm, reload);
+
   main.append(
     el("div", { class: "row", style: "margin-bottom:12px" },
       el("h1", { style: "margin:0;font-size:22px" }, "Games"),
-      el("div", { class: "spacer" }), oppInput, resSel),
+      el("div", { class: "spacer" }), otbBtn, oppInput, resSel),
+    otbForm,
     list);
   await reload();
+}
+
+function buildOtbForm(box, onAdded) {
+  const pgn = el("textarea", { rows: 5, style: "width:100%;font-family:ui-monospace,monospace;font-size:13px",
+    placeholder: "Paste the PGN — or just the moves, e.g.\n1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 ..." });
+  const opp = el("input", { placeholder: "Opponent name" });
+  const oppR = el("input", { placeholder: "Opp. rating", type: "number", style: "width:110px" });
+  const date = el("input", { type: "date" });
+  const colorSel = el("select", {},
+    el("option", { value: "white" }, "Nirvaan was White"),
+    el("option", { value: "black" }, "Nirvaan was Black"));
+  const resSel2 = el("select", {},
+    el("option", { value: "" }, "Result: from PGN"),
+    el("option", { value: "win" }, "Win"),
+    el("option", { value: "loss" }, "Loss"),
+    el("option", { value: "draw" }, "Draw"));
+  const tc = el("input", { placeholder: "Time control (e.g. G/30;d5)", style: "width:180px" });
+  const msg = el("span", { class: "mut" });
+  box.append(
+    el("h2", { style: "margin:0 0 8px;font-size:16px" }, "Add a tournament (OTB) game"),
+    el("p", { class: "mut", style: "margin:0 0 10px" },
+      "Type it from the scoresheet — it gets the exact same engine analysis, insights, and puzzles as online games."),
+    pgn,
+    el("div", { class: "row", style: "margin-top:10px" },
+      opp, oppR, date, colorSel, resSel2, tc,
+      el("button", { onclick: async (ev) => {
+        ev.target.disabled = true; msg.textContent = "";
+        try {
+          const r = await post("/games/otb", {
+            pgn: pgn.value, opponent_name: opp.value || null,
+            opponent_rating: oppR.value ? parseInt(oppR.value, 10) : null,
+            played_at: date.value || null, color: colorSel.value,
+            result: resSel2.value || null, time_control: tc.value || null,
+          });
+          toast(`OTB game added (${r.moves} moves) — analysis queued`);
+          pgn.value = ""; opp.value = ""; oppR.value = "";
+          box.style.display = "none";
+          onAdded();
+        } catch (e) { msg.textContent = e.message.replace(/^\d+ /, "").slice(0, 160); }
+        ev.target.disabled = false;
+      } }, "Add game"),
+      msg));
 }
 
 async function gameDetail(id) {
@@ -671,13 +747,19 @@ async function settings() {
     ["engine_movetime_ms", "Engine ms per move"], ["puzzle_daily_target", "Daily puzzle target"],
     ["anthropic_api_key", "Anthropic API key (stays in local config.json)"],
     ["llm_model", "AI coach model"],
+    ["kid_pin", "Parent PIN (locks this dashboard away from kid mode)"],
   ];
+  const SECRETS = { anthropic_api_key: 1, kid_pin: 1 };
   const inputs = {};
   main.append(el("h1", { style: "margin:0 0 14px;font-size:22px" }, "Settings"),
     el("div", { class: "card" },
       ...fields.map(([k, label]) => el("div", { style: "margin-bottom:10px" },
         el("div", { class: "mut" }, label),
-        inputs[k] = el("input", { value: cfg[k] ?? "", style: "width:100%;max-width:420px" }))),
+        inputs[k] = el("input", {
+          value: cfg[k] ?? "",
+          ...(SECRETS[k] ? { type: "password", placeholder:
+            cfg[`${k}_set`] ? "saved — type to replace" : "" } : {}),
+          style: "width:100%;max-width:420px" }))),
       el("button", { onclick: async () => {
         const body = {};
         for (const [k] of fields) {
@@ -691,4 +773,36 @@ async function settings() {
       "Nirvaan's view lives at ", el("a", { href: "/kid" }, "/kid"), " — bookmark it on his device."));
 }
 
-navigate(location.hash.slice(1) || "overview");
+// ---------------------------------------------------------------- PIN gate
+
+async function boot() {
+  try {
+    const gate = await get("/gate");
+    if (gate.pin_required && sessionStorage.getItem("cc_gate") !== "ok") {
+      main.innerHTML = "";
+      const input = el("input", { type: "password", placeholder: "Parent PIN",
+        style: "font-size:18px;text-align:center;width:180px" });
+      const msg = el("div", { class: "mut", style: "min-height:20px;margin-top:8px" });
+      const tryPin = async () => {
+        try {
+          await post("/gate", { pin: input.value });
+          sessionStorage.setItem("cc_gate", "ok");
+          boot();
+        } catch (e) { msg.textContent = "Wrong PIN — try again"; input.value = ""; }
+      };
+      main.append(el("div", { style: "text-align:center;padding:80px 20px" },
+        el("div", { style: "font-size:44px" }, "🔒"),
+        el("h2", {}, "Parent dashboard"),
+        el("p", { class: "mut" }, "Nirvaan — this side is for grown-ups. Your page is at /kid 🚀"),
+        el("div", { style: "margin-top:14px" }, input),
+        el("div", { style: "margin-top:10px" },
+          el("button", { onclick: tryPin }, "Unlock")),
+        msg));
+      input.addEventListener("keydown", (e) => { if (e.key === "Enter") tryPin(); });
+      input.focus();
+      return;
+    }
+  } catch (e) { /* gate unavailable — proceed */ }
+  navigate(location.hash.slice(1) || "overview");
+}
+boot();

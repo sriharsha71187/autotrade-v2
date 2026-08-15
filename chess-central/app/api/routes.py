@@ -139,6 +139,74 @@ def list_games(limit: int = 50, offset: int = 0, opponent: str | None = None,
     return rows
 
 
+@router.post("/games/otb")
+def add_otb_game(body: dict = Body(...)):
+    """Enter an over-the-board (tournament) game — feeds the same pipeline."""
+    import hashlib
+
+    import chess.pgn
+
+    pgn_text = (body.get("pgn") or "").strip()
+    if not pgn_text:
+        raise HTTPException(422, "PGN (or a movetext line like '1. e4 e5 …') is required")
+    if "[" not in pgn_text:   # bare movetext — wrap it
+        pgn_text = '[Event "OTB"]\n[Result "*"]\n\n' + pgn_text
+    game = util.parse_pgn_game(pgn_text)
+    if game is None or game.errors:
+        detail = str(game.errors[0]) if game and game.errors else "could not parse the moves"
+        raise HTTPException(422, f"That PGN has a problem: {detail}")
+    n_moves = len(list(game.mainline_moves()))
+    if n_moves < 4:
+        raise HTTPException(422, "That game has fewer than 4 moves — check the movetext")
+
+    color = body.get("color")
+    if color not in ("white", "black"):
+        raise HTTPException(422, "color must be 'white' or 'black' (Nirvaan's side)")
+    result = body.get("result")
+    if result not in ("win", "loss", "draw"):
+        header = game.headers.get("Result", "*")
+        if header in ("1-0", "0-1", "1/2-1/2"):
+            result = util.result_for(header, color)
+        else:
+            raise HTTPException(422, "result is required (win/loss/draw)")
+
+    played_at = (body.get("played_at") or game.headers.get("Date", "").replace(".", "-")
+                 or util.now_iso()[:10])
+    if len(played_at) == 10:
+        played_at += "T12:00:00Z"
+    gid = "otb_" + hashlib.sha1(pgn_text.encode()).hexdigest()[:12]
+    rec = {
+        "platform": "otb", "platform_game_id": gid, "url": None, "pgn": pgn_text,
+        "color": color,
+        "opponent_name": body.get("opponent_name") or game.headers.get(
+            "Black" if color == "white" else "White") or "Unknown",
+        "opponent_rating": body.get("opponent_rating") or None,
+        "player_rating": body.get("player_rating") or None,
+        "result": result, "termination": body.get("termination"),
+        "time_class": "classical",
+        "time_control": body.get("time_control") or game.headers.get("TimeControl", ""),
+        "rated": 1, "eco": game.headers.get("ECO"),
+        "opening_name": game.headers.get("Opening"),
+        "moves_count": n_moves, "played_at": played_at,
+    }
+    with db.tx() as conn:
+        cur = conn.execute(
+            """INSERT OR IGNORE INTO games
+               (platform, platform_game_id, url, pgn, color, opponent_name,
+                opponent_rating, player_rating, result, termination, time_class,
+                time_control, rated, eco, opening_name, moves_count, played_at)
+               VALUES (:platform,:platform_game_id,:url,:pgn,:color,:opponent_name,
+                :opponent_rating,:player_rating,:result,:termination,:time_class,
+                :time_control,:rated,:eco,:opening_name,:moves_count,:played_at)""",
+            rec)
+        if cur.rowcount == 0:
+            raise HTTPException(409, "This game is already in the database")
+    if config.get("analysis_auto"):
+        worker.start()
+    new_id = db.scalar("SELECT id FROM games WHERE platform_game_id=?", (gid,))
+    return {"id": new_id, "moves": n_moves}
+
+
 @router.get("/games/{game_id}")
 def game_detail(game_id: int):
     g = db.row("SELECT * FROM games WHERE id=?", (game_id,))
@@ -276,6 +344,34 @@ def tournament_status(tid: int, body: dict = Body(...)):
     return {"ok": True}
 
 
+# ---------------------------------------------------------- rhythm & review
+
+@router.get("/rhythm")
+def rhythm_status():
+    from ..coach import rhythm
+    return rhythm.status()
+
+
+@router.post("/rhythm/check")
+def rhythm_check(body: dict = Body(...)):
+    from ..coach import rhythm
+    rhythm.set_check(int(body.get("index", -1)), bool(body.get("checked")))
+    return rhythm.status()
+
+
+@router.get("/review/queue")
+def review_queue():
+    from ..coach import review
+    return review.queue()
+
+
+@router.post("/review/{game_id}/done")
+def review_done(game_id: int):
+    from ..coach import review
+    review.mark(game_id)
+    return {"ok": True}
+
+
 # ------------------------------------------------------------------ roadmap
 
 @router.get("/roadmap")
@@ -308,23 +404,39 @@ def journal_add(body: dict = Body(...)):
 
 @router.get("/kid/home")
 def kid_home():
+    from ..coach import review
     stats = scheduler.stats()
     recent = db.rows(
         "SELECT result, opponent_name, played_at FROM games ORDER BY played_at DESC LIMIT 5")
-    ratings = db.rows(
-        """SELECT source, date, rating FROM ratings_history
-           WHERE source IN ('lichess_rapid','chesscom_rapid','nwsrs')
-           ORDER BY date""")
     wins = db.scalar("SELECT COUNT(*) FROM games WHERE result='win'") or 0
+    practiced7 = db.scalar(
+        """SELECT COUNT(DISTINCT DATE(attempted_at)) FROM puzzle_attempts
+           WHERE completed=1 AND attempted_at >= date('now', '-6 days')""") or 0
+    # skills trend: % of his moves that weren't mistakes/blunders, by month —
+    # a chart where up always means "getting stronger"
+    skills = db.rows(
+        """SELECT substr(g.played_at, 1, 7) AS month,
+                  COUNT(*) AS moves,
+                  SUM(m.classification IN ('mistake','blunder')) AS bad
+           FROM moves m JOIN games g ON g.id = m.game_id
+           WHERE m.mover='player' AND g.engine='stockfish'
+           GROUP BY month HAVING moves >= 50 ORDER BY month""")
+    skills_trend = [
+        {"month": s["month"], "safe_pct": round(100 * (1 - s["bad"] / s["moves"]), 1),
+         "moves": s["moves"]}
+        for s in skills
+    ]
     return {
         "name": config.get("player_name").split()[0],
         "streak": stats["streak_days"],
+        "practiced_days_7": practiced7,
         "solved_today": stats["solved_today"],
         "daily_target": config.get("puzzle_daily_target"),
         "total_wins": wins,
         "badges": badges.all_badges(),
         "recent_games": recent,
-        "ratings": ratings,
+        "skills_trend": skills_trend,
+        "review_queue": len(review.queue(limit=3)),
         "coach_note": _kid_coach_note(),
         "game_note": _kid_game_note(),
     }
@@ -439,11 +551,41 @@ def llm_chat_clear():
 
 # ----------------------------------------------------------------- settings
 
+SECRET_KEYS = ("anthropic_api_key", "kid_pin")
+
+
+def _redact(cfg: dict) -> dict:
+    out = dict(cfg)
+    for k in SECRET_KEYS:
+        out[f"{k}_set"] = bool(out.get(k))
+        out[k] = ""            # secrets never leave the server
+    return out
+
+
 @router.get("/settings")
 def get_settings():
-    return config.all_config()
+    return _redact(config.all_config())
 
 
 @router.post("/settings")
 def set_settings(body: dict = Body(...)):
-    return config.update(body)
+    # an empty secret field means "keep what's saved", not "clear it"
+    for k in SECRET_KEYS:
+        if not (body.get(k) or "").strip():
+            body.pop(k, None)
+    return _redact(config.update(body))
+
+
+# --------------------------------------------------------------- parent gate
+
+@router.get("/gate")
+def gate_status():
+    return {"pin_required": bool(config.get("kid_pin"))}
+
+
+@router.post("/gate")
+def gate_check(body: dict = Body(...)):
+    ok = (body.get("pin") or "") == (config.get("kid_pin") or "")
+    if not ok:
+        raise HTTPException(403, "Wrong PIN")
+    return {"ok": True}
