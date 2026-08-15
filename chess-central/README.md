@@ -35,6 +35,7 @@ once, after which each new game is analyzed within moments of syncing.
 | **Games** | Every synced game with per-move analysis; click one for its key moments and what should have been played |
 | **Openings** | Score by opening family for each color — spot the repertoire gaps |
 | **Puzzles** | Generated from his own mistakes and missed tactics, with spaced repetition weighted toward current weaknesses |
+| **Academy** 🎓 | A complete curriculum — 8 tracks, 44 lessons, 119 drills covering board vision, checkmates, tactics, defense, openings, endgames, strategy, and tournament habits. Every position is engine-verified (the test suite re-checks all of them); lessons pair concept text with animated example boards and interactive drills, track progress, and link to matching chess.com Premium practice areas |
 | **Rival prep** | Add a regular opponent → head-to-head record, their opening repertoire, their habitual mistakes, and prep puzzles that drill the punishments |
 | **Tournaments** | NWSRS/NW Chess + US Chess events near Seattle/Eastside, national scholastic championships, rating-capped online arenas; track interested → registered → played |
 | **AI Coach** ✨ | Claude-powered coaching layer (see below): per-game commentary, weekly reports, ask-the-coach chat, rival pep talks |

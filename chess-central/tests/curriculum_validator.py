@@ -123,11 +123,10 @@ def validate(doc):
                                           f"({len(mates)} mating moves exist)")
                 elif goal == "material":
                     solver_white = b.turn == chess.WHITE
-                    before = negamax(b.copy(), 2)
-                    after_white_pov = negamax(final.copy(), 2)
-                    after = after_white_pov if final.turn == chess.WHITE else -after_white_pov
-                    after_solver = after if final.turn == (chess.WHITE if solver_white else chess.BLACK) \
-                        else -after
+                    before = negamax(b.copy(), 2)          # solver's perspective
+                    after_stm = negamax(final.copy(), 2)   # final side-to-move's perspective
+                    after_white = after_stm if final.turn == chess.WHITE else -after_stm
+                    after_solver = after_white if solver_white else -after_white
                     gain = after_solver - before
                     if gain < 150:
                         errors.append(f"{tag}: goal=material but depth-2 gain is "
