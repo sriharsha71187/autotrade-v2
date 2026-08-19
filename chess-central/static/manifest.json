@@ -1,0 +1,14 @@
+{
+  "name": "Nirvaan Chess Central",
+  "short_name": "Chess Central",
+  "description": "Nirvaan's chess coaching hub",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#1e3a5f",
+  "theme_color": "#1e3a5f",
+  "icons": [
+    { "src": "/static/icons/app-180.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "/static/icons/app-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

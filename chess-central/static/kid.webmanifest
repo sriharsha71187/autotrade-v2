@@ -1,0 +1,14 @@
+{
+  "name": "Nirvaan's Chess HQ",
+  "short_name": "Chess HQ",
+  "description": "Puzzles, lessons and missions",
+  "start_url": "/kid",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#7c3aed",
+  "theme_color": "#7c3aed",
+  "icons": [
+    { "src": "/static/icons/kid-180.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "/static/icons/kid-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

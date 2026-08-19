@@ -91,20 +91,38 @@ USCF ID `33201208`, Seattle/Eastside city list). Anything you change in
 (SQLite) — copy that one file to back up all history, notes, and puzzle
 progress.
 
-## Kid mode on his iPad (and the Parent PIN)
+## Always on — use it like a website (recommended)
 
-By default the server binds to this Mac only. To let Nirvaan use kid mode from
-an iPad on your home wifi:
+One command makes the app permanently available at home, GeoBee-Quest-style —
+no terminal, ever again:
 
-1. **Set a Parent PIN first** in Settings — with a PIN set, the parent
-   dashboard shows a lock screen and the kid view stays open. Secrets (the API
-   key, the PIN itself) are never sent back to the browser after saving.
-2. Start with `HOST=0.0.0.0 ./run.sh` — the startup banner prints the LAN URL.
-3. On the iPad, open `http://<your-mac's-ip>:8425/kid` and add it to the Home
-   Screen.
+```bash
+cd chess-central
+./install-always-on.sh
+```
+
+That registers it with macOS (launchd): the server starts when the Mac starts,
+restarts itself if it ever crashes, and is reachable from **every device on
+your home wifi** at `http://<your-mac's-name>.local:8425` (the installer
+prints your exact URLs). Don't also run `./run.sh` manually while it's
+installed — the port is already taken. Undo anytime with
+`./install-always-on.sh off`.
+
+**Make it an app icon.** Both views are installable web apps: open the URL in
+Safari on the iPad/iPhone → Share → **Add to Home Screen**. Nirvaan's page
+(`/kid`) installs as "Chess HQ" with a rocket icon and opens full-screen like
+a native app; the parent dashboard installs as "Chess Central" with a knight.
+
+**Set a Parent PIN first** in Settings — with a PIN set, the parent dashboard
+shows a lock screen and the kid view stays open. Secrets (the API key, the PIN
+itself) are never sent back to the browser after saving.
 
 The PIN is a courtesy gate for a shared family network, not real security —
-don't expose the port beyond your home wifi.
+don't expose the port beyond your home wifi. (Unlike GeoBee Quest, this app
+can't live on GitHub Pages: it has a server side — Stockfish, his game
+database, your API key — that belongs on your own Mac, not on a public site.
+If you ever want access *away* from home, install [Tailscale](https://tailscale.com)
+free on the Mac and the iPad and the same URLs work from anywhere, privately.)
 
 ## Keeping it fresh automatically (optional)
 
