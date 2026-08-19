@@ -61,6 +61,10 @@ def test_kid_note_extraction(analyzed_game, mock_llm):
 
 
 def test_weekly_report_includes_data(analyzed_game, mock_llm):
+    # the report covers the last 14 days — the fixture's fixed date must not
+    # silently age out of that window as real time passes
+    with db.tx() as conn:
+        conn.execute("UPDATE games SET played_at=datetime('now')")
     r = llm.weekly_report()
     assert r["content"] == CANNED
     sent = mock_llm[0]["content"]
