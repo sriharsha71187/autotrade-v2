@@ -179,6 +179,9 @@ window.Sync = (function () {
     }
   }
   function flush(state, profileId) {
+    // cancel any debounced push of an older state object — otherwise a
+    // pending timer can overwrite this flush (e.g. resurrect a reset)
+    clearTimeout(pushTimer);
     writeState(state, profileId);
     if (status.configured && auth()) pushCloud(state, profileId).catch(() => {});
   }

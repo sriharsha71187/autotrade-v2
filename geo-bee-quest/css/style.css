@@ -625,3 +625,8 @@ textarea { background: var(--tile-low); color: var(--ink); border: 2px solid tra
 .atl-chip.atl-known { background: #a8c46a; }
 .atl-chip.atl-mastered { background: #56642b; }
 .atlas-map path.atl-off { fill: #efe9e4 !important; opacity: 0.55; }
+
+/* --- v19 audit fixes --- */
+/* page-turn animation must never widen the page (scrollbar jiggle) */
+body { overflow-x: hidden; }
+#app { overflow-x: clip; }

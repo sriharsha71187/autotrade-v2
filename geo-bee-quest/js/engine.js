@@ -112,17 +112,26 @@ window.Engine = (function () {
         if (!r || r.b === 0) unseen++;
       }
     }
-    let days = null, perDay = null;
+    let days = null, perDay = null, phase = "learn";
     if (s.settings.beeDate) {
-      const bd = new Date(s.settings.beeDate + "T12:00:00");
-      days = Math.max(0, Math.ceil((bd - Date.now()) / 86400000));
+      days = daysToBee(s);
+      if (days !== null && days >= 0) {
+        phase = days <= 2 ? "polish" : days <= 10 ? "taper" : "learn";
+      }
       // aim to see everything with ~10 days to spare for pure review;
       // ~20 new facts/day is the age-appropriate ceiling
-      const learnDays = Math.max(1, days - 10);
-      perDay = Math.min(20, Math.ceil(unseen / learnDays));
+      const learnDays = Math.max(1, (days || 0) - 10);
+      perDay = phase === "learn" ? Math.min(20, Math.ceil(unseen / learnDays)) : 0;
     }
     const mockDue = !s.lastBee || Date.now() - s.lastBee > 6.5 * 86400000;
-    return { days, dueN, unseen, perDay, mockDue };
+    return { days, dueN, unseen, perDay, mockDue, phase };
+  }
+  // whole calendar days until the bee (0 on bee day itself, any hour)
+  function daysToBee(s) {
+    if (!s.settings.beeDate) return null;
+    const today = new Date(); today.setHours(12, 0, 0, 0);
+    const bd = new Date(s.settings.beeDate + "T12:00:00");
+    return Math.round((bd - today) / 86400000);
   }
 
   // Fill in anything a state saved by an older version is missing.
@@ -196,13 +205,19 @@ window.Engine = (function () {
     const askedSet = new Set(sess.asked);
     // 1. re-ask a fact missed >=3 questions ago — and at the end of the round
     //    (overtime), re-ask remaining misses immediately so no round ends on
-    //    an uncorrected error
-    const overtime = sess.i >= ROUND_LEN;
-    const due = sess.misses.find((m) => overtime || sess.i - m.at >= 3);
-    if (due) {
-      sess.misses = sess.misses.filter((m) => m !== due);
-      const f = Q.byId[due.factId];
-      if (f) return makeQ(s, f, { reask: true });
+    //    an uncorrected error. Drill sessions cap total re-asks so a
+    //    struggling learner is never trapped in an endless loop.
+    if (!(sess.drill && sess.reasks >= 8)) {
+      const overtime = sess.i >= ROUND_LEN;
+      const due = sess.misses.find((m) => overtime || sess.i - m.at >= 3);
+      if (due) {
+        sess.misses = sess.misses.filter((m) => m !== due);
+        const f = Q.byId[due.factId];
+        if (f) {
+          if (sess.drill) sess.reasks++;
+          return makeQ(s, f, { reask: true });
+        }
+      }
     }
     // drill session: fixed fact list (e.g. mock debrief), nothing else;
     // once the list is done, immediately clear any remaining misses
@@ -218,10 +233,7 @@ window.Engine = (function () {
     }
     // taper: in the last 10 days before the bee, no new material — pure
     // review; in the last 2 days, only confidence-polish (box >= 2)
-    let beeDays = null;
-    if (s.settings.beeDate) {
-      beeDays = Math.ceil((new Date(s.settings.beeDate + "T12:00:00") - now) / 86400000);
-    }
+    const beeDays = daysToBee(s);
     const taper = beeDays !== null && beeDays >= 0 && beeDays <= 10;
     const polish = beeDays !== null && beeDays >= 0 && beeDays <= 2;
     // no repeated subjects/answers within one round (misses re-ask is exempt)
@@ -232,6 +244,7 @@ window.Engine = (function () {
     // 2. overdue scheduled reviews — cap grows with the backlog (4..8)
     const dueN = dueCount(s);
     const cap = Math.max(4, Math.min(8, Math.ceil(dueN / 5)));
+    let taperDry = taper; // taper with nothing to review must not starve the round
     if (sess.reviews < cap || taper) {
       const dueFacts = [];
       for (const t of sessionTopics(s, sess)) {
@@ -241,6 +254,7 @@ window.Engine = (function () {
         }
       }
       if (dueFacts.length) {
+        taperDry = false;
         dueFacts.sort((a, b) => a[0] - b[0]);
         sess.reviews++;
         // pick among the few most-overdue, not always the single oldest —
@@ -249,8 +263,10 @@ window.Engine = (function () {
         return makeQ(s, top[Math.floor(Math.random() * top.length)][1], { review: true });
       }
     }
-    // big backlog or bee taper → review-only rounds, no new material
-    if (!taper && dueN <= 25) {
+    // big backlog or bee taper → review-only rounds, no new material —
+    // unless the taper has nothing left to review (fresh profile near the
+    // bee date must still get questions)
+    if ((!taper || taperDry) && dueN <= 25) {
       // 3. challenge preview from one tier up — more often on a hot streak
       if (Math.random() < (hot ? 0.25 : 0.12)) {
         const f = pickNew(s, askedSet, +1, sessionTopics(s, sess), { fresh, hot });
@@ -566,6 +582,9 @@ window.Engine = (function () {
   }
   function beeFinish(s, plan) {
     const events = [];
+    // a mock abandoned in the first few questions is not a result — don't
+    // record bests, mock cadence, or freshness from it
+    if (plan.i < 5) { s.metaUpdated = Date.now(); return events; }
     // remember this mock's questions so the next one prefers fresh material
     s.lastBeeAsked = Array.from(plan.asked).slice(-200);
     const key = plan.kind === "oral" ? "oral" : plan.kind;
@@ -625,13 +644,45 @@ window.Engine = (function () {
   // --- multi-device merge --------------------------------------------------
   function mergeState(a, b) {
     if (!a) return b; if (!b) return a;
-    const out = JSON.parse(JSON.stringify(a.metaUpdated >= b.metaUpdated ? a : b));
+    // a "reset progress" is a tombstone: any state whose last activity
+    // predates the reset is stale and must not resurrect the old progress
+    const resetAt = Math.max(a.resetAt || 0, b.resetAt || 0);
+    if (resetAt) {
+      if ((a.metaUpdated || 0) < resetAt && (b.resetAt || 0) === resetAt) return JSON.parse(JSON.stringify(b));
+      if ((b.metaUpdated || 0) < resetAt && (a.resetAt || 0) === resetAt) return JSON.parse(JSON.stringify(a));
+    }
+    const newer = a.metaUpdated >= b.metaUpdated ? a : b;
+    const out = JSON.parse(JSON.stringify(newer));
     const other = a.metaUpdated >= b.metaUpdated ? b : a;
-    // facts: latest-touched record wins
+    // facts: merge EVIDENCE per field — never let a merely-browsed or stale
+    // record overwrite mastery earned on the other device
     for (const [id, r] of Object.entries(other.facts || {})) {
       const mine = out.facts[id];
-      if (!mine || (r.last || 0) > (mine.last || 0)) out.facts[id] = r;
+      if (!mine) { out.facts[id] = r; continue; }
+      mine.b = Math.max(mine.b || 0, r.b || 0);
+      mine.c = Math.max(mine.c || 0, r.c || 0);
+      mine.w = Math.max(mine.w || 0, r.w || 0);
+      if (r.v) mine.v = 1;
+      if (r.n) mine.n = 1;
+      mine.due = Math.max(mine.due || 0, r.due || 0);
+      mine.last = Math.max(mine.last || 0, r.last || 0);
+      mine.forms = mine.forms || {};
+      for (const [fm, n] of Object.entries(r.forms || {})) {
+        mine.forms[fm] = Math.max(mine.forms[fm] || 0, n);
+      }
     }
+    // settings + identity: whole-object from the device that last CHANGED
+    // settings (settingsUpdated), not whoever merely answered a question
+    const sNewer = (a.settingsUpdated || 0) >= (b.settingsUpdated || 0) ? a : b;
+    if (sNewer.settingsUpdated) {
+      out.settings = JSON.parse(JSON.stringify(sNewer.settings || out.settings));
+      if (sNewer.name) out.name = sNewer.name;
+      if (sNewer.avatar) out.avatar = sNewer.avatar;
+      out.settingsUpdated = sNewer.settingsUpdated;
+    }
+    out.lastBeeAsked = (newer.lastBeeAsked && newer.lastBeeAsked.length ? newer.lastBeeAsked : other.lastBeeAsked) || [];
+    out.resetAt = Math.max(a.resetAt || 0, b.resetAt || 0) || undefined;
+    out.metaUpdated = Math.max(a.metaUpdated || 0, b.metaUpdated || 0);
     // topics: keep the higher tier
     for (const [id, t] of Object.entries(other.topics || {})) {
       if (!out.topics[id] || t.tier > out.topics[id].tier) out.topics[id] = t;

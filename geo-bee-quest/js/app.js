@@ -183,6 +183,11 @@
     return m.profiles.find((p) => p.id === m.active) || m.profiles[0] || null;
   }
   async function switchProfile(id) {
+    // never carry a running exam (or its 30-min timer) into another child's
+    // profile — the expiring timer would write the mock into the wrong state
+    stopBeeTimer();
+    stopOralTimer();
+    act = null;
     if (S) flush();
     const m = window.Sync.meta();
     m.active = id;
@@ -247,7 +252,10 @@
       const name = $("#name-input").value.trim();
       if (!name) { $("#name-input").focus(); return; }
       const m = window.Sync.meta();
-      const id = m.profiles.length ? "p" + Date.now().toString(36) : "default";
+      // every profile gets a globally unique id — a shared "default" id would
+      // silently fuse two different kids' first profiles at cloud sign-in
+      // (existing installs keep their legacy "default" via the sync.js migration)
+      const id = "p" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
       m.profiles.push({ id, name, avatar });
       m.active = id;
       window.Sync.saveMeta(m);
@@ -288,7 +296,10 @@
       coachLines.push(c.days === 0
         ? `🏆 <b>Bee day is TODAY — you've got this!</b>`
         : `🗓️ <b>${c.days} day${c.days > 1 ? "s" : ""}</b> until ${esc(S.settings.beeName || "the bee")}!`);
-      if (c.days > 0) coachLines.push(`Today's plan: clear <b>${c.dueN}</b> reviews · learn ~<b>${c.perDay}</b> new facts`);
+      // the plan line must tell the truth about what the engine will serve
+      if (c.days > 0 && c.phase === "polish") coachLines.push(`✨ <b>Polish days:</b> only questions you already know — make them automatic. No new facts.`);
+      else if (c.days > 0 && c.phase === "taper") coachLines.push(`🎯 <b>Review week:</b> clear <b>${c.dueN}</b> reviews and run mocks — no new facts until after the bee.`);
+      else if (c.days > 0) coachLines.push(`Today's plan: clear <b>${c.dueN}</b> reviews · learn ~<b>${c.perDay}</b> new facts`);
     } else {
       coachLines.push(`🔔 <b>${c.dueN}</b> reviews ready · <b>${c.unseen}</b> facts left to discover`);
       coachLines.push(`<span class="muted">Set your bee date in Settings to get a countdown plan!</span>`);
@@ -336,6 +347,13 @@
   }
 
   // ---------- My Atlas: the mastery map ----------
+  // set when a Field Book page was opened by tapping the Atlas, so the page's
+  // back button returns to the Atlas instead of the chapter cover
+  let atlasReturn = false;
+  function learnBack(topicId) {
+    if (atlasReturn) { atlasReturn = false; return renderAtlas(); }
+    renderLearnCover(topicId);
+  }
   // The child SEES the US and the world fill in with color as places become
   // known: grey = not met yet, yellow = learning, light green = known,
   // deep green = mastered. Tap a place → its Field Book page.
@@ -370,7 +388,7 @@
       const topic = kind === "us" ? "usmap" : "worldmap";
       const idx = learnBook(topic).pages.findIndex(
         (pg) => pg.fact && pg.fact.id === (kind === "us" ? "um:" : "wm:") + name);
-      if (idx >= 0) renderLearnDeck(topic, idx);
+      if (idx >= 0) { atlasReturn = true; renderLearnDeck(topic, idx); }
     });
     return counts;
   }
@@ -636,7 +654,7 @@
           <button class="big ghost" id="btn-prev" ${idx === 0 ? "disabled" : ""}>◀ Back</button>
           <button class="big green" id="btn-next-card">Turn the page ▶</button>
         </div>`;
-      $("#btn-back").onclick = () => renderLearnCover(topicId);
+      $("#btn-back").onclick = () => learnBack(topicId);
       $("#btn-say").onclick = () => forceSpeak(sec.n + ". " + (sec.intro || ""));
       $("#btn-prev").onclick = () => renderLearnDeck(topicId, idx - 1, "back");
       $("#btn-next-card").onclick = () => renderLearnDeck(topicId, idx + 1);
@@ -668,7 +686,7 @@
           <button class="big ghost" id="btn-prev" ${idx === 0 ? "disabled" : ""}>◀ Back</button>
           <button class="big green" id="btn-next-card">${idx === pages.length - 1 ? "Finish chapter 🎉" : "Turn the page ▶"}</button>
         </div>`;
-      $("#btn-back").onclick = () => renderLearnCover(topicId);
+      $("#btn-back").onclick = () => learnBack(topicId);
       $("#btn-say").onclick = () => forceSpeak(page.prose);
       $("#btn-prev").onclick = () => renderLearnDeck(topicId, idx - 1, "back");
       $("#btn-next-card").onclick = () =>
@@ -717,7 +735,7 @@
         <button class="big green" id="btn-next-card">${idx === pages.length - 1 ? "Finish chapter 🎉" : "Turn the page ▶"}</button>
       </div>`;
     decorateMap($("#screen-learn"));
-    $("#btn-back").onclick = () => renderLearnCover(topicId);
+    $("#btn-back").onclick = () => learnBack(topicId);
     $("#btn-say").onclick = () => forceSpeak(sayText);
     $("#btn-prev").onclick = () => renderLearnDeck(topicId, idx - 1, "back");
     $("#btn-next-card").onclick = () =>
@@ -773,14 +791,18 @@
       if (el) {
         const m = Math.floor(left / 60000), s2 = Math.floor((left % 60000) / 1000);
         el.textContent = `⏱ ${m}:${String(s2).padStart(2, "0")}`;
-        if (left < 5 * 60000) el.style.color = "var(--urgent-soft)";
+        if (left < 5 * 60000) el.style.color = "var(--error)";
       }
-      if (left <= 0) { stopBeeTimer(); if (act && act.kind === "iac") renderSummary(); }
+      // time up ends ANY timed exam (NSF and IAC both have 30-minute limits)
+      if (left <= 0) { stopBeeTimer(); if (act && act.plan && act.plan.timeLimit) renderSummary(); }
     }, 1000);
   }
 
   // ---------- activities ----------
   function startPractice(topicId, noTeach) {
+    // guard: raw event-handler wiring must never smuggle a click event in as
+    // a topic filter (that made first-run rounds end instantly at 0/0)
+    if (typeof topicId !== "string") topicId = null;
     act = {
       kind: "practice",
       sess: E.newSession("practice", topicId, { noTeach }),
@@ -848,7 +870,7 @@
         <p class="muted">The game will get harder as you get stronger — and it always remembers what you know.</p>
         <button class="big green" id="btn-sum-play">Start playing! ▶️</button>
       </div>`;
-    $("#btn-sum-play").onclick = startPractice;
+    $("#btn-sum-play").onclick = () => startPractice();
   }
 
   // ---------- teach card ----------
@@ -1132,9 +1154,10 @@
       ? `<div class="retype-row" style="margin-top:8px">
            <div class="fact" style="margin-bottom:4px">✏️ Your turn — type the answer to lock it in:</div>
            <div class="typed-row">
-             <input id="retype-input" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="${esc(q.answerText)}" />
+             <input id="retype-input" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="type it here…" />
              <button class="ghost small" id="btn-retype-go">Check</button>
            </div>
+           <div class="muted" id="retype-msg" style="min-height:1.2em"></div>
          </div>`
       : "";
     $("#feedback").innerHTML = `
@@ -1149,14 +1172,27 @@
     btn.onclick = nextStep;
     if (retype) {
       const inp = $("#retype-input");
+      const msg = $("#retype-msg");
+      let tries = 0;
       const check = () => {
         if (q.accept.includes(Q.normalize(inp.value))) {
           inp.disabled = true;
           inp.style.borderColor = "var(--sage, #56642b)";
+          msg.textContent = "✅ Locked in!";
           btn.disabled = false;
           sndGood();
           btn.focus();
-        } else if (inp.value.trim()) {
+          return;
+        }
+        tries++;
+        // mercy rule: hard names (Ouagadougou!) unlock copy-typing after two
+        // honest tries — the production step still happens, frustration doesn't
+        if (tries >= 2) {
+          inp.value = q.answerText;
+          inp.select();
+          msg.textContent = "Copy it letter by letter, then Check — that still counts!";
+        } else {
+          msg.textContent = inp.value.trim() ? "Not quite — check the spelling above and try again." : "Type the answer shown above.";
           inp.select();
         }
       };
@@ -1170,6 +1206,10 @@
   }
 
   function quitActivity() {
+    // a mock exam in progress is real work — don't discard it on a stray tap
+    if (act && (act.kind === "nsf" || act.kind === "iac") && act.plan.i > 0 && act.plan.i < act.plan.tiers.length) {
+      if (!confirm(`Quit this mock exam? You're ${act.plan.i} question${act.plan.i > 1 ? "s" : ""} in — progress won't be saved.`)) return;
+    }
     stopBeeTimer();
     stopOralTimer();
     if (act && act.kind === "practice" && act.sess.i > 0) return renderSummary();
@@ -1232,7 +1272,7 @@
       html = `
         <div class="mascot">🎤</div>
         <h1>${p.strikes >= 3 ? "Three strikes — good try!" : "Oral Bee done!"}</h1>
-        <p class="summary-line">${p.correct} correct answers${p.clueBonus ? ` &nbsp;·&nbsp; 🕵️ +${p.clueBonus} mystery bonus` : ""}</p>
+        <p class="summary-line">${p.correct} correct answer${p.correct === 1 ? "" : "s"}${p.clueBonus ? ` &nbsp;·&nbsp; 🕵️ +${p.clueBonus} mystery bonus` : ""}</p>
         <p class="muted">Spoken answers with a 30-second clock, plus mystery-clue questions — answer early for bigger bonuses, just like the buzzer rounds.</p>
         <p class="summary-line">🏅 Best: ${S.best.oral} &nbsp;·&nbsp; +${bonus} XP</p>
         ${events.some((e) => e.type === "badge") ? `<span class="event-chip">🎖️ New badge earned!</span>` : ""}`;
@@ -1252,7 +1292,8 @@
               ${r.fact ? `<div class="fact">💡 ${esc(r.fact)}</div>` : ""}
             </div>`).join("")}
           ${missed.length > 12 ? `<p class="muted">…and ${missed.length - 12} more.</p>` : ""}
-          <button class="big green" id="btn-drill">🎯 Drill these ${missed.length} now ▶</button>
+          <button class="big green" id="btn-drill">🎯 Drill ${Math.min(8, missed.length)} of these now ▶</button>
+          ${missed.length > 8 ? `<p class="muted">Bite-sized on purpose — the rest are scheduled for your next Adventure rounds.</p>` : ""}
         </div>`;
     }
     show("#screen-summary");
@@ -1262,7 +1303,7 @@
         <button class="big green" id="btn-again">Play again ▶️</button>
         <button class="big ghost" id="btn-home">Home 🏠</button>
       </div>${debrief}`;
-    if (debrief) $("#btn-drill").onclick = () => startDrill(missed.map((r) => r.factId).filter(Boolean));
+    if (debrief) $("#btn-drill").onclick = () => startDrill(missed.map((r) => r.factId).filter(Boolean).slice(0, 8));
     const kind = act.kind, tf = act.topicFilter, nt = act.noTeach;
     $("#btn-again").onclick = () => (kind === "practice" ? startPractice(tf, nt) : startBee(kind));
     $("#btn-home").onclick = renderHome;
@@ -1439,20 +1480,22 @@
       if (p) { p.avatar = S.avatar; window.Sync.saveMeta(m); }
       save();
     };
-    $("#tg-sound").onchange = (e) => { S.settings.sound = e.target.checked; save(); };
-    $("#tg-speech").onchange = (e) => { S.settings.speech = e.target.checked; save(); };
-    $("#tg-typed").onchange = (e) => { S.settings.typed = e.target.checked; save(); };
+    // every deliberate settings change stamps settingsUpdated so cross-device
+    // merges keep it over a device that merely answered questions later
+    const touchSettings = () => { S.settingsUpdated = Date.now(); S.metaUpdated = Date.now(); save(); };
+    $("#tg-sound").onchange = (e) => { S.settings.sound = e.target.checked; touchSettings(); };
+    $("#tg-speech").onchange = (e) => { S.settings.speech = e.target.checked; touchSettings(); };
+    $("#tg-typed").onchange = (e) => { S.settings.typed = e.target.checked; touchSettings(); };
     $("#tg-advanced").onchange = (e) => {
       S.settings.advanced = e.target.checked;
-      S.metaUpdated = Date.now();
-      save();
+      touchSettings();
       renderSettings(); // reveal/hide the advanced-only topic rows
     };
     document.querySelectorAll(".tg-topic").forEach((el) => {
       el.onchange = () => {
         const on = document.querySelectorAll(".tg-topic:checked").length;
         if (!on) { el.checked = true; return; }
-        S.settings.topics[el.dataset.id] = el.checked; save();
+        S.settings.topics[el.dataset.id] = el.checked; touchSettings();
       };
     });
     const so = $("#btn-signout");
@@ -1509,6 +1552,10 @@
       const name = S.name, avatar = S.avatar;
       S = E.defaultState();
       S.name = name; S.avatar = avatar;
+      // tombstone: prevents other devices from resurrecting the old progress
+      S.resetAt = Date.now();
+      S.metaUpdated = S.resetAt;
+      S.settingsUpdated = S.resetAt;
       flush();
       renderPlacementIntro();
     };
@@ -1525,6 +1572,9 @@
     if (bn) S.settings.beeName = bn.value.trim();
     if (bd) S.settings.beeDate = bd.value || null;
     S.metaUpdated = Date.now();
+    // settings carry their own clock so a device that merely answered a
+    // question later can't clobber a deliberate settings change
+    S.settingsUpdated = Date.now();
     save();
   }
 
