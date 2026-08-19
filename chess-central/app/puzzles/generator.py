@@ -28,6 +28,7 @@ def generate_for_game(game_id: int) -> int:
         return 0
     moves = db.rows("SELECT * FROM moves WHERE game_id=? ORDER BY ply", (game_id,))
     created = 0
+    to_insert = []
     for i, m in enumerate(moves):
         if m["mover"] != "player":
             continue
@@ -49,17 +50,21 @@ def generate_for_game(game_id: int) -> int:
             continue
         difficulty = _difficulty(drop, themes)
         explanation = _explain(m, source, themes)
+        to_insert.append(
+            (source, game_id, m["ply"], m["fen_before"], json.dumps(solution),
+             json.dumps(themes), m["phase"], difficulty, explanation,
+             util.now_iso(), util.now_iso()))
+    if to_insert:
+        # one write transaction per game, not per puzzle — the analysis
+        # worker calls this constantly and must not hog the write lock
         with db.tx() as conn:
-            cur = conn.execute(
-                """INSERT OR IGNORE INTO puzzles
-                   (source, game_id, ply, fen, solution, themes, phase, difficulty,
-                    explanation, created_at, due_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                (source, game_id, m["ply"], m["fen_before"], json.dumps(solution),
-                 json.dumps(themes), m["phase"], difficulty, explanation,
-                 util.now_iso(), util.now_iso()),
-            )
-            created += cur.rowcount
+            for row in to_insert:
+                cur = conn.execute(
+                    """INSERT OR IGNORE INTO puzzles
+                       (source, game_id, ply, fen, solution, themes, phase, difficulty,
+                        explanation, created_at, due_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""", row)
+                created += cur.rowcount
     return created
 
 

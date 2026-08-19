@@ -15,6 +15,12 @@ from . import config
 
 DB_PATH = Path(config.DATA_DIR) / "chess.db"
 _local = threading.local()
+_schema_lock = threading.Lock()
+
+# Bump when SCHEMA/_migrate change. Connections check this cheaply (a read)
+# and skip all setup when current — so request threads never take a write
+# lock just to connect, and page loads can't stall behind the analysis worker.
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS games (
@@ -208,11 +214,24 @@ def connect() -> sqlite3.Connection:
         conn = sqlite3.connect(DB_PATH, timeout=30)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")   # standard for WAL; fewer fsync stalls
         conn.execute("PRAGMA foreign_keys=ON")
-        conn.executescript(SCHEMA)
-        _migrate(conn)
+        _ensure_schema(conn)
         _local.conn = conn
     return conn
+
+
+def _ensure_schema(conn: sqlite3.Connection) -> None:
+    """Create/migrate the schema exactly once per database, not per connection."""
+    if conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION:
+        return
+    with _schema_lock:                     # one thread does the work; rest re-check
+        if conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION:
+            return
+        conn.executescript(SCHEMA)
+        _migrate(conn)
+        conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+        conn.commit()
 
 
 def _migrate(conn: sqlite3.Connection) -> None:

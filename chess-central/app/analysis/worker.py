@@ -25,10 +25,12 @@ _thread: threading.Thread | None = None
 
 
 def status() -> dict:
+    # DB reads happen OUTSIDE the lock — a slow query here must never
+    # stall the worker thread (which takes the lock between games).
+    pending = db.scalar(
+        "SELECT COUNT(*) FROM games WHERE analyzed_at IS NULL AND analysis_error IS NULL")
+    analyzed = db.scalar("SELECT COUNT(*) FROM games WHERE analyzed_at IS NOT NULL")
     with _lock:
-        pending = db.scalar(
-            "SELECT COUNT(*) FROM games WHERE analyzed_at IS NULL AND analysis_error IS NULL")
-        analyzed = db.scalar("SELECT COUNT(*) FROM games WHERE analyzed_at IS NOT NULL")
         return {**_state, "pending": pending, "analyzed": analyzed}
 
 

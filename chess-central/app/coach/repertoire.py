@@ -26,22 +26,33 @@ EARLY_EXIT_PLY = 6    # leaving book by move 3 = "taken out early"
 DRILL_MIN_DROP = 8    # avg win-prob loss of his usual move to justify a drill
 
 
-def _paths(pgn: str) -> list[str]:
+# PGN replay is the expensive part; a game's moves never change once stored,
+# so cache keyed by the PGN text itself — keeps /api/repertoire fast on a
+# big history with no invalidation to get wrong.
+_paths_cache: dict[tuple, list[str]] = {}
+
+
+def _paths(game_id: int, pgn: str) -> list[str]:
     """SAN path prefixes for the first MAX_PLIES plies: ['e4', 'e4 e5', ...]."""
+    key = (len(pgn), hash(pgn))
+    cached = _paths_cache.get(key)
+    if cached is not None:
+        return cached
     game = util.parse_pgn_game(pgn)
-    if game is None:
-        return []
-    board = game.board()
-    sans, out = [], []
-    for i, mv in enumerate(game.mainline_moves()):
-        if i >= MAX_PLIES:
-            break
-        try:
-            sans.append(board.san(mv))
-            board.push(mv)
-        except (ValueError, AssertionError):
-            break
-        out.append(" ".join(sans))
+    out: list[str] = []
+    if game is not None:
+        board = game.board()
+        sans = []
+        for i, mv in enumerate(game.mainline_moves()):
+            if i >= MAX_PLIES:
+                break
+            try:
+                sans.append(board.san(mv))
+                board.push(mv)
+            except (ValueError, AssertionError):
+                break
+            out.append(" ".join(sans))
+    _paths_cache[key] = out
     return out
 
 
@@ -64,7 +75,7 @@ def build(color: str) -> dict:
     counts: Counter = Counter()
     per_game: dict[int, list[str]] = {}
     for g in games:
-        p = _paths(g["pgn"])
+        p = _paths(g["id"], g["pgn"])
         per_game[g["id"]] = p
         counts.update(p)
 
@@ -128,17 +139,20 @@ def build(color: str) -> dict:
                             f"is worth more than memorizing deeper lines."})
 
         # damage right after leaving book, from engine-analyzed games
+        # (one query for all games — per-game queries were slow at 1000+ games)
+        opening_moves = db.rows(
+            """SELECT m.game_id, m.ply, m.winprob_before, m.winprob_after
+               FROM moves m JOIN games g ON g.id = m.game_id
+               WHERE g.color=? AND g.analyzed_at IS NOT NULL
+                 AND m.mover='player' AND m.ply <= ?""",
+            (color, MAX_PLIES + 8))
         pre_drops, post_drops = [], []
-        for g in games:
-            if not g["analyzed_at"]:
+        for m in opening_moves:
+            e = exits.get(m["game_id"])
+            if e is None or m["ply"] > e + 7:
                 continue
-            e = exits[g["id"]]
-            for m in db.rows(
-                    """SELECT ply, winprob_before, winprob_after FROM moves
-                       WHERE game_id=? AND mover='player' AND ply <= ?""",
-                    (g["id"], min(MAX_PLIES + 8, e + 7))):
-                drop = max(0.0, (m["winprob_before"] or 0) - (m["winprob_after"] or 0))
-                (pre_drops if m["ply"] < e else post_drops).append(drop)
+            drop = max(0.0, (m["winprob_before"] or 0) - (m["winprob_after"] or 0))
+            (pre_drops if m["ply"] < e else post_drops).append(drop)
         if len(pre_drops) >= 30 and len(post_drops) >= 30:
             pre = sum(pre_drops) / len(pre_drops)
             post = sum(post_drops) / len(post_drops)
