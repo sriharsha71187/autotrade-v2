@@ -133,9 +133,11 @@ async function overview() {
       navigate("overview");
     } catch (e) { toast(`Sync failed: ${e.message}`); ev.target.disabled = false; ev.target.textContent = "Sync games"; }
   });
-  document.getElementById("analyzeBtn").addEventListener("click", async () => {
+  const analyzeBtn = document.getElementById("analyzeBtn");
+  analyzeBtn.addEventListener("click", async () => {
     await post("/analyze"); toast("Analysis started"); navigate("overview");
   });
+  if (status.analysis?.running) trackAnalysis(analyzeBtn);
 
   const hist = await get("/ratings");
   const bySource = {};
@@ -154,8 +156,29 @@ async function overview() {
 }
 
 function analysisLabel(a) {
-  if (a?.running) return `Analyzing… (${a.pending} left)`;
+  if (a?.running) {
+    const eta = a.eta_seconds ? ` · ~${fmtDur(a.eta_seconds)} left` : "";
+    return `Analyzing… ${a.pending} to go${eta}`;
+  }
   return a?.pending ? `Analyze ${a.pending} games` : "Analysis up to date";
+}
+
+function fmtDur(s) {
+  if (s < 90) return `${Math.round(s)}s`;
+  if (s < 5400) return `${Math.round(s / 60)} min`;
+  return `${(s / 3600).toFixed(1)} h`;
+}
+
+// while analysis runs, keep the overview button's count/ETA fresh
+function trackAnalysis(btn) {
+  const timer = setInterval(async () => {
+    if (!document.body.contains(btn)) { clearInterval(timer); return; }
+    try {
+      const a = await get("/analysis/status");
+      btn.textContent = analysisLabel(a);
+      if (!a.running) clearInterval(timer);
+    } catch (e) { clearInterval(timer); }
+  }, 5000);
 }
 
 function tile(label, value, sub = "") {

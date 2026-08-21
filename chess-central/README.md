@@ -22,9 +22,12 @@ Then open:
 
 First session: hit **Sync games** on the Overview tab. Games download from
 Lichess and Chess.com (`nirvaan0421`), analysis starts automatically, and the
-dashboard fills in as the engine works through his games. Analysis speed is
-~15–30 seconds per game at default settings; the backlog only has to happen
-once, after which each new game is analyzed within moments of syncing.
+dashboard fills in as the engine works through his games. Several Stockfish
+workers run in parallel (auto-sized to your CPU; `analysis_workers` in config
+overrides), the Overview button shows live progress with a time estimate, and
+if the server restarts mid-backlog it picks up where it left off on its own —
+the backlog only has to happen once, after which each new game is analyzed
+within moments of syncing.
 
 ## What's inside
 

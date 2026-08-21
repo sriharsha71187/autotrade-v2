@@ -56,6 +56,31 @@ def test_worker_refuses_fallback_by_default(monkeypatch):
     assert "Stockfish" in (worker._state["last_error"] or "")
 
 
+def test_parallel_worker_completes_backlog(monkeypatch):
+    from tests.conftest import HANG_QUEEN_PGN, MISSED_TACTIC_PGN, insert_game
+    from app import config
+    from app.analysis import worker
+    from app.analysis.engine import FakeEngine
+
+    config.update({"allow_fallback_engine": True, "analysis_workers": 3})
+    for i in range(7):
+        insert_game(HANG_QUEEN_PGN if i % 2 else MISSED_TACTIC_PGN,
+                    game_id_str=f"par{i}", played_at=f"2026-08-{i + 1:02d}T10:00:00Z")
+    monkeypatch.setattr(worker, "open_engine", lambda: (FakeEngine(), False))
+    worker._state.update(running=True)        # simulate start()'s claim
+    worker._run()
+
+    assert db.scalar("SELECT COUNT(*) FROM games WHERE analyzed_at IS NOT NULL") == 7
+    assert worker._state["errors"] == 0
+    assert worker._state["done_this_run"] == 7
+    assert worker._state["workers"] == 3
+    # every game analyzed exactly once — no double work from racing workers
+    assert db.scalar(
+        "SELECT COUNT(*) FROM (SELECT game_id FROM moves GROUP BY game_id)") == 7
+    s = worker.status()
+    assert "eta_seconds" in s and s["pending"] == 0
+
+
 def test_rival_prep_dedupe_on_rescout():
     from app.rivals import scout
     rival = {"name": "DupKid"}

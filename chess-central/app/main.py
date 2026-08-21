@@ -29,7 +29,24 @@ async def lifespan(_app: FastAPI):
         backup.run()       # daily safety copy of the database
     except Exception:
         pass               # a failed backup must never block the app
+    try:
+        _resume_analysis() # finish any backlog without being asked
+    except Exception:
+        pass
     yield
+
+
+def _resume_analysis() -> None:
+    """If unanalyzed games are waiting and the engine is present, keep going —
+    the always-on server should complete the backlog by itself."""
+    from . import config
+    from .analysis import worker
+    if not config.get("analysis_auto") or not config.find_engine():
+        return
+    pending = db.scalar(
+        "SELECT COUNT(*) FROM games WHERE analyzed_at IS NULL AND analysis_error IS NULL")
+    if pending:
+        worker.start()
 
 
 app = FastAPI(title="Nirvaan Chess Central", lifespan=lifespan)

@@ -34,6 +34,7 @@ DEFAULTS = {
     "engine_multipv": 2,
     "engine_threads": 2,
     "analysis_auto": True,       # analyze new games automatically after sync
+    "analysis_workers": 0,       # parallel engines; 0 = auto (~half the CPU cores)
     "insights_window_days": 90,  # coach from recent form; 0 = use all games ever
     "puzzle_daily_target": 6,    # puzzles in Nirvaan's daily set
     "kid_pin": "",               # optional PIN to open the parent view from kid mode
@@ -69,7 +70,7 @@ def all_config() -> dict:
 
 _INT_FLOORS = {"engine_movetime_ms": 50, "engine_threads": 1,
                "puzzle_daily_target": 1, "sync_lookback_days": 1,
-               "insights_window_days": 0}
+               "insights_window_days": 0, "analysis_workers": 0}
 
 
 def update(values: dict) -> dict:
