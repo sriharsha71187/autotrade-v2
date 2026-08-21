@@ -13,8 +13,10 @@ if [ ! -d .venv ]; then
   "$PY" -m venv .venv
   ./.venv/bin/pip install --quiet --upgrade pip
 fi
-# keep dependencies in sync with requirements.txt on every start (fast no-op when current)
-./.venv/bin/pip install --quiet -r requirements.txt
+# keep dependencies in sync with requirements.txt on every start (fast no-op
+# when current). Never fatal — an offline Mac must still serve the app.
+./.venv/bin/pip install --quiet -r requirements.txt \
+  || echo "⚠️  Could not refresh dependencies (offline?) — continuing with what's installed."
 
 if [ ! -x ./stockfish-bin ] && ! command -v stockfish >/dev/null 2>&1 \
    && [ ! -x /opt/homebrew/bin/stockfish ] && [ ! -x /usr/local/bin/stockfish ]; then
