@@ -20,7 +20,7 @@ _schema_lock = threading.Lock()
 # Bump when SCHEMA/_migrate change. Connections check this cheaply (a read)
 # and skip all setup when current — so request threads never take a write
 # lock just to connect, and page loads can't stall behind the analysis worker.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3   # v3: partial index for the analysis worker's claim query
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS games (
@@ -48,6 +48,11 @@ CREATE TABLE IF NOT EXISTS games (
 );
 CREATE INDEX IF NOT EXISTS idx_games_played ON games(played_at);
 CREATE INDEX IF NOT EXISTS idx_games_opponent ON games(opponent_name);
+-- the analysis worker's "next game to analyze" lookup: without this partial
+-- index the query re-skips every analyzed game and degrades O(N^2) over a
+-- big backlog (measured: it starved the UI on a real-size history)
+CREATE INDEX IF NOT EXISTS idx_games_unanalyzed
+    ON games(played_at DESC) WHERE analyzed_at IS NULL AND analysis_error IS NULL;
 
 CREATE TABLE IF NOT EXISTS moves (
     id INTEGER PRIMARY KEY,

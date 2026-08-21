@@ -123,7 +123,7 @@ def version():
     return {"build": BUILD}
 
 
-BUILD = "2026-08-21-background-sync"
+BUILD = "2026-08-21-fast-claim"
 
 
 app.mount("/static", FreshStaticFiles(directory=STATIC), name="static")

@@ -91,19 +91,29 @@ def _run() -> None:
     claimed: set[int] = set()        # game ids currently in flight (≤ n)
 
     def claim() -> int | None:
-        """Pick the next unanalyzed game no other worker holds."""
-        with _lock:
+        """Pick the next unanalyzed game no other worker holds.
+
+        The DB read happens OUTSIDE the lock — this is the hottest query in
+        the app during a backlog, and holding the lock across it starved
+        every status request (seen live via the watchdog's stack dump).
+        """
+        while True:
             rows = db.rows(
                 "SELECT id, opponent_name, played_at FROM games "
                 "WHERE analyzed_at IS NULL AND analysis_error IS NULL "
                 "ORDER BY played_at DESC LIMIT ?", (n + 1,))
-            for r in rows:
-                if r["id"] not in claimed:
-                    claimed.add(r["id"])
-                    _state["current"] = {"id": r["id"], "opponent": r["opponent_name"],
-                                         "played_at": r["played_at"]}
-                    return r["id"]
-        return None
+            if not rows:
+                return None
+            with _lock:
+                for r in rows:
+                    if r["id"] not in claimed:
+                        claimed.add(r["id"])
+                        _state["current"] = {"id": r["id"], "opponent": r["opponent_name"],
+                                             "played_at": r["played_at"]}
+                        return r["id"]
+            if len(rows) <= n:
+                return None       # everything left is already in flight elsewhere
+            time.sleep(0.05)      # raced another worker between read and lock — retry
 
     def work() -> None:
         eng, _ = open_engine()
@@ -121,6 +131,14 @@ def _run() -> None:
                     with _lock:
                         _state["done_this_run"] += 1
                         _durations.append(time.time() - t0)
+                        done = _state["done_this_run"]
+                    if done % 200 == 0:
+                        # keep the WAL from growing huge over an hours-long
+                        # backlog (PASSIVE never blocks readers or writers)
+                        try:
+                            db.connect().execute("PRAGMA wal_checkpoint(PASSIVE)")
+                        except Exception:
+                            pass
                 except Exception as e:
                     with db.tx() as conn:
                         conn.execute("UPDATE games SET analysis_error=? WHERE id=?",
@@ -172,5 +190,6 @@ def _post_run_hooks() -> None:
         insights.regenerate()
         badges.recompute()
         db.kv_set("last_analysis_finished", util.now_iso())
+        db.connect().execute("PRAGMA wal_checkpoint(TRUNCATE)")
     except Exception:
         traceback.print_exc()
