@@ -81,6 +81,29 @@ def test_parallel_worker_completes_backlog(monkeypatch):
     assert "eta_seconds" in s and s["pending"] == 0
 
 
+def test_start_while_running_never_deadlocks():
+    """Field deadlock: sync finished -> worker.start() while analysis was
+    already running -> start() called status() while holding the state lock
+    -> self-deadlock that froze every request. Must return instantly."""
+    import threading
+
+    from app.analysis import worker
+
+    worker._state.update(running=True)      # simulate an in-flight analysis
+    try:
+        result = {}
+
+        def call():
+            result["status"] = worker.start()
+        t = threading.Thread(target=call, daemon=True)
+        t.start()
+        t.join(timeout=5)
+        assert not t.is_alive(), "worker.start() deadlocked while running"
+        assert result["status"]["running"] is True
+    finally:
+        worker._state.update(running=False)
+
+
 def test_rival_prep_dedupe_on_rescout():
     from app.rivals import scout
     rival = {"name": "DupKid"}

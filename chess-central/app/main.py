@@ -152,7 +152,7 @@ def version():
     return {"build": BUILD}
 
 
-BUILD = "2026-08-21-auto-sync"
+BUILD = "2026-08-21-deadlock-fix"
 
 
 app.mount("/static", FreshStaticFiles(directory=STATIC), name="static")

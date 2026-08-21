@@ -26,7 +26,9 @@ _state = {
     "workers": None,
     "last_error": None,
 }
-_lock = threading.Lock()
+# RLock as defense-in-depth: a reentrant acquire must degrade to "works",
+# never to a frozen app (a non-reentrant self-acquire froze it in the field)
+_lock = threading.RLock()
 _thread: threading.Thread | None = None
 _durations: deque = deque(maxlen=30)   # recent per-game seconds, for the ETA
 
@@ -48,13 +50,17 @@ def status() -> dict:
 
 def start() -> dict:
     global _thread
+    # NEVER call status() while holding _lock — status() acquires it too, and
+    # doing so from inside deadlocked the whole app (auto-sync completing while
+    # analysis ran hit this every time; found via the watchdog stack dump).
     with _lock:
-        if _state["running"]:
-            return status()
-        _state.update(running=True, done_this_run=0, errors=0, last_error=None)
-        _durations.clear()
-    _thread = threading.Thread(target=_run, daemon=True, name="analysis-worker")
-    _thread.start()
+        already = _state["running"]
+        if not already:
+            _state.update(running=True, done_this_run=0, errors=0, last_error=None)
+            _durations.clear()
+    if not already:
+        _thread = threading.Thread(target=_run, daemon=True, name="analysis-worker")
+        _thread.start()
     return status()
 
 

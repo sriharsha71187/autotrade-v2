@@ -18,7 +18,8 @@ _state = {
     "result": None,         # last completed run's summary
     "started_at": None,
 }
-_lock = threading.Lock()
+_lock = threading.RLock()   # reentrant on principle — a nested acquire must
+                            # never freeze the app (see worker._lock history)
 
 
 def status() -> dict:
