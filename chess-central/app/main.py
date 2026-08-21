@@ -52,15 +52,26 @@ def _resume_analysis() -> None:
 app = FastAPI(title="Nirvaan Chess Central", lifespan=lifespan)
 app.include_router(router)
 
+NO_CACHE = {"Cache-Control": "no-cache"}   # revalidate every load (cheap 304s
+# on a LAN) — a browser must never keep running old JS against a new server
+
+
+class FreshStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope):
+        resp = await super().get_response(path, scope)
+        if path.rsplit(".", 1)[-1] in ("js", "css", "html", "json", "webmanifest"):
+            resp.headers["Cache-Control"] = "no-cache"
+        return resp
+
 
 @app.get("/")
 def index():
-    return FileResponse(STATIC / "index.html")
+    return FileResponse(STATIC / "index.html", headers=NO_CACHE)
 
 
 @app.get("/kid")
 def kid():
-    return FileResponse(STATIC / "kid.html")
+    return FileResponse(STATIC / "kid.html", headers=NO_CACHE)
 
 
 @app.get("/packet")
@@ -69,4 +80,13 @@ def coach_packet():
     return HTMLResponse(packet.render())
 
 
-app.mount("/static", StaticFiles(directory=STATIC), name="static")
+@app.get("/api/version")
+def version():
+    """Which build is actually serving — for debugging 'did the update take?'."""
+    return {"build": BUILD}
+
+
+BUILD = "2026-08-19-complete-analysis"
+
+
+app.mount("/static", FreshStaticFiles(directory=STATIC), name="static")
