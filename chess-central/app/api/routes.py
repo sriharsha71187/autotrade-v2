@@ -19,10 +19,14 @@ router = APIRouter(prefix="/api")
 
 @router.post("/sync")
 def run_sync():
-    result = sync.sync_all()
-    if config.get("analysis_auto"):
-        worker.start()
-    return result
+    """Start a background sync and return immediately — a full-history pull
+    can stream for minutes, far too long for a browser to wait on."""
+    return sync.start()
+
+
+@router.get("/sync/status")
+def sync_status():
+    return sync.status()
 
 
 @router.get("/status")

@@ -7,6 +7,8 @@ Nirvaan's view:    http://localhost:8425/kid
 """
 from __future__ import annotations
 
+import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -52,6 +54,41 @@ def _resume_analysis() -> None:
 app = FastAPI(title="Nirvaan Chess Central", lifespan=lifespan)
 app.include_router(router)
 
+
+# ---- slow-request watchdog: if any request runs >15s, dump every thread's
+# stack to the log so a hang is diagnosable from data/server.log alone.
+_inflight: dict[int, tuple] = {}
+_watchdog_started = False
+
+
+@app.middleware("http")
+async def _watch_requests(request, call_next):
+    global _watchdog_started
+    if not _watchdog_started:
+        _watchdog_started = True
+        threading.Thread(target=_watchdog, daemon=True, name="watchdog").start()
+    key = id(request)
+    _inflight[key] = (request.url.path, time.time())
+    try:
+        return await call_next(request)
+    finally:
+        _inflight.pop(key, None)
+
+
+def _watchdog() -> None:
+    import faulthandler
+    reported: set[int] = set()
+    while True:
+        time.sleep(5)
+        now = time.time()
+        for key, (path, t0) in list(_inflight.items()):
+            if now - t0 > 15 and key not in reported:
+                reported.add(key)
+                print(f"⚠️  WATCHDOG: {path} stuck for {now - t0:.0f}s — "
+                      "thread stacks follow", flush=True)
+                faulthandler.dump_traceback()
+        reported &= set(_inflight)
+
 NO_CACHE = {"Cache-Control": "no-cache"}   # revalidate every load (cheap 304s
 # on a LAN) — a browser must never keep running old JS against a new server
 
@@ -86,7 +123,7 @@ def version():
     return {"build": BUILD}
 
 
-BUILD = "2026-08-19-complete-analysis"
+BUILD = "2026-08-21-background-sync"
 
 
 app.mount("/static", FreshStaticFiles(directory=STATIC), name="static")

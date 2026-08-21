@@ -115,24 +115,13 @@ async function overview() {
   );
   renderRhythm(document.getElementById("rhythmBox"));
 
-  document.getElementById("syncBtn").addEventListener("click", async (ev) => {
-    ev.target.disabled = true; ev.target.textContent = "Syncing…";
-    try {
-      const r = await post("/sync");
-      const parts = [];
-      for (const src of ["lichess", "chesscom"]) {
-        const s = r[src] || {};
-        parts.push(s.error ? `${src}: FAILED (${String(s.error).slice(0, 60)})`
-                           : `${src}: ${s.inserted ?? 0} new`);
-      }
-      const otb = r.otb_ratings || {};
-      for (const [k, v] of Object.entries(otb)) {
-        if (v && v.ok === false) parts.push(`${k}: ${v.reason}`);
-      }
-      toast(parts.join(" · "), 6000);
-      navigate("overview");
-    } catch (e) { toast(`Sync failed: ${e.message}`); ev.target.disabled = false; ev.target.textContent = "Sync games"; }
+  const syncBtn = document.getElementById("syncBtn");
+  syncBtn.addEventListener("click", async () => {
+    try { await post("/sync"); trackSync(syncBtn); }
+    catch (e) { toast(`Sync failed to start: ${e.message}`); }
   });
+  // page (re)loaded while a sync is in flight? keep showing progress
+  get("/sync/status").then(s => { if (s.running) trackSync(syncBtn); }).catch(() => {});
   const analyzeBtn = document.getElementById("analyzeBtn");
   analyzeBtn.addEventListener("click", async () => {
     await post("/analyze"); toast("Analysis started"); navigate("overview");
@@ -167,6 +156,34 @@ function fmtDur(s) {
   if (s < 90) return `${Math.round(s)}s`;
   if (s < 5400) return `${Math.round(s / 60)} min`;
   return `${(s / 3600).toFixed(1)} h`;
+}
+
+// sync runs in the background — poll until it finishes, then report
+function trackSync(btn) {
+  btn.disabled = true;
+  const tick = async () => {
+    if (!document.body.contains(btn)) return;          // user navigated away
+    try {
+      const s = await get("/sync/status");
+      if (s.running) {
+        btn.textContent = `Syncing… ${s.phase || ""}`;
+        setTimeout(tick, 2500);
+        return;
+      }
+      const r = s.result || {};
+      const parts = [];
+      for (const src of ["lichess", "chesscom"]) {
+        const x = r[src] || {};
+        parts.push(x.error ? `${src}: FAILED (${String(x.error).slice(0, 60)})`
+                           : `${src}: ${x.inserted ?? 0} new`);
+      }
+      toast(parts.join(" · ") || "Sync finished", 6000);
+      navigate("overview");
+    } catch (e) {
+      btn.disabled = false; btn.textContent = "Sync games";
+    }
+  };
+  tick();
 }
 
 // while analysis runs, keep the overview button's count/ETA fresh
