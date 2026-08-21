@@ -936,6 +936,7 @@ async function settings() {
     ["uscf_id", "USCF ID"], ["home_area", "Home area"],
     ["engine_path", "Stockfish path (blank = auto-detect)"],
     ["engine_movetime_ms", "Engine ms per move"], ["puzzle_daily_target", "Daily puzzle target"],
+    ["sync_interval_minutes", "Auto-sync new games every N minutes (0 = manual only)"],
     ["anthropic_api_key", "Anthropic API key (stays in local config.json)"],
     ["llm_model", "AI coach model"],
     ["kid_pin", "Parent PIN (locks this dashboard away from kid mode)"],
@@ -955,7 +956,7 @@ async function settings() {
         const body = {};
         for (const [k] of fields) {
           let v = inputs[k].value;
-          if (["engine_movetime_ms", "puzzle_daily_target"].includes(k)) v = parseInt(v || "0", 10);
+          if (["engine_movetime_ms", "puzzle_daily_target", "sync_interval_minutes"].includes(k)) v = parseInt(v || "0", 10);
           body[k] = v;
         }
         await post("/settings", body); toast("Saved");

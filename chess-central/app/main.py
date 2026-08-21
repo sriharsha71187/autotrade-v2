@@ -35,7 +35,36 @@ async def lifespan(_app: FastAPI):
         _resume_analysis() # finish any backlog without being asked
     except Exception:
         pass
+    _start_auto_sync()     # fetch new games on a schedule — fully hands-off
     yield
+
+
+_auto_sync_started = False
+
+
+def _start_auto_sync() -> None:
+    global _auto_sync_started
+    if _auto_sync_started:
+        return
+    _auto_sync_started = True
+    threading.Thread(target=_auto_sync_loop, daemon=True, name="auto-sync").start()
+
+
+def _auto_sync_loop() -> None:
+    """He plays -> games appear -> analysis runs. Nobody presses anything."""
+    from . import config, sync
+    time.sleep(90)                       # let the server settle after boot
+    while True:
+        try:
+            minutes = int(config.get("sync_interval_minutes") or 0)
+        except (TypeError, ValueError):
+            minutes = 0
+        if minutes > 0:
+            try:
+                sync.start()             # no-op if a sync is already running;
+            except Exception:            # analysis auto-chains when it lands
+                pass
+        time.sleep(max(15, minutes or 60) * 60)
 
 
 def _resume_analysis() -> None:
@@ -123,7 +152,7 @@ def version():
     return {"build": BUILD}
 
 
-BUILD = "2026-08-21-fast-claim"
+BUILD = "2026-08-21-auto-sync"
 
 
 app.mount("/static", FreshStaticFiles(directory=STATIC), name="static")
