@@ -21,7 +21,8 @@ Then open:
 - **http://localhost:8425/kid** — Nirvaan's view (bookmark on his device)
 
 First session: hit **Sync games** on the Overview tab. Games download from
-Lichess and Chess.com (`nirvaan0421`), analysis starts automatically, and the
+Lichess (`nirvaan0421`) and Chess.com (`flyingspider9211`), analysis starts
+automatically, and the
 dashboard fills in as the engine works through his games. Several Stockfish
 workers run in parallel (auto-sized to your CPU; `analysis_workers` in config
 overrides), the Overview button shows live progress with a time estimate, and

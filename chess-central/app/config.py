@@ -16,7 +16,7 @@ CONFIG_PATH = ROOT / "config.json"
 DEFAULTS = {
     "player_name": "Nirvaan Thammishetty",
     "lichess_username": "nirvaan0421",
-    "chesscom_username": "nirvaan0421",
+    "chesscom_username": "flyingspider9211",
     "nwsrs_id": "TBKBF05U",
     "uscf_id": "33201208",
     "home_area": "Seattle / Eastside, WA",
