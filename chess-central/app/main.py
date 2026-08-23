@@ -152,7 +152,7 @@ def version():
     return {"build": BUILD}
 
 
-BUILD = "2026-08-22-opponent-weapons"
+BUILD = "2026-08-22-named-patterns"
 
 
 app.mount("/static", FreshStaticFiles(directory=STATIC), name="static")

@@ -94,6 +94,27 @@ def test_trap_detection():
     quiet = "1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 5. O-O Be7"
     assert traps.detect(f'[Event "T"]\n\n{quiet}', "white") is None
 
+    fried = ('[Event "T"]\n\n'
+             "1. e4 e5 2. Nf3 Nc6 3. Bc4 Nf6 4. Ng5 d5 5. exd5 Nxd5 6. Nxf7 Kxf7")
+    assert traps.detect(fried, "white") == "Fried Liver Attack"
+
+
+def test_mate_pattern_names():
+    import chess
+
+    from app.analysis import traps
+    # smothered: Nf7#, king boxed in by its own rook and pawns
+    assert traps.mate_pattern_name(
+        chess.Board("6rk/5Npp/8/8/8/8/8/6K1 b - - 0 1")) == "Smothered Mate"
+    # back-rank: rook mates along the 8th behind an unmoved pawn shield
+    assert traps.mate_pattern_name(
+        chess.Board("R5k1/5ppp/8/8/8/8/8/6K1 b - - 0 1")) == "Back-rank Mate"
+    # ladder: rook checks on the 1st rank, queen seals the 2nd
+    assert traps.mate_pattern_name(
+        chess.Board("6k1/8/8/8/8/8/1q6/r6K w - - 0 1")) == "Ladder Mate"
+    # not checkmate -> no name
+    assert traps.mate_pattern_name(chess.Board()) is None
+
 
 def test_opponent_tactics_in_games_api(analyzed_game):
     # in the fixture game the opponent captures the hung queen (won material)

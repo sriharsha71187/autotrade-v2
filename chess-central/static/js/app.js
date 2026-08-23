@@ -422,6 +422,19 @@ function buildOtbForm(box, onAdded) {
       msg));
 }
 
+// named trap/pattern -> the Academy lesson that teaches the defense
+const TRAP_LESSONS = {
+  "Scholar's Mate": ["openings-beat-scholars-mate", "Beating the Scholar's Mate"],
+  "Scholar's Mate attempt": ["openings-beat-scholars-mate", "Beating the Scholar's Mate"],
+  "Wayward Queen Attack": ["openings-beat-scholars-mate", "Beating the Scholar's Mate"],
+  "Wayward Queen mate": ["openings-beat-scholars-mate", "Beating the Scholar's Mate"],
+  "Fool's Mate pattern": ["openings-three-rules", "The Three Golden Rules"],
+  "Fried Liver Attack": ["defense-f7", "Defending f7 — Your Weakest Square"],
+  "Back-rank Mate": ["mates-back-rank", "Back-Rank Mates (and Making Luft)"],
+  "Ladder Mate": ["mates-ladder", "The Ladder Mate (Two Rooks)"],
+  "Smothered Mate": ["defense-four-answers", "The Four Answers to Any Threat"],
+};
+
 function downscaleImage(file, maxDim) {
   // phone photos are 10MB+; the reader only needs legible handwriting
   return new Promise((resolve, reject) => {
@@ -461,6 +474,13 @@ async function gameDetail(id) {
       tile("Avg win% loss", acc.avg_winprob_loss ?? "—"),
       tile("Mistakes", `${acc.mistake ?? 0} + ${acc.blunder ?? 0}`, "mistakes + blunders")),
     el("div", {},   // wrapper: el() drops nulls, native append() would not
+      g.opp_trap && TRAP_LESSONS[g.opp_trap] ? el("div", { class: "card",
+        style: "margin-bottom:14px;border-left:3px solid var(--warning)" },
+        el("b", {}, `⚔️ Named pattern: ${g.opp_trap}. `),
+        "This one has a known defense — ",
+        el("a", { href: "#", onclick: (e) => {
+          e.preventDefault(); openLesson(main, navigate, TRAP_LESSONS[g.opp_trap][0]);
+        } }, `📚 ${TRAP_LESSONS[g.opp_trap][1]}`)) : null,
       (g.opp_strikes || []).length ? card("What the opponent hit him with",
         el("table", { class: "data" },
           el("thead", {}, el("tr", {}, ...["Move", "They played", "Tactic"].map(h => el("th", {}, h)))),
