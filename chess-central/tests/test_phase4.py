@@ -66,6 +66,56 @@ def test_scan_endpoint_llm_error(monkeypatch):
     assert "API key" in r.json()["detail"]
 
 
+SCHOLARS_MATE_PGN = """[Event "T"]
+[White "Bully"]
+[Black "nirvaan0421"]
+[Result "1-0"]
+
+1. e4 e5 2. Bc4 Nc6 3. Qh5 Nf6 4. Qxf7# 1-0
+"""
+
+FOOLS_MATE_PGN = """[Event "T"]
+[White "nirvaan0421"]
+[Black "Speedy"]
+[Result "0-1"]
+
+1. f3 e5 2. g4 Qh4# 0-1
+"""
+
+
+def test_trap_detection():
+    from app.analysis import traps
+    # opponent was White and delivered the classic Qxf7#
+    assert traps.detect(SCHOLARS_MATE_PGN, "white") == "Scholar's Mate"
+    # from Black's-opponent perspective there is no trap by Black here
+    assert traps.detect(SCHOLARS_MATE_PGN, "black") is None
+    assert traps.detect(FOOLS_MATE_PGN, "black") == "Fool's Mate pattern"
+    # a quiet game names nothing
+    quiet = "1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 5. O-O Be7"
+    assert traps.detect(f'[Event "T"]\n\n{quiet}', "white") is None
+
+
+def test_opponent_tactics_in_games_api(analyzed_game):
+    # in the fixture game the opponent captures the hung queen (won material)
+    client = _client()
+    rows = client.get("/api/games?limit=10").json()
+    row = next(r for r in rows if r["id"] == analyzed_game)
+    assert "opp_tactics" in row
+    assert "Won material" in row["opp_tactics"]
+
+    detail = client.get(f"/api/games/{analyzed_game}").json()
+    assert "Won material" in detail["opp_tactics"]
+    assert any(s["label"] == "Won material" for s in detail["opp_strikes"])
+
+    # trap detection shows even without analysis
+    from tests.conftest import insert_game
+    gid = insert_game(SCHOLARS_MATE_PGN, opponent="Bully", game_id_str="trap1",
+                      color="black", played_at="2026-08-03T10:00:00Z")
+    rows = client.get("/api/games?limit=10").json()
+    row = next(r for r in rows if r["id"] == gid)
+    assert row["opp_tactics"][0] == "Scholar's Mate"
+
+
 @pytest.mark.skipif(not CURRICULUM.exists(), reason="curriculum not compiled")
 def test_motif_lesson_links():
     from app import learn

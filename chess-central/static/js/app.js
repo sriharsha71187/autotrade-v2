@@ -309,13 +309,15 @@ async function games() {
     if (!rows.length) { list.append(el("div", { class: "empty" }, "No games — hit Sync on the Overview tab.")); return; }
     const table = el("table", { class: "data" },
       el("thead", {}, el("tr", {},
-        ...["Date", "Opponent", "", "Result", "Opening", "Time", "Analysis"].map(h => el("th", {}, h)))),
+        ...["Date", "Opponent", "", "Result", "Opening", "Their weapon", "Time", "Analysis"].map(h => el("th", {}, h)))),
       el("tbody", {}, rows.map(g => el("tr", { style: "cursor:pointer", onclick: () => gameDetail(g.id) },
         el("td", {}, fmtDate(g.played_at)),
         el("td", {}, `${g.opponent_name ?? "?"} (${g.opponent_rating ?? "?"})`),
         el("td", {}, g.color === "white" ? "⚪" : "⚫"),
         el("td", {}, el("span", { class: `pill ${g.result}` }, g.result)),
         el("td", {}, g.opening_name || g.eco || "—"),
+        el("td", { title: (g.opp_tactics || []).join(", ") },
+          (g.opp_tactics || []).length ? `⚔️ ${g.opp_tactics.join(" · ")}` : "—"),
         el("td", {}, g.time_class || "—"),
         el("td", { title: g.analysis_error || (g.engine && g.engine !== "stockfish" ? "analyzed without Stockfish" : "") },
           g.analysis_error ? "⚠️" : g.analyzed_at ? (g.engine === "stockfish" ? "✓" : "✓*") : "…"),
@@ -454,8 +456,26 @@ async function gameDetail(id) {
     el("div", { class: "grid cols-4", style: "margin-bottom:14px" },
       tile("Date", fmtDate(g.played_at), g.time_class),
       tile("Opening", g.opening_name || g.eco || "—"),
+      tile("Their weapon", (g.opp_tactics || []).length ? `⚔️ ${g.opp_tactics.join(" · ")}` : "—",
+        g.opp_trap ? "named trap detected" : ""),
       tile("Avg win% loss", acc.avg_winprob_loss ?? "—"),
       tile("Mistakes", `${acc.mistake ?? 0} + ${acc.blunder ?? 0}`, "mistakes + blunders")),
+    el("div", {},   // wrapper: el() drops nulls, native append() would not
+      (g.opp_strikes || []).length ? card("What the opponent hit him with",
+        el("table", { class: "data" },
+          el("thead", {}, el("tr", {}, ...["Move", "They played", "Tactic"].map(h => el("th", {}, h)))),
+          el("tbody", {}, g.opp_strikes.map(s => {
+            const lesson = MOTIF_MAP && { "Fork": MOTIF_MAP.missed_fork, "Checkmate": MOTIF_MAP.got_mated,
+              "Back-rank mate": MOTIF_MAP.back_rank, "Won material": MOTIF_MAP.left_piece_hanging }[s.label];
+            return el("tr", {},
+              el("td", {}, String(s.move_number)),
+              el("td", {}, s.san),
+              el("td", {}, `⚔️ ${s.label}`,
+                lesson ? el("a", { href: "#", style: "margin-left:10px", title: `Academy: ${lesson.title}`,
+                  onclick: (e) => { e.preventDefault(); openLesson(main, navigate, lesson.lesson_id); } },
+                  "📚 defend this") : null));
+          })))) : null,
+      (g.opp_strikes || []).length ? el("div", { style: "height:14px" }) : null),
     card("Key moments",
       mistakes.length
         ? el("table", { class: "data" },

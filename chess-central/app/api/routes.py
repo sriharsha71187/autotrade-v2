@@ -123,6 +123,54 @@ def ratings_history():
 
 # -------------------------------------------------------------------- games
 
+# what the opponent hit him with, in plain words
+OPP_TAG_LABELS = {
+    "played_fork": "Fork",
+    "won_material": "Won material",
+    "delivered_mate": "Checkmate",
+    "back_rank_mate_win": "Back-rank mate",
+}
+_trap_cache: dict[tuple, str | None] = {}
+
+
+def _opponent_tactics(games_rows: list[dict]) -> dict[int, dict]:
+    """Per game: named trap (from the PGN) + the opponent's tactical strikes
+    (from analyzed moves). Traps show even before analysis runs."""
+    from ..analysis import traps
+
+    out: dict[int, dict] = {}
+    ids = [g["id"] for g in games_rows]
+    if not ids:
+        return out
+    ph = ",".join("?" for _ in ids)
+
+    strikes: dict[int, list[dict]] = {gid: [] for gid in ids}
+    for m in db.rows(
+            f"""SELECT game_id, ply, san, motifs FROM moves
+               WHERE game_id IN ({ph}) AND mover='opponent'
+                 AND motifs != '[]' ORDER BY ply""", ids):
+        for tag in json.loads(m["motifs"] or "[]"):
+            if tag in OPP_TAG_LABELS:
+                strikes[m["game_id"]].append(
+                    {"move_number": (m["ply"] + 1) // 2, "san": m["san"],
+                     "label": OPP_TAG_LABELS[tag]})
+
+    pgns = {r["id"]: r["pgn"] for r in db.rows(
+        f"SELECT id, pgn FROM games WHERE id IN ({ph})", ids)}
+    for g in games_rows:
+        gid = g["id"]
+        key = (gid, len(pgns.get(gid) or ""))
+        if key not in _trap_cache:
+            opp_color = "black" if g["color"] == "white" else "white"
+            _trap_cache[key] = traps.detect(pgns.get(gid) or "", opp_color)
+        trap = _trap_cache[key]
+        labels = ([trap] if trap else [])
+        for s in strikes[gid]:
+            if s["label"] not in labels:
+                labels.append(s["label"])
+        out[gid] = {"labels": labels[:3], "trap": trap, "strikes": strikes[gid]}
+    return out
+
 @router.get("/games")
 def list_games(limit: int = 50, offset: int = 0, opponent: str | None = None,
                result: str | None = None):
@@ -140,6 +188,9 @@ def list_games(limit: int = 50, offset: int = 0, opponent: str | None = None,
            FROM games WHERE {' AND '.join(where)}
            ORDER BY played_at DESC LIMIT ? OFFSET ?""",
         (*params, limit, offset))
+    tactics = _opponent_tactics(rows)
+    for r in rows:
+        r["opp_tactics"] = tactics.get(r["id"], {}).get("labels", [])
     return rows
 
 
@@ -259,7 +310,10 @@ def game_detail(game_id: int):
     moves = db.rows("SELECT * FROM moves WHERE game_id=? ORDER BY ply", (game_id,))
     for m in moves:
         m["motifs"] = json.loads(m["motifs"] or "[]")
-    return {**g, "moves": moves, "accuracy": annotate.game_accuracy(game_id)}
+    opp = _opponent_tactics([g]).get(game_id, {})
+    return {**g, "moves": moves, "accuracy": annotate.game_accuracy(game_id),
+            "opp_tactics": opp.get("labels", []), "opp_trap": opp.get("trap"),
+            "opp_strikes": opp.get("strikes", [])}
 
 
 # ----------------------------------------------------------------- insights
