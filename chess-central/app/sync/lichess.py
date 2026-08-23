@@ -30,9 +30,13 @@ def fetch_games(username: str, since_ms: int | None = None, max_games: int = 300
     if since_ms:
         params["since"] = since_ms
     out = []
-    with httpx.Client(timeout=60) as client:
-        with client.stream("GET", f"{API}/games/user/{username}", params=params,
-                           headers=_headers()) as resp:
+    with httpx.Client(timeout=60, follow_redirects=True) as client:
+        with client.stream("GET", f"{API}/games/user/{username.strip()}",
+                           params=params, headers=_headers()) as resp:
+            if resp.status_code == 404:
+                raise ValueError(
+                    f"lichess account '{username.strip()}' not found — check "
+                    "the username in Settings")
             resp.raise_for_status()
             for line in resp.iter_lines():
                 if line.strip():

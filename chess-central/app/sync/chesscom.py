@@ -9,23 +9,33 @@ API = "https://api.chess.com/pub"
 HEADERS = {"User-Agent": "nirvaan-chess-central (contact: local app)"}
 
 
+def _clean(username: str) -> str:
+    # chess.com API URLs require the lowercase username, no stray spaces
+    return (username or "").strip().lower()
+
+
 def fetch_archives(username: str) -> list[str]:
-    with httpx.Client(timeout=30, headers=HEADERS) as client:
-        r = client.get(f"{API}/player/{username}/games/archives")
+    with httpx.Client(timeout=30, headers=HEADERS, follow_redirects=True) as client:
+        r = client.get(f"{API}/player/{_clean(username)}/games/archives")
+        if r.status_code == 404:
+            raise ValueError(
+                f"chess.com account '{_clean(username)}' not found — check the "
+                "username in Settings (his profile URL on chess.com shows the "
+                "exact spelling: chess.com/member/<username>)")
         r.raise_for_status()
         return r.json().get("archives", [])
 
 
 def fetch_archive(url: str) -> list[dict]:
-    with httpx.Client(timeout=60, headers=HEADERS) as client:
+    with httpx.Client(timeout=60, headers=HEADERS, follow_redirects=True) as client:
         r = client.get(url)
         r.raise_for_status()
         return r.json().get("games", [])
 
 
 def fetch_stats(username: str) -> dict:
-    with httpx.Client(timeout=30, headers=HEADERS) as client:
-        r = client.get(f"{API}/player/{username}/stats")
+    with httpx.Client(timeout=30, headers=HEADERS, follow_redirects=True) as client:
+        r = client.get(f"{API}/player/{_clean(username)}/stats")
         r.raise_for_status()
         return r.json()
 
