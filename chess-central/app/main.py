@@ -166,7 +166,7 @@ def version():
     return {"build": BUILD}
 
 
-BUILD = "2026-10-08-progress-dashboard"
+BUILD = "2026-10-08-kid-powers"
 
 
 app.mount("/static", FreshStaticFiles(directory=STATIC), name="static")

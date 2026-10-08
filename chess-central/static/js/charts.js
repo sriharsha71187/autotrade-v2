@@ -157,21 +157,26 @@ export function barChart(container, data, { height = null, unit = "", max = null
 
 // points: [{label, value}] — tiny trend line for a metric tile; the last
 // point is emphasized and every point has a hover tooltip.
-export function sparkline(container, points, { color = "var(--series-1)", unit = "" } = {}) {
+// invert: draw lower values higher, so "up" always reads as "better".
+export function sparkline(container, points, { color = "var(--series-1)", unit = "", invert = false,
+                                              height = 48 } = {}) {
   container.innerHTML = "";
   container.classList.add("chart-wrap");
   if (points.length < 2) {
     container.innerHTML = '<div class="mut" style="font-size:12px;height:44px;display:flex;align-items:center">Trend appears after 2 months of data</div>';
     return;
   }
-  const W = 240, H = 48, P = 5;
+  const W = 240, H = height, P = 5;
   const ys = points.map(p => p.value);
   let lo = Math.min(...ys), hi = Math.max(...ys);
   if (lo === hi) { lo -= 1; hi += 1; }
   const X = i => P + (W - 2 * P) * (i / (points.length - 1));
-  const Y = v => H - P - (H - 2 * P) * ((v - lo) / (hi - lo));
+  const Y = v => {
+    const t = (v - lo) / (hi - lo);
+    return H - P - (H - 2 * P) * (invert ? 1 - t : t);
+  };
   const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "none",
-    style: "width:100%;height:48px;display:block" });
+    style: `width:100%;height:${H}px;display:block` });
   const d = points.map((p, i) => `${i ? "L" : "M"}${X(i).toFixed(1)},${Y(p.value).toFixed(1)}`).join("");
   svg.append(svgEl("path", { d, fill: "none", stroke: color, "stroke-width": 2,
     "stroke-linejoin": "round", "stroke-linecap": "round", "vector-effect": "non-scaling-stroke" }));

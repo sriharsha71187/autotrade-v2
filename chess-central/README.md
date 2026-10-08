@@ -49,7 +49,7 @@ within moments of syncing.
 | **OTB games** ♟ | Type or paste any over-the-board game (full PGN or just the moves) on the Games tab — or **snap a photo of the scoresheet** and the AI coach reads the handwriting into moves (python-chess verifies every move; you review before saving). Either way it flows through the exact same engine analysis, puzzles, and insights as online games |
 | **Weekly rhythm** | The roadmap's weekly plan is now a live checklist on Overview — several items check themselves off from real data (puzzle days, losses reviewed, games played, OTB play) |
 | **Game detective** 🕵️ | Guided loss review in kid mode: after each analyzed loss, he's taken to the exact moment the game turned and asked to find the better move — completing it marks the game reviewed |
-| **Kid mode** | Puzzle-first, effort-based praise, days-practiced tracking, a "your skills are growing" chart (safe-move %, not rating), badges — encouraging, zero jargon |
+| **Kid mode** | Puzzle-first, effort-based praise, days-practiced tracking, "My chess powers" — 14 kid-friendly skills from the progress dashboard (lines always go up when he improves; a dip shows as "your next mission" with a Practice button, never "slipping"; parent-only numbers like tilt stay off his screen), badges — encouraging, zero jargon |
 | **Coach packet** 🖨 | One button on Overview → a clean printable page (save as PDF) with ratings, recent form, the engine's read, his repertoire and where it leaks, rivals, and journal notes — everything a human coach wants before a lesson |
 | **Backups** | A dated copy of the database lands in `data/backups/` automatically each day the app starts (2 weeks kept, manual "Back up now" in Settings) |
 
@@ -145,7 +145,7 @@ press Sync when he's played. A minimal cron alternative:
 cd chess-central && ./.venv/bin/python -m pytest tests/ -q
 ```
 
-75 offline tests cover the annotation pipeline, motif detection, puzzle
+76 offline tests cover the annotation pipeline, motif detection, puzzle
 generation/uniqueness, spaced repetition, badges, sync record mapping, the
 API surface, engine provenance and re-analysis, OTB game entry, the weekly
 rhythm, loss review, secrets redaction, the PIN gate, and the full Academy

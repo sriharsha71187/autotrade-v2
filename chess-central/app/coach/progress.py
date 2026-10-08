@@ -566,3 +566,51 @@ def metric_games(key: str, limit: int = 30) -> dict:
                    "color": g["color"], "result": g["result"],
                    "count": m.num(g), "trap": g["trap"]} for g in hits[:limit]],
     }
+
+
+# ---------------------------------------------------------------- kid view
+
+# The kid sees effort-framed versions of a subset of metrics: no tilt or
+# review-compliance numbers, and nothing labeled "slipping" — a dip is
+# presented as his next mission with the lesson that fixes it.
+KID_METRICS = {
+    "hanging": ("🛡️", "Keeping pieces safe", "Pieces left hanging, per 100 moves"),
+    "blunders": ("💥", "Fewer big oopsies", "Blunders per game"),
+    "safe_moves": ("✅", "Safe moves", "How often your move keeps everything safe"),
+    "found_rate": ("🎯", "Spotting tactics", "When there was a trick, how often you found it"),
+    "missed_mates": ("👑", "Finding checkmates", "Checkmates you missed, per 10 games"),
+    "allowed_fork": ("🍴", "Dodging forks", "Forks you allowed, per 10 games"),
+    "conversion": ("🏁", "Finishing the job", "Winning the games where you were way ahead"),
+    "saves": ("🦸", "Comeback hero", "Saving games that looked lost"),
+    "traps": ("🪤", "Trap-proof", "Named traps you fell for, per 10 games"),
+    "fast_blunders": ("🐢", "Taking your time", "Oopsies made in under 3 seconds"),
+    "score_higher": ("🧗", "Beating stronger players", "Your score vs higher-rated players"),
+    "puzzle_accuracy": ("🧩", "Puzzle first-try", "Puzzles solved on the first try"),
+    "practice_days": ("📅", "Practice days", "Days you practiced, per week"),
+    "lessons": ("🎓", "Academy lessons", "Lessons finished in the last 4 weeks"),
+}
+_KID_STATUS = {"better": "growing", "worse": "mission", "flat": "steady", None: "locked"}
+
+
+def kid_view() -> dict:
+    data = dashboard()
+    by_key = {m["key"]: m for g in data["groups"] for m in g["metrics"]}
+    skills = []
+    for key, (emoji, title, help_) in KID_METRICS.items():
+        m = by_key.get(key)
+        if not m:
+            continue
+        status = _KID_STATUS[m["trend"]] if m["current"] is not None else "locked"
+        skills.append({
+            "key": key, "emoji": emoji, "title": title, "help": help_,
+            "value": m["current"], "previous": m["previous"],
+            "unit": m["unit"], "lower_is_better": m["better"] == "down",
+            "status": status, "series": m["series"], "lesson": m["lesson"],
+        })
+    order = {"growing": 0, "mission": 1, "steady": 2, "locked": 3}
+    skills.sort(key=lambda s: order[s["status"]])
+    return {
+        "growing": sum(1 for s in skills if s["status"] == "growing"),
+        "missions": [s for s in skills if s["status"] == "mission"][:2],
+        "skills": skills,
+    }

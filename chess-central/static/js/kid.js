@@ -2,7 +2,7 @@
 // (the Academy and loss review live INSIDE kid mode; the parent app is gated).
 import { get, post, el, fmtDate } from "./api.js";
 import { academyView, openLesson } from "./academy.js";
-import { lineChart } from "./charts.js";
+import { sparkline } from "./charts.js";
 import { PuzzlePlayer } from "./puzzles.js";
 
 const main = document.getElementById("view");
@@ -59,6 +59,66 @@ async function renderReview() {
   player.start([item.puzzle]);
 }
 
+const POWER_STATUS = {
+  growing: ["kp-growing", "🚀 Getting stronger!"],
+  mission: ["kp-mission", "🎯 Your next mission"],
+  steady: ["kp-steady", "➡️ Holding steady"],
+  locked: ["kp-locked", "🔒 Play more games to unlock"],
+};
+
+function missionGo(m) {
+  if (m.lesson) { main.innerHTML = ""; openLesson(main, navigate, m.lesson.lesson_id); }
+  else if (m.key === "lessons") renderAcademy();
+  else document.getElementById("player")?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function renderPowers(box) {
+  let p;
+  try { p = await get("/kid/progress"); }
+  catch (e) { box.append(el("div", { class: "mut" }, "Your powers will show up soon!")); return; }
+  box.append(el("div", { class: "mut", style: "margin:4px 0 12px" },
+    p.growing
+      ? `You're getting stronger at ${p.growing} thing${p.growing === 1 ? "" : "s"}! 🎉 Lines going up = you're improving.`
+      : "Keep playing and practicing — your growth lines show up here. Lines going up = you're improving."));
+
+  if (p.missions.length) {
+    const ms = el("div", { class: "kp-missions" });
+    for (const m of p.missions) {
+      ms.append(el("div", { class: "kp-mission-card" },
+        el("div", { style: "font-size:28px" }, m.emoji),
+        el("div", { style: "flex:1" },
+          el("div", { style: "font-weight:700" }, `Mission: ${m.title}`),
+          el("div", { class: "mut" }, m.help)),
+        el("button", { onclick: () => missionGo(m) }, "Practice →")));
+    }
+    box.append(ms);
+  }
+
+  const grid = el("div", { class: "kp-grid" });
+  for (const s of p.skills) {
+    const [cls, label] = POWER_STATUS[s.status];
+    const spark = el("div");
+    grid.append(el("div", { class: `kp ${cls}` },
+      el("div", { class: "row", style: "gap:8px;flex-wrap:nowrap" },
+        el("div", { style: "font-size:24px" }, s.emoji),
+        el("div", { style: "font-weight:700;line-height:1.2" }, s.title)),
+      s.value != null ? el("div", { class: "kp-val" }, String(s.value),
+        el("span", { class: "unit" }, s.unit === "move #" ? "" : ` ${s.unit}`)) : null,
+      el("div", { class: "kp-help" }, s.help, s.lower_is_better ? " — fewer is better" : ""),
+      spark,
+      el("div", { class: "kp-status" }, label)));
+    if (s.series.length >= 2) {
+      const pts = s.series.map(x => ({
+        label: new Date(`${x.month}-15T00:00:00`).toLocaleDateString(undefined, { month: "short" }),
+        value: x.value }));
+      sparkline(spark, pts, { invert: s.lower_is_better, height: 40,
+        color: s.status === "growing" ? "var(--good)" : "var(--series-1)",
+        unit: s.unit.startsWith("%") ? "%" : "" });
+    }
+  }
+  box.append(grid);
+}
+
 async function render() {
   const home = await get("/kid/home");
   main.innerHTML = "";
@@ -110,11 +170,8 @@ async function render() {
         el("div", { class: "spacer" }),
         el("div", { style: "font-size:22px" }, "→"))),
 
-    el("div", { class: "card", style: "margin-bottom:18px" },
-      el("h2", { style: "margin:0 0 4px;font-size:17px" }, "Your skills are growing 🌱"),
-      el("div", { class: "mut", style: "margin-bottom:8px" },
-        "Safe moves — how often you keep your pieces out of trouble. Up = stronger!"),
-      el("div", { id: "kidChart" })),
+    el("div", { class: "card", id: "kidPowers", style: "margin-bottom:18px" },
+      el("h2", { style: "margin:0;font-size:17px" }, "My chess powers 💪")),
 
     el("div", { class: "card" },
       el("h2", { style: "margin:0 0 10px;font-size:17px" }, "Trophy shelf"),
@@ -125,15 +182,7 @@ async function render() {
           el("div", { class: "h" }, b.earned_at ? fmtDate(b.earned_at) : b.how))))),
   );
 
-  const chartBox = document.getElementById("kidChart");
-  if ((home.skills_trend || []).length >= 2) {
-    lineChart(chartBox, [{
-      name: "Safe moves %",
-      points: home.skills_trend.map(s => ({ x: new Date(s.month + "-15"), y: s.safe_pct })),
-    }], { height: 180 });
-  } else {
-    chartBox.innerHTML = '<div class="empty">Play and analyze games for a couple of months and your growth line appears here 🌱</div>';
-  }
+  renderPowers(document.getElementById("kidPowers"));
 
   const player = new PuzzlePlayer(document.getElementById("player"),
     { kid: true, onSetDone: () => render() });

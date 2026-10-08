@@ -334,7 +334,8 @@ body.kid main { max-width: 860px; margin: 0 auto; padding: 20px 18px 90px; }
 /* progress dashboard */
 .prog-group { margin: 18px 0 8px; font-size: 13px; text-transform: uppercase;
   letter-spacing: .06em; color: var(--muted); font-weight: 600; }
-.prog-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
+.prog-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(min(230px, 100%), 1fr)); }
+.prog { min-width: 0; }
 .prog { display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; }
 .prog .head { display: flex; align-items: baseline; gap: 6px; }
 .prog .title { font-size: 13.5px; font-weight: 600; flex: 1; }
@@ -370,3 +371,28 @@ body.kid main { max-width: 860px; margin: 0 auto; padding: 20px 18px 90px; }
   .prog .big { font-size: 22px; }
 }
 @media (max-width: 420px) { .prog-grid { grid-template-columns: 1fr; } }
+
+/* kid: chess powers */
+.kp-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
+.kp { min-width: 0; border: 1px solid var(--border); border-radius: 14px; padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 4px; background: var(--surface); }
+.kp-val { font-size: 26px; font-weight: 800; line-height: 1.1; }
+.kp-val .unit { font-size: 12px; font-weight: 500; color: var(--muted); }
+.kp-help { font-size: 12.5px; color: var(--ink-2); }
+.kp-status { font-size: 13px; font-weight: 700; margin-top: 2px; }
+.kp-growing { border-color: var(--good); background: color-mix(in oklab, var(--good) 7%, var(--surface)); }
+.kp-growing .kp-status { color: var(--good-text); }
+.kp-mission { border-color: var(--warning); }
+.kp-mission .kp-status { color: color-mix(in oklab, var(--warning) 60%, var(--ink)); }
+.kp-steady .kp-status { color: var(--ink-2); }
+.kp-locked { opacity: .6; }
+.kp-locked .kp-status { color: var(--muted); font-weight: 500; }
+.kp-missions { display: flex; flex-direction: column; gap: 10px; margin-bottom: 14px; }
+.kp-mission-card { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 14px;
+  background: color-mix(in oklab, var(--warning) 14%, var(--surface)); }
+@media (max-width: 420px) {
+  .kp-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .kp { padding: 10px; }
+  .kp-val { font-size: 22px; }
+  .kp-mission-card { flex-wrap: wrap; }
+}

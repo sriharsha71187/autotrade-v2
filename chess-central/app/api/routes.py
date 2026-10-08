@@ -91,6 +91,12 @@ def progress_dashboard():
     return progress.dashboard()
 
 
+@router.get("/kid/progress")
+def kid_progress():
+    from ..coach import progress
+    return progress.kid_view()
+
+
 @router.get("/progress/{key}/games")
 def progress_games(key: str):
     from ..coach import progress

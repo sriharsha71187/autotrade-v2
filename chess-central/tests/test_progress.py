@@ -174,3 +174,25 @@ def test_named_trap_counts_only_when_he_fell_for_it():
                 played_at=_ago(3))
     recs = progress._game_records()
     assert recs[0]["trap"] == "Scholar's Mate"
+
+
+def test_kid_progress_is_effort_framed():
+    old = [_analyzed(HANG_QUEEN_PGN, 100 + i, f"kold{i}") for i in range(30)]
+    new = [_analyzed(HANG_QUEEN_PGN, 5 + i, f"knew{i}") for i in range(30)]
+    for gid in old:
+        _set_moves(gid, 0, 3)
+    for gid in new:
+        _set_moves(gid, 0, 1)
+    body = _client().get("/api/kid/progress").json()
+    keys = {s["key"] for s in body["skills"]}
+    # parent-only numbers never reach his screen
+    assert "tilt" not in keys and "reviews" not in keys and "time_losses" not in keys
+    hang = next(s for s in body["skills"] if s["key"] == "hanging")
+    assert hang["status"] == "growing" and hang["lower_is_better"] is True
+    assert body["growing"] >= 1
+    # every status is one of the kid-friendly ones — no "worse"/"slipping"
+    assert {s["status"] for s in body["skills"]} <= {"growing", "mission", "steady", "locked"}
+    assert all(m["status"] == "mission" for m in body["missions"])
+    # growing skills are listed first
+    order = [s["status"] for s in body["skills"]]
+    assert order == sorted(order, key=["growing", "mission", "steady", "locked"].index)
