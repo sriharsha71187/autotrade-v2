@@ -68,6 +68,32 @@ def _numbered(path: str) -> str:
     return " ".join(parts)
 
 
+def _exits(games, per_game, counts) -> dict[int, int]:
+    exits: dict[int, int] = {}
+    for g in games:
+        p = per_game[g["id"]]
+        exit_ply = len(p) + 1          # never left book inside the window
+        for i, prefix in enumerate(p):
+            if counts[prefix] < BOOK_MIN:
+                exit_ply = i + 1
+                break
+        exits[g["id"]] = exit_ply
+    return exits
+
+
+def exit_plies() -> dict[int, int]:
+    """Ply at which each game left his book (both colors)."""
+    out: dict[int, int] = {}
+    for color in ("white", "black"):
+        games = db.rows("SELECT id, pgn FROM games WHERE color=?", (color,))
+        per_game = {g["id"]: _paths(g["id"], g["pgn"]) for g in games}
+        counts: Counter = Counter()
+        for p in per_game.values():
+            counts.update(p)
+        out.update(_exits(games, per_game, counts))
+    return out
+
+
 def build(color: str) -> dict:
     games = db.rows(
         """SELECT id, pgn, result, eco, opening_name, played_at, analyzed_at
@@ -96,15 +122,7 @@ def build(color: str) -> dict:
         key=lambda x: -x["n"])[:10]
 
     # --- left-book point per game
-    exits: dict[int, int] = {}
-    for g in games:
-        p = per_game[g["id"]]
-        exit_ply = len(p) + 1          # never left book inside the window
-        for i, prefix in enumerate(p):
-            if counts[prefix] < BOOK_MIN:
-                exit_ply = i + 1
-                break
-        exits[g["id"]] = exit_ply
+    exits = _exits(games, per_game, counts)
 
     n = len(games)
     findings: list[dict] = []

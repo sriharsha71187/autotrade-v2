@@ -117,3 +117,14 @@ def detect(pgn: str, opponent_color: str) -> str | None:
     if queen_out_early:
         return "Wayward Queen Attack"
     return None
+
+
+# PGNs never change once stored, so a per-text cache needs no invalidation
+_cache: dict[tuple, str | None] = {}
+
+
+def detect_cached(pgn: str, opponent_color: str) -> str | None:
+    key = (len(pgn or ""), hash(pgn or ""), opponent_color)
+    if key not in _cache:
+        _cache[key] = detect(pgn or "", opponent_color)
+    return _cache[key]

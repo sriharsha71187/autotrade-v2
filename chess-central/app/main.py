@@ -36,6 +36,7 @@ async def lifespan(_app: FastAPI):
     except Exception:
         pass
     _start_auto_sync()     # fetch new games on a schedule — fully hands-off
+    _warm_progress()
     yield
 
 
@@ -65,6 +66,19 @@ def _auto_sync_loop() -> None:
             except Exception:            # analysis auto-chains when it lands
                 pass
         time.sleep(max(15, minutes or 60) * 60)
+
+
+def _warm_progress() -> None:
+    """First progress-dashboard build replays every PGN; do it off the
+    request path so the Overview never waits on it after a restart."""
+    def run():
+        time.sleep(5)
+        try:
+            from .coach import progress
+            progress.dashboard()
+        except Exception:
+            pass
+    threading.Thread(target=run, daemon=True, name="progress-warm").start()
 
 
 def _resume_analysis() -> None:
@@ -152,7 +166,7 @@ def version():
     return {"build": BUILD}
 
 
-BUILD = "2026-08-22-named-patterns"
+BUILD = "2026-10-08-progress-dashboard"
 
 
 app.mount("/static", FreshStaticFiles(directory=STATIC), name="static")

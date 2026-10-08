@@ -1,6 +1,6 @@
 // Parent/coach dashboard SPA.
 import { get, post, del, el, toast, fmtDate } from "./api.js";
-import { lineChart, barChart } from "./charts.js";
+import { lineChart, barChart, sparkline } from "./charts.js";
 import { renderMarkdown } from "./markdown.js";
 import { PuzzlePlayer } from "./puzzles.js";
 
@@ -67,8 +67,8 @@ async function overview() {
     .map(([k, v]) => tile(RATING_LABELS[k] || k, v.rating, `as of ${fmtDate(v.date)}`));
 
   main.innerHTML = "";
-  main.append(
-    el("div", { class: "row", style: "margin-bottom:16px" },
+  main.append(...[
+    el("div", { class: "row", style: "margin-bottom:16px;flex-wrap:wrap;gap:8px" },
       el("h1", { style: "margin:0;font-size:22px" }, `${sum.player} — Chess Central`),
       el("div", { class: "spacer" }),
       el("button", { class: "ghost", onclick: () => window.open("/packet", "_blank") },
@@ -84,6 +84,8 @@ async function overview() {
         sum.moves_analyzed ? `${sum.blunders} blunders in ${sum.moves_analyzed} moves` : "run analysis"),
       ...ratingCards,
     ),
+    el("div", { class: "card", id: "progressBox", style: "margin-bottom:14px" },
+      el("div", { class: "mut" }, "Loading progress dashboard…")),
     card("Rating progress", el("div", { id: "ratingChart" })),
     !status.engine_found ? el("div", { class: "card", style: "margin-top:14px;border-left:3px solid var(--warning)" },
       el("b", {}, "Stockfish not found. "),
@@ -112,8 +114,9 @@ async function overview() {
     card("This week's rhythm", el("div", { id: "rhythmBox" })),
     el("div", { style: "margin-top:14px" }),
     card("Top insights", el("div", { id: "topInsights" })),
-  );
+  ].filter(Boolean));
   renderRhythm(document.getElementById("rhythmBox"));
+  renderProgress(document.getElementById("progressBox"));
 
   const syncBtn = document.getElementById("syncBtn");
   syncBtn.addEventListener("click", async () => {
@@ -196,6 +199,141 @@ function trackAnalysis(btn) {
       if (!a.running) clearInterval(timer);
     } catch (e) { clearInterval(timer); }
   }, 5000);
+}
+
+// ------------------------------------------------------------------ progress
+
+const MONTH_FMT = new Intl.DateTimeFormat(undefined, { month: "short", year: "2-digit" });
+function monthLabel(m) { return MONTH_FMT.format(new Date(`${m}-15T00:00:00`)); }
+const TREND_TEXT = { better: "improving", worse: "slipping", flat: "steady" };
+
+async function renderProgress(box) {
+  let p;
+  try { p = await get("/progress"); }
+  catch (e) { box.innerHTML = `<div class="mut">Progress dashboard unavailable: ${e.message}</div>`; return; }
+  box.innerHTML = "";
+  const s = p.summary || {};
+  box.append(
+    el("div", { class: "row", style: "align-items:baseline;gap:12px;flex-wrap:wrap" },
+      el("h2", { style: "margin:0;font-size:16px" }, "Progress dashboard"),
+      el("span", { class: "mut" },
+        `Last ${p.window_days} days vs the ${p.window_days} days before ` +
+        `(practice: last ${p.activity_days} days) · ${p.analyzed_games} of ${p.games} games analyzed`)),
+    el("div", { class: "prog-summary", style: "margin:8px 0 4px" },
+      el("span", { class: "trend-better" }, `▲ ${s.better ?? 0} improving`),
+      el("span", { class: "trend-worse" }, `▼ ${s.worse ?? 0} slipping`),
+      el("span", { class: "trend-flat" }, `● ${s.flat ?? 0} steady`)),
+  );
+  const drill = el("div", { class: "prog-drill" });
+
+  if (p.ratings?.length) {
+    box.append(el("div", { class: "prog-group" }, "Ratings"));
+    const grid = el("div", { class: "prog-grid" });
+    for (const r of p.ratings) {
+      const trend = r.change == null ? null : r.change > 0 ? "better" : r.change < 0 ? "worse" : "flat";
+      const spark = el("div");
+      grid.append(el("div", { class: `card prog ${trend || ""}` },
+        el("div", { class: "head" }, el("div", { class: "title" }, RATING_LABELS[r.source] || r.source)),
+        el("div", { class: "big" }, String(r.rating)),
+        el("div", { class: "cmp" },
+          r.change == null ? `as of ${fmtDate(r.date)}` : el("span", {},
+            el("span", { class: `trend-${trend}` }, `${r.change > 0 ? "▲ +" : r.change < 0 ? "▼ " : "● "}${r.change}`),
+            ` in ${p.window_days} days`)),
+        spark));
+      sparkline(spark, r.series.map(x => ({ label: fmtDate(x.date), value: x.value })),
+        { color: "var(--series-1)" });
+    }
+    box.append(grid);
+  }
+
+  for (const g of p.groups) {
+    box.append(el("div", { class: "prog-group" }, g.title));
+    const grid = el("div", { class: "prog-grid" });
+    for (const m of g.metrics) grid.append(progressTile(m, drill));
+    box.append(grid);
+  }
+
+  if (p.lesson_effects?.length) {
+    box.append(el("div", { class: "prog-group" }, "Did the lessons work?"));
+    const VERDICT = { working: ["trend-better", "✓ working"], worse: ["trend-worse", "✗ got worse"],
+                      "no change yet": ["trend-flat", "● no change yet"] };
+    box.append(el("div", { class: "table-scroll" }, el("table", { class: "data" },
+      el("thead", {}, el("tr", {}, ...["Lesson", "Finished", "Mistake rate before", "After", "Verdict"]
+        .map(h => el("th", {}, h)))),
+      el("tbody", {}, ...p.lesson_effects.map(e => {
+        const [cls, txt] = VERDICT[e.verdict] || ["mut", `waiting for games (${e.moves_after} moves so far)`];
+        return el("tr", {},
+          el("td", {}, el("a", { href: "#", onclick: (ev) => {
+            ev.preventDefault(); openLesson(main, navigate, e.lesson_id); } }, e.title)),
+          el("td", {}, fmtDate(e.completed_at)),
+          el("td", {}, e.before == null ? "—" : `${e.before} per 100 moves`),
+          el("td", {}, e.after == null ? "—" : `${e.after} per 100 moves`),
+          el("td", {}, el("span", { class: cls }, txt)));
+      })))));
+    box.append(el("div", { class: "mut", style: "margin-top:6px;font-size:12.5px" },
+      "Compares how often the mistake that lesson targets happened in the 60 days before vs after he finished it."));
+  }
+  box.append(drill);
+}
+
+function fmtMetric(v, m) {
+  if (v == null) return "—";
+  return m.unit === "move #" ? `move ${v}` : String(v);
+}
+
+function progressTile(m, drill) {
+  const spark = el("div");
+  const hasData = m.current != null;
+  const arrow = m.trend === "better" ? "▲" : m.trend === "worse" ? "▼" : "●";
+  const node = el("div", { class: `card prog ${m.trend || ""}` },
+    el("div", { class: "head" },
+      el("div", { class: "title" }, m.title),
+      el("span", { class: "info", title: m.help }, "ⓘ")),
+    hasData
+      ? el("div", { class: "big" }, fmtMetric(m.current, m),
+          m.unit === "move #" ? null : el("span", { class: "unit" }, m.unit))
+      : el("div", { class: "nodata" }, `Not enough data in the last ${m.window_days} days yet`),
+    el("div", { class: "cmp" },
+      m.trend
+        ? el("span", {}, el("span", { class: `trend-${m.trend}` }, `${arrow} ${TREND_TEXT[m.trend]}`),
+            ` · was ${fmtMetric(m.previous, m)}`)
+        : m.previous != null ? `previous ${m.window_days} days: ${fmtMetric(m.previous, m)}`
+        : el("span", { class: "mut" }, m.help)),
+    spark,
+    el("div", { class: "links" },
+      m.drill && hasData ? el("a", { href: "#", onclick: (e) => {
+        e.preventDefault(); showMetricGames(m, drill); } }, "See games") : null,
+      m.lesson ? el("a", { href: "#", onclick: (e) => {
+        e.preventDefault(); openLesson(main, navigate, m.lesson.lesson_id); } },
+        `📚 ${m.lesson.title}`) : null));
+  const unit = m.unit.startsWith("%") ? "%" : "";
+  sparkline(spark, m.series.map(x => ({ label: monthLabel(x.month), value: x.value })),
+    { color: m.trend === "worse" ? "var(--critical)" : m.trend === "better" ? "var(--good)" : "var(--series-1)", unit });
+  return node;
+}
+
+async function showMetricGames(m, drill) {
+  drill.innerHTML = "";
+  drill.append(el("div", { class: "mut" }, "Loading games…"));
+  drill.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  const r = await get(`/progress/${m.key}/games`);
+  drill.innerHTML = "";
+  const what = m.better === "up" ? "games where it didn't happen" : "games where it happened";
+  drill.append(el("div", { class: "card" },
+    el("div", { class: "row", style: "align-items:baseline" },
+      el("h2", { style: "margin:0 0 8px;font-size:16px" }, `${m.title}: ${what} (last ${m.window_days} days)`),
+      el("div", { class: "spacer" }),
+      el("button", { class: "ghost", onclick: () => { drill.innerHTML = ""; } }, "Close")),
+    r.games.length ? el("div", { class: "table-scroll" }, el("table", { class: "data" },
+      el("thead", {}, el("tr", {}, ...["Date", "Opponent", "Color", "Result",
+        m.better === "down" ? "Times" : null].filter(Boolean).map(h => el("th", {}, h)))),
+      el("tbody", {}, ...r.games.map(g => el("tr", { style: "cursor:pointer", onclick: () => gameDetail(g.id) },
+        el("td", {}, fmtDate(g.played_at)),
+        el("td", {}, g.opponent || "—"),
+        el("td", {}, g.color),
+        el("td", {}, g.result),
+        m.better === "down" ? el("td", {}, g.trap || String(g.count)) : null)))))
+      : el("div", { class: "empty" }, "No games to show.")));
 }
 
 function tile(label, value, sub = "") {

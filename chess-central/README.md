@@ -35,6 +35,7 @@ within moments of syncing.
 | Area | What it does |
 |---|---|
 | **Overview** | Ratings across NWSRS / USCF / Lichess / Chess.com, rating-progress chart, top insights |
+| **Progress dashboard** | On Overview: 27 tracked areas (board vision, tactics, game phases, openings, time & temperament, results, effort & habits), each with a 12-month trend, last-90-days value vs the 90 days before, an improving/slipping arrow, "See games" drill-down and the Academy lesson that fixes it. Plus "Did the lessons work?" — mistake rate before vs after each finished lesson |
 | **Insights** | Engine-derived strengths, weaknesses, and opportunities with the evidence behind each — phase leaks, motif patterns (hanging pieces, missed forks), conversion problems, time trouble, tilt sessions, color gaps. Windowed to recent form by default (last 90 days, selectable) so last year's habits don't dilute this month's coaching |
 | **Games** | Every synced game with per-move analysis; click one for its key moments and what should have been played |
 | **Openings** | Score by opening family for each color — plus his real repertoire mined from his own games: the lines he actually plays, plain-English "left book" findings (where he runs out of known moves and what it costs), and a repertoire trainer that drills the repeated positions where his habitual move leaks |
@@ -144,7 +145,7 @@ press Sync when he's played. A minimal cron alternative:
 cd chess-central && ./.venv/bin/python -m pytest tests/ -q
 ```
 
-62 offline tests cover the annotation pipeline, motif detection, puzzle
+75 offline tests cover the annotation pipeline, motif detection, puzzle
 generation/uniqueness, spaced repetition, badges, sync record mapping, the
 API surface, engine provenance and re-analysis, OTB game entry, the weekly
 rhythm, loss review, secrets redaction, the PIN gate, and the full Academy

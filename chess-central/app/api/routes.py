@@ -85,6 +85,21 @@ def analysis_status():
 
 # ------------------------------------------------------------------ summary
 
+@router.get("/progress")
+def progress_dashboard():
+    from ..coach import progress
+    return progress.dashboard()
+
+
+@router.get("/progress/{key}/games")
+def progress_games(key: str):
+    from ..coach import progress
+    try:
+        return progress.metric_games(key)
+    except KeyError:
+        raise HTTPException(404, "unknown metric")
+
+
 @router.get("/summary")
 def summary():
     games = db.scalar("SELECT COUNT(*) FROM games") or 0
@@ -130,9 +145,6 @@ OPP_TAG_LABELS = {
     "delivered_mate": "Checkmate",
     "back_rank_mate_win": "Back-rank mate",
 }
-_trap_cache: dict[tuple, str | None] = {}
-
-
 def _opponent_tactics(games_rows: list[dict]) -> dict[int, dict]:
     """Per game: named trap (from the PGN) + the opponent's tactical strikes
     (from analyzed moves). Traps show even before analysis runs."""
@@ -159,11 +171,8 @@ def _opponent_tactics(games_rows: list[dict]) -> dict[int, dict]:
         f"SELECT id, pgn FROM games WHERE id IN ({ph})", ids)}
     for g in games_rows:
         gid = g["id"]
-        key = (gid, len(pgns.get(gid) or ""))
-        if key not in _trap_cache:
-            opp_color = "black" if g["color"] == "white" else "white"
-            _trap_cache[key] = traps.detect(pgns.get(gid) or "", opp_color)
-        trap = _trap_cache[key]
+        opp_color = "black" if g["color"] == "white" else "white"
+        trap = traps.detect_cached(pgns.get(gid) or "", opp_color)
         labels = ([trap] if trap else [])
         for s in strikes[gid]:
             if s["label"] not in labels:

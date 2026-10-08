@@ -199,3 +199,8 @@ def _post_run_hooks() -> None:
         db.connect().execute("PRAGMA wal_checkpoint(TRUNCATE)")
     except Exception:
         traceback.print_exc()
+    try:
+        from ..coach import progress
+        progress.dashboard()           # warm the Overview progress cache
+    except Exception:
+        traceback.print_exc()

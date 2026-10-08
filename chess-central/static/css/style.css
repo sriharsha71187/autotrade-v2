@@ -330,3 +330,43 @@ body.kid main { max-width: 860px; margin: 0 auto; padding: 20px 18px 90px; }
   border-radius: 14px; padding: 14px 18px; font-size: 16px; text-align: center; }
 .progress-bar { height: 14px; border-radius: 7px; background: var(--grid); overflow: hidden; }
 .progress-bar > div { height: 100%; border-radius: 7px; background: var(--good); transition: width .4s ease; }
+
+/* progress dashboard */
+.prog-group { margin: 18px 0 8px; font-size: 13px; text-transform: uppercase;
+  letter-spacing: .06em; color: var(--muted); font-weight: 600; }
+.prog-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
+.prog { display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; }
+.prog .head { display: flex; align-items: baseline; gap: 6px; }
+.prog .title { font-size: 13.5px; font-weight: 600; flex: 1; }
+.prog .info { cursor: help; color: var(--muted); font-size: 12px; }
+.prog .big { font-size: 26px; font-weight: 700; line-height: 1.1; }
+.prog .unit { font-size: 12px; color: var(--muted); font-weight: 500; margin-left: 4px; }
+.prog .cmp { font-size: 12.5px; color: var(--ink-2); }
+.prog .links { display: flex; gap: 12px; font-size: 12.5px; margin-top: 2px; flex-wrap: wrap; }
+.prog .nodata { font-size: 13px; color: var(--muted); padding: 8px 0; }
+.trend-better { color: var(--good-text); font-weight: 600; }
+.trend-worse { color: var(--critical); font-weight: 600; }
+.trend-flat { color: var(--muted); font-weight: 600; }
+.prog.better { border-top: 3px solid var(--good); }
+.prog.worse { border-top: 3px solid var(--critical); }
+.prog-summary { display: flex; gap: 14px; flex-wrap: wrap; font-size: 14px; }
+.prog-drill { margin-top: 12px; }
+.table-scroll { overflow-x: auto; }
+
+/* phones: sidebar becomes a scrollable tab strip above the page */
+@media (max-width: 760px) {
+  .shell { flex-direction: column; }
+  nav.side {
+    width: auto; height: auto; position: sticky; top: 0; z-index: 5;
+    display: flex; align-items: center; gap: 4px; overflow-x: auto; overflow-y: hidden;
+    padding: 8px 12px; border-right: none; border-bottom: 1px solid var(--border);
+    background: var(--page); white-space: nowrap;
+  }
+  nav.side .brand { margin: 0 8px 0 0; font-size: 15px; }
+  nav.side .brand small, nav.side .foot { display: none; }
+  nav.side a.tab { margin: 0; padding: 6px 10px; }
+  main { padding: 16px 16px 80px; min-width: 0; max-width: 100%; }
+  .prog-grid { grid-template-columns: 1fr 1fr; }
+  .prog .big { font-size: 22px; }
+}
+@media (max-width: 420px) { .prog-grid { grid-template-columns: 1fr; } }
