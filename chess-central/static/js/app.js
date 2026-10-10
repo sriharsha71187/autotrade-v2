@@ -9,6 +9,8 @@ const tabs = document.querySelectorAll("nav.side a.tab[data-tab]");
 
 const RATING_LABELS = {
   nwsrs: "NWSRS", uscf_regular: "USCF", uscf_quick: "USCF Quick", uscf_blitz: "USCF Blitz",
+  uscf_online_regular: "USCF Online", uscf_online_quick: "USCF Online Quick",
+  uscf_online_blitz: "USCF Online Blitz",
   lichess_rapid: "Lichess Rapid", lichess_blitz: "Lichess Blitz", lichess_bullet: "Lichess Bullet",
   lichess_classical: "Lichess Classical", lichess_puzzle: "Lichess Puzzles",
   chesscom_rapid: "Chess.com Rapid", chesscom_blitz: "Chess.com Blitz",
