@@ -166,7 +166,7 @@ def version():
     return {"build": BUILD}
 
 
-BUILD = "2026-10-10-otb-ratings"
+BUILD = "2026-10-10-uscf-parse"
 
 
 app.mount("/static", FreshStaticFiles(directory=STATIC), name="static")

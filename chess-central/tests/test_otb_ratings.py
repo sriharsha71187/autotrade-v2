@@ -89,3 +89,28 @@ def test_sync_falls_back_and_explains(fake_http):
     out = ratings.sync_all()
     assert not out["nwsrs"]["ok"] and "HTTP 404" in out["nwsrs"]["reason"]
     assert not out["uscf"]["ok"] and "HTTP 404" in out["uscf"]["reason"]
+
+
+@pytest.mark.parametrize("payload,expected", [
+    ({"ratings": [{"ratingSystem": {"name": "Regular", "code": "R"},
+                   "rating": {"value": 311}, "gamesPlayed": 5}]}, {"uscf_regular": 311}),
+    ({"ratings": [{"system": "R", "value": 311}, {"system": "OB", "value": 400}]},
+     {"uscf_regular": 311, "uscf_online_blitz": 400}),
+    ({"member": {"ratings": {"regular": {"rating": 311, "games": 12},
+                             "quick": {"rating": 350}}}},
+     {"uscf_regular": 311, "uscf_quick": 350}),
+    ({"overTheBoardRegularRating": 311, "id": "33201208"}, {"uscf_regular": 311}),
+    ({"ratings": [{"ratingSystemCode": "R", "ratingValue": 311, "gamesPlayed": 40,
+                   "ratingFloor": 100}]}, {"uscf_regular": 311}),
+    ({"ratings": [{"ratingSystem": "OverTheBoardRegular", "rating": None}]}, {}),
+])
+def test_uscf_payload_shapes(payload, expected):
+    assert ratings.parse_uscf_ratings(payload) == expected
+
+
+def test_unparsed_payload_reports_shape(fake_http):
+    config.update({"uscf_id": "33201208"})
+    fake_http["https://ratings-api.uschess.org/api/v1/members/33201208"] = (
+        200, {"id": "33201208", "stuff": [{"weird": 1}]})
+    out = ratings.sync_uscf()
+    assert not out["ok"] and "stuff" in out["payload_shape"]

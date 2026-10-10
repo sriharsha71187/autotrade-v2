@@ -135,7 +135,8 @@ def sync_uscf() -> dict:
             found = parse_uscf_ratings(data)
             if not found:
                 return {"ok": False, "reason": "US Chess: member found but no published "
-                        "ratings (unrated yet, or the API format changed)"}
+                        "ratings (unrated yet, or the API format changed)",
+                        "payload_shape": _shape(data)[:1500]}
             results = {}
             for source, rating in found.items():
                 if _store(source, rating):
@@ -144,43 +145,105 @@ def sync_uscf() -> dict:
     return {"ok": False, "reason": "US Chess: " + "; ".join(errors)}
 
 
-def parse_uscf_ratings(data) -> dict[str, int]:
-    """{'uscf_regular': 311, ...} from a members payload, tolerant of shape."""
-    entries = []
-    if isinstance(data, dict):
-        for key in ("ratings", "Ratings", "memberRatings"):
-            if isinstance(data.get(key), list):
-                entries = data[key]
-                break
-        else:
-            inner = data.get("data") or data.get("member")
-            if isinstance(inner, dict):
-                return parse_uscf_ratings(inner)
-    out: dict[str, int] = {}
-    for e in entries:
-        if not isinstance(e, dict):
+_SPEEDS = ("regular", "quick", "blitz")
+# single-letter / short codes the US Chess systems have used for rating types
+_CODES = {"r": ("overtheboard", "regular"), "q": ("overtheboard", "quick"),
+          "b": ("overtheboard", "blitz"), "or": ("online", "regular"),
+          "oq": ("online", "quick"), "ob": ("online", "blitz")}
+_VALUE_KEYS = ("rating", "value", "ratingvalue", "currentrating", "score", "published")
+_SKIP_KEYS = ("game", "floor", "id", "year", "date", "count", "rank", "number", "event")
+
+
+def _system(label: str) -> tuple[str, str] | None:
+    norm = re.sub(r"[^a-z]", "", (label or "").lower())
+    if not norm:
+        return None
+    if norm in _CODES:
+        return _CODES[norm]
+    if "correspondence" in norm:
+        return None
+    speed = next((sp for sp in _SPEEDS if sp in norm), None)
+    if not speed and norm.endswith(("rapid",)):
+        speed = "quick"
+    if not speed:
+        return None
+    return ("online" if "online" in norm else "overtheboard", speed)
+
+
+def _rating_in(d: dict) -> int | None:
+    """The rating number in an entry dict, ignoring games/floor/ids."""
+    for k, v in d.items():
+        kl = re.sub(r"[^a-z]", "", str(k).lower())
+        if any(s in kl for s in _SKIP_KEYS):
             continue
-        label = ""
-        for k in ("ratingSystem", "ratingSystemCode", "system", "type", "name"):
-            v = e.get(k)
+        if kl in _VALUE_KEYS or kl.endswith("rating"):
             if isinstance(v, dict):
-                v = v.get("name") or v.get("code")
-            if isinstance(v, str):
-                label = v
-                break
-        norm = re.sub(r"[^a-z]", "", label.lower())
-        rating = None
-        for k in ("rating", "value", "ratingValue", "currentRating"):
-            rating = _int(e.get(k))
-            if rating is not None:
-                break
-        if not norm or rating is None or not (100 <= rating <= 3000):
-            continue
-        venue = "online" if "online" in norm else "overtheboard"
-        for (v, speed), source in USCF_SYSTEMS.items():
-            if v == venue and speed in norm:
-                out[source] = rating
-    return out
+                inner = _rating_in(v)
+                if inner is not None:
+                    return inner
+            r = _int(v)
+            if r is not None and 100 <= r <= 3000:
+                return r
+    return None
+
+
+def parse_uscf_ratings(data) -> dict[str, int]:
+    """{'uscf_regular': 311, ...} from a members payload, tolerant of shape:
+    a list of {ratingSystem/type/code, rating/value} entries anywhere in the
+    tree, or a dict keyed by system ({'regular': {...}} / {'R': 311})."""
+    out: dict[str, int] = {}
+
+    def put(sysv, rating):
+        if sysv and rating is not None:
+            venue, speed = sysv
+            source = USCF_SYSTEMS[(venue, speed)]
+            out.setdefault(source, rating)
+
+    def walk(node, depth=0):
+        if depth > 6:
+            return
+        if isinstance(node, dict):
+            # entry style: one dict = one rating, labeled by some string field
+            label = None
+            for k, v in node.items():
+                kl = str(k).lower()
+                if isinstance(v, dict) and any(t in kl for t in ("system", "type")):
+                    v = v.get("name") or v.get("code") or v.get("id")
+                if isinstance(v, str) and any(t in kl for t in ("system", "type", "code", "name", "kind")):
+                    if _system(v):
+                        label = v
+                        break
+            if label:
+                put(_system(label), _rating_in(node))
+            # keyed style: {'regular': {...}} / {'overTheBoardQuick': 355} / {'R': 311}
+            for k, v in node.items():
+                sysv = _system(str(k)) if str(k).lower() not in ("name", "type") else None
+                if sysv and not label:
+                    put(sysv, _int(v) if not isinstance(v, (dict, list)) else
+                        (_rating_in(v) if isinstance(v, dict) else None))
+                if isinstance(v, (dict, list)):
+                    walk(v, depth + 1)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item, depth + 1)
+
+    walk(data)
+    return {k: v for k, v in out.items() if 100 <= v <= 3000}
+
+
+def _shape(data, depth=0) -> str:
+    """Compact structure sketch for error messages (keys + types, no bulk)."""
+    if depth > 3:
+        return "…"
+    if isinstance(data, dict):
+        return "{" + ", ".join(f"{k}: {_shape(v, depth + 1)}" for k, v in list(data.items())[:12]) + "}"
+    if isinstance(data, list):
+        return f"[{len(data)}× {_shape(data[0], depth + 1)}]" if data else "[]"
+    if isinstance(data, (int, float)) and not isinstance(data, bool):
+        return str(data)
+    if isinstance(data, str):
+        return repr(data[:24])
+    return type(data).__name__
 
 
 def _int(v) -> int | None:
@@ -249,6 +312,18 @@ def sync_all() -> dict:
     return {"nwsrs": sync_nwsrs(), "uscf": sync_uscf()}
 
 
-if __name__ == "__main__":     # python -m app.sync.ratings  -> live diagnostic
+if __name__ == "__main__":
+    # python -m app.sync.ratings        -> live check of both sources
+    # python -m app.sync.ratings --raw  -> print exactly what US Chess returns
     import json
-    print(json.dumps(sync_all(), indent=2))
+    import sys
+    if "--raw" in sys.argv:
+        uid = (config.get("uscf_id") or "").strip()
+        with httpx.Client(timeout=30, headers={**HEADERS, "Accept": "application/json"},
+                          follow_redirects=True) as c:
+            for host in USCF_API_HOSTS:
+                r = c.get(f"{host}/api/v1/members/{uid}")
+                print(f"--- {r.url} -> HTTP {r.status_code}")
+                print(r.text[:4000])
+    else:
+        print(json.dumps(sync_all(), indent=2))
